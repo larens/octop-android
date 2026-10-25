@@ -1,33 +1,86 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
-  占位图标：一个简化的「章鱼」轮廓。
-  想换成自己实例的图标，替换这个文件（或改成 PNG）即可，见 README。
-  自适应图标要求前景内容落在中间 66% 的安全区内。
+  前景：Octop 官方图标里的白色主图形（C 形环 + 右侧三条渐隐速度线），矢量，任意倍率不失真。
+  取自实例站点上的 /favico.svg（33×33 视口）。路径原样照搬，只用一个 group 做居中缩放：
+
+    screen = 2.45 × 原坐标 − 偏移，使图形外接框（x 6.31445~30.31519，y 8.05859~24.57230，
+    宽 24.00074 高 16.51371）的中心正好落在 108dp 画布中心 (54, 54)。
+
+  缩放后图形占 58.8 × 40.5dp，距离遮罩圆边界还有约 6dp 余量，
+  在最严苛的圆形遮罩下也不会被裁到。
+
+  想换成自己实例的图标，替换本文件与 ic_launcher_background.xml 即可。
 -->
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:aapt="http://schemas.android.com/aapt"
     android:width="108dp"
     android:height="108dp"
     android:viewportWidth="108"
     android:viewportHeight="108">
-    <path
-        android:fillColor="#5B8DEF"
-        android:pathData="M54,32c-9.4,0 -17,7.6 -17,17v10h34v-10C71,39.6 63.4,32 54,32z" />
-    <path
-        android:fillColor="#5B8DEF"
-        android:pathData="M38.5,62c-2.6,3.4 -5.4,6.5 -8.5,9.2c-1.4,1.2 -3.5,1 -4.7,-0.4c-1.2,-1.4 -1,-3.5 0.4,-4.7c2.8,-2.4 5.3,-5.2 7.6,-8.2L38.5,62z" />
-    <path
-        android:fillColor="#5B8DEF"
-        android:pathData="M69.5,62l5.2,-4.1c2.3,3 4.8,5.8 7.6,8.2c1.4,1.2 1.6,3.3 0.4,4.7c-1.2,1.4 -3.3,1.6 -4.7,0.4C75,68.5 72.1,65.4 69.5,62z" />
-    <path
-        android:fillColor="#5B8DEF"
-        android:pathData="M44,66h4v8c0,2.2 -1.8,4 -4,4s-4,-1.8 -4,-4V66z" />
-    <path
-        android:fillColor="#5B8DEF"
-        android:pathData="M60,66h4v8c0,2.2 1.8,4 4,4s4,-1.8 4,-4V66h-4v8c0,0 0,0 0,0H60z" />
-    <path
-        android:fillColor="#0F1117"
-        android:pathData="M47,45m-4,0a4,4 0,1 1,8 0a4,4 0,1 1,-8 0" />
-    <path
-        android:fillColor="#0F1117"
-        android:pathData="M61,45m-4,0a4,4 0,1 1,8 0a4,4 0,1 1,-8 0" />
+
+    <group
+        android:scaleX="2.45"
+        android:scaleY="2.45"
+        android:translateX="9.1287"
+        android:translateY="14.0272">
+
+        <!-- C 形环 -->
+        <path
+            android:fillColor="#FFFFFFFF"
+            android:pathData="M14.5713 8.05859C17.1722 8.0586 19.4924 9.26116 21.0059 11.1406H23.6357C24.0005 11.1406 24.2959 11.437 24.2959 11.8018C24.2958 12.1665 24.0005 12.4619 23.6357 12.4619H18.3896C17.856 12.4618 17.3471 12.2661 16.877 12.0137C16.1904 11.645 15.4051 11.4355 14.5713 11.4355C11.8757 11.4356 9.69044 13.6209 9.69043 16.3164C9.69055 19.0119 11.8758 21.1973 14.5713 21.1973C15.2725 21.1973 15.9394 21.0494 16.542 20.7832C16.9522 20.602 17.3855 20.4619 17.834 20.4619H21.7129L22.3877 20.4629C22.7525 20.4629 23.0488 20.7583 23.0488 21.123C23.0488 21.4879 22.7525 21.7832 22.3877 21.7832H20.7578C19.245 23.4935 17.0342 24.5723 14.5713 24.5723C10.0112 24.5722 6.31445 20.8756 6.31445 16.3154C6.3145 11.7553 10.0112 8.05862 14.5713 8.05859ZM24.4434 13.417C24.808 13.4171 25.1034 13.7125 25.1035 14.0771C25.1035 14.4419 24.808 14.7381 24.4434 14.7383H21.7275C21.4438 14.7383 21.2139 14.9682 21.2139 15.252C21.214 15.5356 21.4439 15.7656 21.7275 15.7656H22.8545C23.2069 15.7796 23.4883 16.0699 23.4883 16.4258C23.4881 16.7903 23.1927 17.0858 22.8281 17.0859H20.8096C20.5056 17.0859 20.2588 17.3327 20.2588 17.6367C20.2589 17.9406 20.5057 18.1865 20.8096 18.1865H24.2266C24.5897 18.1885 24.8838 18.4841 24.8838 18.8477C24.8836 19.2123 24.5874 19.5078 24.2227 19.5078H18.2637C19.004 18.6521 19.4521 17.5366 19.4521 16.3164C19.4521 15.2304 19.0969 14.2268 18.4971 13.416H22.3047L24.4434 13.417Z" />
+
+        <!-- 右侧四条速度线，沿用官方的白色→透明渐变（圆角矩形等价改写为胶囊路径） -->
+        <path android:pathData="M24.70195,15.6904h0.36698a0.62385,0.62385 0 0 1 0,1.2477h-0.36698a0.62385,0.62385 0 0 1 0,-1.2477z">
+            <aapt:attr name="android:fillColor">
+                <gradient
+                    android:type="linear"
+                    android:startX="25.9893"
+                    android:startY="16.306"
+                    android:endX="24.0781"
+                    android:endY="16.3091">
+                    <item android:offset="0" android:color="#00FFFFFF" />
+                    <item android:offset="1" android:color="#FFFFFFFF" />
+                </gradient>
+            </aapt:attr>
+        </path>
+        <path android:pathData="M26.82895,15.6904h2.86239a0.62385,0.62385 0 0 1 0,1.2477h-2.86239a0.62385,0.62385 0 0 1 0,-1.2477z">
+            <aapt:attr name="android:fillColor">
+                <gradient
+                    android:type="linear"
+                    android:startX="31.0699"
+                    android:startY="16.306"
+                    android:endX="26.2051"
+                    android:endY="16.326">
+                    <item android:offset="0" android:color="#00FFFFFF" />
+                    <item android:offset="1" android:color="#FFFFFFFF" />
+                </gradient>
+            </aapt:attr>
+        </path>
+        <path android:pathData="M26.17075,18.04h1.17431a0.62385,0.62385 0 0 1 0,1.2477h-1.17431a0.62385,0.62385 0 0 1 0,-1.2477z">
+            <aapt:attr name="android:fillColor">
+                <gradient
+                    android:type="linear"
+                    android:startX="28.4136"
+                    android:startY="18.6556"
+                    android:endX="25.5469"
+                    android:endY="18.6626">
+                    <item android:offset="0" android:color="#00FFFFFF" />
+                    <item android:offset="1" android:color="#FFFFFFFF" />
+                </gradient>
+            </aapt:attr>
+        </path>
+        <path android:pathData="M25.87775,13.415h1.3945a0.62385,0.62385 0 0 1 0,1.2477h-1.3945a0.62385,0.62385 0 0 1 0,-1.2477z">
+            <aapt:attr name="android:fillColor">
+                <gradient
+                    android:type="linear"
+                    android:startX="28.3813"
+                    android:startY="14.0306"
+                    android:endX="25.2539"
+                    android:endY="14.0389">
+                    <item android:offset="0" android:color="#00FFFFFF" />
+                    <item android:offset="1" android:color="#FFFFFFFF" />
+                </gradient>
+            </aapt:attr>
+        </path>
+    </group>
 </vector>

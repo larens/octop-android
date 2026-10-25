@@ -1,261 +1,392 @@
-# Octop 安卓客户端（开源分享版）
+# Octop 安卓客户端（原生版）
 
-## 概述
+> 本文件是 v2，**取代** v1 的「WebView 通用壳为主交付」方案。v1 的 WebView 代码不删除，降级为**兜底通道**保留在同一 APK 内。
 
-为自托管 [Octop](https://github.com/TencentCloud/Octop) 提供一个**可直接下载安装的安卓客户端**，让手机端具备完整的远程控制能力（可指派任务、可见工具真实执行、可上传附件），而不是停留在飞书渠道的只读问答。
+## 0. 本版相对 v1 的变化
 
-本仓库面向**开源分享**：任何部署了 Octop 的人都能用上。同时为想要「无地址栏 + 共享 Chrome 登录态」体验的用户提供 TWA 构建路径。
+| 项 | v1 | v2（本版） |
+|----|----|-----------|
+| 主交付 | `app/` WebView 通用壳（加载远端 SPA） | **原生 Compose 客户端**，直连 Octop 的 REST + WebSocket API |
+| 「像 App」的手段 | 隐藏地址栏、改 statusbar 颜色 | 原生导航 / 原生列表 / 骨架屏 / 本地会话库 |
+| 会话数据 | 全在服务端与浏览器存储 | **镜像进本地 Room**，启动即出内容，不空转 |
+| 「一直转圈」 | `loadingView` 全屏遮罩，只在出错时关闭 | 骨架屏 + 顶部细进度条，**不存在全屏 spinner** |
+| 通用性 | 一个 APK 适配任意实例（填 URL 即用） | 仍是填 URL 即用，但增加**能力探测**：不兼容的实例自动回落 WebView |
+| WebView | 主通道 | 兜底通道（能力不足 / 用户手选 / 原生未覆盖的页面） |
+| TWA | 副交付 | 保留不变 |
 
-## 目标
+## 1. 概述
 
-1. 一个 APK 适配**任意** Octop 实例 —— 使用者首次启动填自己的地址即可，无需改代码、无需重新构建。
-2. 使用者**不需要**安装 JDK / Android SDK —— 通过 GitHub Release 直接下载。
-3. 仓库**不含任何密钥与个人信息**，任何人 clone 后都能构建出自己的版本。
-4. 保留 TWA 路径，让追求原生体验的用户也能一键产出无地址栏 APK。
+为自托管 [Octop](https://github.com/TencentCloud/Octop) 提供一个**原生安卓客户端**，具备完整的远程控制能力（可指派任务、可见工具真实执行、可传附件），并摆脱浏览器渲染带来的迟滞感。
 
-## 背景
+面向**开源分享**：任何部署了 Octop 的人都能下载安装、填入自己的域名即可使用；仓库不含任何密钥。
 
-- Octop dashboard 本身已是标准 PWA（`manifest.json` 中 `display: "standalone"`、`start_url: "/"`、`scope: "/"`）。
-- 手机端目前只能通过飞书链接访问，**且被限制在 `ask` 只读模式**。根因不是飞书渠道限制，而是 agent 配置里的 `conversation_mode = "ask"`；Octop 默认模式是 `craft`。
-- 因此「只读」问题的真正解法是**改 agent 模式**，而「像 App」的解法是**封装客户端**。两者互不替代，本方案都覆盖。
+## 2. 目标
 
-## 交付形态
+1. **原生手感**：会话列表、消息渲染、输入、导航全部原生实现；界面无「网页味」，无全屏加载遮罩。
+2. **本地缓存**：会话元数据、消息历史、附件缩略图落盘；冷启动先出本地内容，再增量同步。
+3. **完整能力**：可发送任务、可取消/转向、可见工具真实调用与流式输出、可传附件、可响应 HITL 确认。
+4. **一个 APK 适配任意实例**：首次启动填地址即可；实例 API 面不兼容时自动回落 WebView，不白屏。
+5. 使用者**不需要** JDK / Android SDK —— 通过 GitHub Release 下载。
+6. 仓库**不含密钥与个人信息**。
+
+## 3. 背景：为什么必须转原生（定量结论）
+
+v1 的 WebView 方案实测到的三个根因，都是原生架构能直接消除的：
+
+1. **首包 3.75 MB 未压缩**。Octop 站点 nginx 只对 HTML 开 gzip；`vendor-antd` 2.20 MB、`index` 685 KB、`index.css` 342 KB 全部裸传（带 `Accept-Encoding: gzip, deflate, br` 实测 `content-length` 与裸长度完全一致）。每个冷启动都要重新下载解析。
+2. **`/` 是 `cache-control: no-cache`**，且 SPA bundle 内**无 IndexedDB**，会话数据完全不在本地 —— 这是「打开就要等、等完还是空」的成因。
+3. **壳自身的问题**：`loadingView` 是全屏遮罩，且只在 `showError()` 里被置 GONE，加载成功后可能一直可见 —— 「一直转圈」的观感有相当一部分来自这里，而不是 WebView 本身。
+
+原生客户端把这三点变成：本地 Room 秒出列表 + 增量同步 + 骨架屏。
+
+同时必须说明：**「只能只读」的根因是服务端 agent 的 `conversation_mode = "ask"`，不是渠道限制**。改模式与换客户端是两件独立的事，本版两者都覆盖。
+
+## 4. 架构决策记录
+
+| 方案 | 说明 | 结论 |
+|------|------|------|
+| A. 继续 WebView 壳 | 保留 v1 | 已证伪：无法解决上述根因 |
+| B. 全原生，删除 WebView | 最纯粹 | 不采纳：一旦实例 API 面不兼容即彻底不可用，违反「任意实例可用」 |
+| **C. 原生为主 + WebView 兜底** | 原生跑主链路，WebView 保底 | **采纳** |
+
+**关键设计：能力探测（capability probe）**。客户端启动连接时按顺序探测原生所需的最小 API 面，任一项失败即把这台实例标记为 `webview_only`，直接用 v1 的壳加载，并把该判定持久化到本地（下次不再重复探测）。这样「通用性」和「原生体验」不再互斥。
+
+## 5. 交付形态
 
 | 交付物 | 说明 | 面向 |
 |--------|------|------|
-| `app/` WebView 通用壳 | 一个 APK 适配任意实例，首次启动填地址 | 所有人（主交付） |
-| `twa/` TWA 配置化构建 | 改一份配置，脚本自动出无地址栏 APK + assetlinks | 想要原生体验的人 |
+| `app/`（原生 + WebView 兜底，同一个 APK） | 原生客户端为主通道，WebView 为兜底 | 所有人（主交付） |
+| `twa/` TWA 配置化构建 | 改一份配置，脚本自动出无地址栏 APK + assetlinks | 想要零维护网页壳的人 |
 | `docs/octop-setup.md` | 把自己的 Octop 安全暴露到公网的正确姿势 | 服务端部署者 |
 
-## 仓库结构
+## 6. 仓库结构
 
 ```
 octop-android/
-├── README.md                       # 中文：下载安装 / 快速开始
-├── README.en.md                    # 英文简版
-├── LICENSE                         # MIT
-├── .gitignore                      # 排除 keystore / local.properties / build/ / .gradle/
-├── app/                            # 主交付：WebView 通用壳
+├── app/                                     # 单一 APK：原生为主 + WebView 兜底
+│   ├── schemas/                             # Room schema 导出（提交进仓库，供迁移测试）
 │   ├── build.gradle.kts
-│   └── src/main/
-│       ├── AndroidManifest.xml
-│       ├── java/.../               # MainActivity / SetupActivity / SettingsActivity / WebViewClient...
-│       └── res/                    # 图标、主题、文案
-├── gradle/libs.versions.toml       # 版本目录
-├── settings.gradle.kts / build.gradle.kts / gradlew / gradle/wrapper/
-├── twa/
-│   ├── twa.config.json             # host / 包名 / 应用名 / 版本 / 颜色 / 图标
-│   └── scripts/build-twa.sh
-├── scripts/
-│   ├── gen-keystore.sh             # 生成 keystore（密码落到不入 git 的位置）
-│   └── gen-assetlinks.sh           # 从 keystore 导出 SHA-256 → assetlinks.json + Nginx 片段
-├── docs/
-│   ├── spec.md                     # 本文件
-│   └── octop-setup.md
-└── .github/workflows/
-    ├── webview-apk.yml
-    └── twa-apk.yml
+│   └── src/main/java/com/octopmobile/app/
+│       ├── OctopApp.kt                      # Application：DI 装配、DB 初始化
+│       ├── core/                            # Const / Result / 时间与格式化
+│       ├── data/
+│       │   ├── db/                          # Room entity / dao / database / migrations
+│       │   ├── prefs/                       # DataStore（实例地址、token、主题）
+│       │   ├── remote/                      # OctopApi（OkHttp）、dto/、AuthInterceptor
+│       │   ├── ws/                          # ChatSocket / 帧编解码 / 重连策略
+│       │   └── repo/                        # ThreadRepository / ChatRepository / AttachmentCache
+│       ├── ui/
+│       │   ├── connect/                     # 首次连接向导（复用 UrlNormalizer + InstanceProbe）
+│       │   ├── threads/                     # 会话列表（骨架屏 / 置顶 / 搜索）
+│       │   ├── chat/                        # 对话页：流式渲染、工具卡片、HITL
+│       │   ├── settings/
+│       │   └── web/                         # WebView 兜底 Activity（复用现有 web/ 包）
+│       ├── service/                         # 前台服务 + 通知进度
+│       └── share/                           # ShareReceiverActivity
+├── twa/                                     # 副交付（同 v1）
+├── scripts/                                 # gen-keystore.sh / gen-assetlinks.sh / write-twa-config.js
+├── docs/{spec.md, octop-setup.md, protocol.md}
+└── .github/workflows/{native-apk.yml, twa-apk.yml}
 ```
 
-## 主交付：WebView 通用壳
+## 7. 技术栈
 
-### 技术栈
+| 领域 | 选型 | 说明 |
+|------|------|------|
+| UI | Jetpack Compose + Material 3 | `compileSdk 36` / `targetSdk 35` / `minSdk 26` |
+| 自适应布局 | `androidx.compose.material3.adaptive:adaptive*:1.2.0` | **锁 1.2.0**：1.3.0 硬要求 compileSdk 37 + AGP 9.1.0；`adaptive-navigation3` 仍是 alpha |
+| 导航 | `navigation-compose:2.8.5` | 单 Activity 多 destination |
+| 本地库 | **Room 2.6.1 + KSP** | `room.schemaLocation = $projectDir/schemas`，schema **提交进仓库** |
+| 配置 | DataStore Preferences 1.1.1 | 实例地址、开关 |
+| 凭据 | `security-crypto`（EncryptedSharedPreferences） | token 不落明文 |
+| 网络 | OkHttp 4.12.0 | REST + 附件上传 |
+| 流式 | OkHttp WebSocket 为主；`okhttp-sse:4.12.0` 为备 | 见 §9 |
+| 序列化 | kotlinx-serialization-json 1.7.3 | 与 Kotlin 一同编译，无反射 |
+| 图片 | Coil 3（compose） | 磁盘缓存即附件缓存 |
+| Markdown | mikepenz multiplatform-markdown-renderer-m3 0.33.0 | 流式增量渲染 |
+| 浏览器/兜底 | `androidx.browser:1.8.0` + `androidx.webkit:1.12.1` | Custom Tabs + WebView 特性探测 |
+| 协程 | kotlinx-coroutines-android 1.9.0 | |
 
-Kotlin + 原生 `WebView` + Gradle（Version Catalog）。minSdk 26（Android 8.0），compileSdk / targetSdk 35。
+版本组合以 OpenMinis（同类成熟原生客户端）为参照；M0 阶段在 CI 上跑通一次以确认可解析。
 
-**不引入 Capacitor / Cordova** —— 通用壳不需要混合框架，多一层依赖只增加维护面。
+**不引入**：Capacitor / Cordova / Flutter / React Native。原生链路已经足够短，跨平台框架只会加一层需要调试的黑盒。
 
-### 首次配置流程
+## 8. 数据层（Room）
 
-1. 应用启动，读 DataStore 中的实例地址。
-2. 未配置 → 进入配置页，输入 `https://你的域名`（自动补 `https://`、去掉尾部 `/`）。
-3. 校验：`GET {host}/api/health`，期望 `{"ok":true,"db":true}`。失败给出明确原因（DNS / TLS / 非 Octop 服务 / 网络不可达）。
-4. 通过则落库并进入主界面；主界面提供"修改地址"入口，随时可改。
+### 8.1 设计原则
 
-配置页对常见的 URL 输入错误（带路径 `/octop`、带端口、http、漏协议）给出针对性提示。
+- **服务端是真值来源，本地库是显示缓存**：本地永远可以整体重放/重建，不做「本地改动待合并」的复杂同步。
+- **流式消息用同一行持续 UPDATE**，不追加新行 —— 这样杀进程重进也能看到半截输出。
+- 消息正文用 `parts_json`（parts 数组）存储，与 WS 事件天然同构：`text` / `reasoning` / `tool_call` / `tool_result` / `attachment` / `error`。
 
-### WebView 配置清单
+### 8.2 表
 
-以下每一项都对应一个可感知的功能，缺一项就有功能残缺：
+| 表 | 关键字段 |
+|----|---------|
+| `instances` | `base_url`(PK) / `display_name` / `capability`(native\|webview_only) / `last_connected_at` |
+| `threads` | `thread_id`(PK) / `agent_id` / `title` / `category` / `last_message` / `pinned_at` / `updated_at` / `unread_count` / `model_id` |
+| `messages` | `id`(PK) / `thread_id` / `turn_id` / `role` / `sort_order` / `parts_json` / `status` / `error_info` / `stream_interrupt_count` / `updated_at` |
+| `compact_markers` | `thread_id` / `created_at` / `summary` —— 标记上下文压缩点，UI 画分隔线 |
+| `attachments` | `id` / `thread_id` / `message_id` / `remote_url` / `local_path` / `mime` / `size` / `state` |
+| `pending_ops` | `id` / `kind`(send\|cancel\|steer) / `thread_id` / `payload_json` / `retry_count` / `created_at` —— 断网时排队，恢复后重放 |
 
-| 配置 | 不配的后果 |
-|------|-----------|
-| `javaScriptEnabled = true` | 页面白屏 |
-| `domStorageEnabled = true` | 登录态/会话丢失（SPA 依赖 localStorage） |
-| `databaseEnabled = true` | 部分前端存储功能异常 |
-| `CookieManager` 持久化 + `setAcceptThirdPartyCookies(true)` | 重启应用需重新登录 |
-| `onShowFileChooser` | 附件上传按钮点了没反应 |
-| `setSupportMultipleWindows(true)` + `onCreateWindow` | 点击 `target=_blank` 链接无响应 |
-| `setMediaPlaybackRequiresUserGesture(false)` | TTS 语音播报无法自动播放 |
-| `useWideViewPort` / `loadWithOverviewMode` = true | 移动端视口错乱 |
-| `setTextZoom(100)` | 系统大字体破坏页面布局 |
-| `DownloadManager` 接管下载（并带上 Cookie 头） | 导出文件不可用 |
-| `onRenderProcessGone` 重建 WebView | 渲染进程崩溃直接闪退 |
-| 处理 `WindowInsets`（Android 15 强制 edge-to-edge） | 内容被状态栏/导航栏遮挡 |
+### 8.3 与 Octop 概念的字段映射
 
-### 版本兼容
+| Octop | 本地 |
+|-------|------|
+| `thread_id` | `threads.thread_id` / `messages.thread_id` |
+| `turn_id` / `expected_turn_id` | `messages.turn_id`；客户端用 `client_pending_id` 关联本地占位消息 |
+| `usage` 事件 | **不存在**：上游只在服务端内部统计用量，WS 不发该事件（protocol.md §4.2） |
+| `reasoning` 事件 | `parts_json` 内的 `reasoning` part |
+| `compact` / 上下文压缩 | `compact_markers` |
 
-用 `androidx.webkit` 的 `WebViewCompat` / `WebViewFeature` 做特性探测，避免老设备上调用不存在的方法而崩溃。
+排序统一按 `pinned_at` 优先、其后 `updated_at DESC`。
 
-### 导航与链接
+### 8.4 迁移
 
-- **返回键**：WebView 可回退则回退，否则退出（`OnBackPressedDispatcher`）。
-- **外链**：非实例 host 的链接用 Custom Tabs / 系统浏览器打开，不在壳内加载。
-- **上滑刷新**：主界面接 `SwipeRefreshLayout`，流式输出卡住时可手动重载。
+schema 导出目录提交进仓库；每次改表必须附迁移 + 一条 JVM 可跑的迁移测试（`MigrationTestHelper`）。**不允许 `fallbackToDestructiveMigration`** —— 那等于用户的本地会话会被静默清空。
 
-### 设置页
+## 9. 网络层与协议
 
-- 修改实例地址（改动后清 Cookie 并重载）
-- 登出（清 Cookie + localStorage）
-- 允许明文 HTTP 开关（见「安全」）
-- 关于：版本号、项目主页、协议
+### 9.1 鉴权
 
-### 安全
+- `Authorization: Bearer <token>`；登录 `POST /api/auth/login`，自省 `GET /api/auth/me`。
+- WS 通过查询参数 `?token=` 传凭据。
+- 401 响应体形如 `{"error":{"code":"AUTH_FAILED","message":"...","details":{}}}` → 统一映射为「登录已失效」，引导重新登录而不是弹一堆解析错误。
 
-- 默认强制 HTTPS：`android:usesCleartextTraffic="false"`。
-- 为内网自建 / 自签证书用户提供「允许明文 HTTP」开关，**默认关闭**，开启时给出风险提示。
-- 自签证书：不放宽 `onReceivedSslError` 的默认行为（即不忽略证书错误），文档里指引用户用受信任证书。
-- 不采集任何数据、不做任何上报、不请求网络以外的权限。
+### 9.2 REST 面（客户端用到的）
 
-### 权限
+| 用途 | 方法 / 路径 |
+|------|------------|
+| 健康检查 | `GET /api/health` → `{"ok":true,"started_at":…,"db":true,"users_loaded":…,"agents_running":…}` |
+| 登录 / 自省 | `POST /api/auth/login`、`GET /api/auth/me` |
+| 线程列表 / 新建 | `GET /api/agents/{id}/threads?limit=`、`POST /api/agents/{id}/threads` |
+| 线程详情 / 改名 | `GET /api/agents/{id}/threads/{tid}?compact=`、`PATCH …/{tid}` |
+| 历史 | `GET …/{tid}/history?limit=` |
+| 上下文用量 | `GET …/{tid}/context-usage` |
+| 分叉 / 已读 | `POST …/{tid}/fork`、`POST …/{tid}/read` |
+| 附件上传 | `POST /api/agents/{id}/upload`（multipart，字段名 `file`）→ `{path, workspace_path, url, filename, media_type}` |
+| HITL 确认 | `POST /api/agents/{id}/chat/hitl/resume`（**SSE 响应**，body `{thread_id, decisions[], pending_id?}`） |
+
+### 9.3 实时通道
+
+- 对话：`WS /api/agents/{agentId}/chat/ws?token=…`
+- 通知：`WS /api/notifications/ws`
+- 备选：SSE 通道（`okhttp-sse`），当实例的 WS 被反代阻断时启用
+
+**客户端 → 服务端帧**
+
+| `type` | 字段 | 用途 |
+|--------|------|------|
+| `user_turn` | `text`, `thread_id`, `client_pending_id`, `messages?`(带附件时的 content blocks), `delivery:"auto"`, `expected_turn_id?` | 发送任务 |
+| `cancel` | `thread_id` | 中断当前轮 |
+| `subscribe` | `thread_id` | 订阅某线程的增量事件 |
+| `steer_remove` | `thread_id`, `turn_id`, `client_pending_id`, `pending_id` | 撤回排队中的转向指令 |
+| `ping` | — | 心跳保活 |
+
+**服务端 → 客户端事件**
+
+`turn.started` / `turn.resumed` / `turn.ended`（回合生命周期）、`token`（正文增量）、`reasoning`（思考增量）、`tool_call_chunk`（工具调用参数增量）、`tool_result`、`attachment`、`done`、`error`、`hitl_required`（需要人工确认）、`turn_status`（`subscribe` 应答）、`pong`、`user`（**仅 steer 合并时**回显）、`steer.*`。
+
+> 逆向阶段的两个错误已在 M0 核对中更正：**不存在** `usage` 事件，也**不存在** `state_snapshot` —— 「这个线程是否在跑」只能靠 `subscribe` 后返回的 `turn_status.active`（protocol.md §4.2）。
+
+### 9.4 契约来源与可信度（重要）
+
+上表的帧名与事件名来自**对线上 SPA bundle 的逆向**（`https://<你的实例>/assets/index.*.js`），不是从服务端源码读出的。可信度分级：
+
+| 级别 | 内容 | 处理 |
+|------|------|------|
+| 已实测 | `/api/health` 响应体、`/` 与 `/assets/*` 的缓存头 | 可直接依赖 |
+| 逆向得出 | WS 路径、5 种客户端帧、17 种服务端事件、threads 路由族 | **M0 必须与上游源码逐条核对** |
+| 待确认 | 附件的服务端 URL 形态与鉴权方式；实例版本号（`/api/health` 未返回版本字段） | M0 补齐 |
+
+核对对象（上游 `TencentCloud/Octop`，MIT）：`src/octop/api/routers/chat/{ws.py, serialize.py, sse.py, turn.py, history.py}`、`src/octop/api/routers/mobile/{stream.py, shell_ws.py, status.py, install.py}`，权威参考测试 `tests/integration/test_chat_ws.py`、`tests/unit/gateway/test_dashboard_ws.py`。
+
+核对结论写进 `docs/protocol.md`（含要固化的 DTO 与「不支持则降级」的判定点）。**M0 不通过就不进入 M1** —— 整个原生方案都建立在这份契约上。
+
+### 9.5 能力探测与降级
+
+| 探测项 | 方法 | 失败时的降级 |
+|--------|------|------------|
+| 服务存在 | `GET /api/health` 返回 `ok:true` 且 `db:true` | 连接向导报明确原因（DNS / TLS / 非 Octop 服务） |
+| 可登录 | `POST /api/auth/login` + `GET /api/auth/me` | 停在登录页 |
+| 有 agent | `GET /api/agents/…` 可取到列表 | 标记 `webview_only` |
+| 对话 WS 可用 | 连 `/api/agents/{id}/chat/ws` 并发送 `subscribe`，期待 `turn_status` | 试 SSE；再失败 → 标记 `webview_only` |
+| 附件上传可用 | 预检上传接口 | 该功能隐藏并提示 |
+
+判定为 `webview_only` 时：Toast 说明原因 → 用 v1 的 WebView Activity 加载该实例 → 持久化该判定。
+
+## 10. 断线重连与「断流不丢消息」
+
+- **心跳**：空闲 30s 发 `ping`，15s 未见任何入帧则判定链路死。
+- **重连**：指数退避（1s→2s→4s→…→上限 30s），带抖动；应用回前台立即重连一次。
+- **重连后不全量拉历史**：重连成功先重新 `subscribe`，用应答里的 `turn_status.active` 校正本地「是否在跑」，再收增量。全量历史只在**首次打开线程**时用 `/history?limit=` 拉一页，向上翻页续拉。
+- **半截消息**：流式中断时，本地那行 `status = interrupted`，`stream_interrupt_count += 1`，UI 明确显示「输出中断」并提供「重新拉取该轮」。
+- **发送失败**：入 `pending_ops`，恢复网络后按序重放；重放前先与 `expected_turn_id` 对齐，避免重复发一轮。
+
+## 11. 页面与信息架构
+
+- **首次连接向导**：输入地址 → 规范化（自动补 `https://`、去尾部 `/`）→ 探测（§9.5）→ 登录 → 选 agent → 进会话列表。对「带路径 / 带端口 / http / 漏协议」给出针对性提示。
+- **会话列表**：骨架屏占位 → 置顶分组 → 未读标记 → 下拉刷新（触发增量同步，不是重载页面）→ 长按置顶/删除/改名。
+- **对话页**：顶部标题 + 连接状态点；消息流；底部输入框（多行自增、发送 ↔ 中止状态机）；工具调用以卡片呈现（工具名 + 参数折叠 + 结果摘要）；`hitl_required` 弹原生确认卡片 —— **这是「可派活」闭环的关键一环**；`reasoning` 默认折叠。
+- **设置页**：改地址（切换实例）、登出、允许明文 HTTP、主题跟随系统、关于（版本 / 主页 / 协议）、清理本地缓存。
+- **WebView 兜底页**：复用 v1 的 `OctopWebViewClient` / `OctopWebChromeClient`（新窗口、文件选择、网页权限三项处理继续沿用），用于 `webview_only` 实例、用户手选「网页模式」、以及原生未覆盖的管理类页面。
+
+## 12. 手感专项（本版的核心卖点）
+
+| 议题 | 做法 |
+|------|------|
+| 加载态 | **彻底移除全屏 `ProgressBar`**。列表用骨架屏，会话用气泡占位，同步中用顶部 1px 不定进度条 |
+| 冷启动 | 先进 UI，立刻用 Room 数据渲染；网络同步在后台跑 |
+| 流式渲染 | token 到达后按 ~50ms 合帧；**只重新解析「最后一个仍在流式的块」**，历史块不重解析 |
+| 滚动跟随 | 仅当用户位于底部 32dp 死区内才自动跟随；用户一上滑即解除锁定并浮出「回到底部」按钮 |
+| 长内容保护 | 单条消息超阈值（如 20k 字符）默认折叠；代码块/表格横向滚动 |
+| 回弹 | 用 Compose 原生 overscroll（Android 12+ stretch），不再用 `SwipeRefreshLayout` |
+| 图片 | Coil 磁盘缓存 + 固定尺寸占位，避免流式重排导致列表跳动 |
+| 大字体 | 跟随系统字号但布局用自适应约束，不做 `setTextZoom(100)` 式硬锁 |
+
+## 13. 内容缓存与资源寻址
+
+- **缓存对象**：会话元数据、消息历史、附件（原图与缩略图）、agent 列表、上一版 app 配置。
+- **存储位置**：Room（结构化）+ `filesDir/attachments/<thread_id>/`（二进制）。附件缓存受总容量上限约束（默认 200 MB），LRU 淘汰；设置页可一键清理。
+- **引用形式**：服务端返回的附件 URL 一律由客户端**归一化为稳定引用**并落库，UI 内联渲染（图片直出、文件出可点卡片）。同一引用命中本地缓存则不发网络请求。
+  - 归一化的具体形态（自定义 scheme vs 原 URL + 本地索引）取决于 M0 对「服务端附件 URL 形态」的确认结果，见 §9.4「待确认」。
+- **不做**：不做离线对话（无网络的轮次仍排队）、不做全文离线检索、不做附件双向同步。
+
+## 14. 系统集成
+
+| 能力 | 说明 |
+|------|------|
+| 前台服务 | 长任务执行中保持连接并显示进度通知；`POST_NOTIFICATIONS`（33+）运行时申请，被拒则静默降级 |
+| 通知进度 | SDK 36+ 走 Live Updates（`Notification.ProgressStyle`），以下版本用普通进行中通知 |
+| App Shortcuts | 新会话 / 语音输入 / 拍照 |
+| 分享入口 | `ACTION_SEND` / `SEND_MULTIPLE`（文本、图片、文件）→ 新建会话或追加到当前会话 |
+| 深链 | `octopmobile://thread/{id}`，用于通知点击与会话直达（自定义 scheme，无需每个实例配 assetlinks） |
+
+## 15. 安全与权限
+
+- 默认 `android:usesCleartextTraffic="false"`；为内网自建提供「允许明文 HTTP」开关，默认关闭并给风险提示。
+- 不放宽 `onReceivedSslError`（不忽略证书错误），文档指引使用受信任证书。
+- 登录 token 存 EncryptedSharedPreferences；登出时清 token + 本地缓存 + Room 数据（可选保留）。
+- 不采集任何数据、不做上报。
 
 | 权限 | 用途 | 必要性 |
 |------|------|--------|
 | `INTERNET` | 访问 Octop | 必须 |
-| `RECORD_AUDIO` | Octop 的 browser STT 需要 `getUserMedia` | 可选，运行时可拒 |
-| `CAMERA` | 附件拍照上传 | 可选，运行时可拒 |
+| `POST_NOTIFICATIONS` | 任务进度通知（33+） | 可选，可拒 |
+| `FOREGROUND_SERVICE` + `…_DATA_SYNC` | 长任务保持连接 | 可选 |
+| `RECORD_AUDIO` | 语音输入 | 可选，可拒 |
+| `CAMERA` | 拍照发附件 | 可选，可拒 |
 
-`WebChromeClient.onPermissionRequest` 中先申请 Android 运行时权限，再回填结果。
+## 16. 构建与 CI
 
-### 构建配置
-
-- `applicationId` 默认 `com.octopmobile.app`，在 `app/build.gradle.kts` 中可改。
-- 签名：**不提交 keystore**。本地构建走 `scripts/gen-keystore.sh` 生成；CI 走 Secrets 注入。
-- 未配置签名时回退到 debug 签名，保证 clone 即可 `./gradlew assembleDebug`。
-
-## 副交付：TWA 配置化
-
-### 配置文件
-
-`twa/twa.config.json`：
-
-```json
-{
-  "host": "octop.example.com",
-  "startUrl": "/",
-  "applicationId": "com.example.octop",
-  "appName": "Octop",
-  "versionCode": 1,
-  "versionName": "1.0.0",
-  "themeColor": "#ffffff",
-  "backgroundColor": "#0f1117",
-  "iconUrl": "https://octop.example.com/pwa-512.png",
-  "minSdkVersion": 26
-}
-```
-
-### 构建脚本
-
-`twa/scripts/build-twa.sh` 全自动执行：
-
-1. 校验 `twa.config.json`（host 可达性、`/manifest.json` 与 `/api/health` 可访问）。
-2. 由配置生成 `twa-manifest.json`，非交互执行 `bubblewrap init`。
-3. 首次运行调用 `scripts/gen-keystore.sh` 生成 keystore；后续复用。
-4. `bubblewrap build` 产出签名 APK。
-5. 调用 `scripts/gen-assetlinks.sh` 输出两样最容易踩坑的东西：
-   - `.well-known/assetlinks.json`（含 keystore 的真实 SHA-256 指纹）
-   - 可直接粘贴的 Nginx `location` 片段
-
-### 服务器的 assetlinks 要求
-
-TWA 的 host 在构建时固化，**每个域名各需一个 APK**（这是 TWA 的固有约束，也是本仓库同时提供 WebView 通用壳的原因）。
-
-`assetlinks.json` 暴露方式（写进 `docs/octop-setup.md`）：
-
-```nginx
-# 必须放在 HTTPS(443) 块的 location / 之前
-location = /.well-known/assetlinks.json {
-    default_type application/json;
-    return 200 '[{"relation":["delegate_permission/common.handle_all_urls"],
-                  "target":{"namespace":"android_app",
-                            "package_name":"com.example.octop",
-                            "sha256_cert_fingerprints":["<SHA256>"]}}]';
-}
-```
-
-指纹不匹配时 TWA 会**静默降级**为带地址栏的 Custom Tab，不报错 —— 排查方法见 `docs/octop-setup.md`。
-
-## CI
+- `applicationId`：原生版改用 `com.octopmobile.native`，**与 v1 的 `com.octopmobile.app` 区分**（两者签名不同，混装必须先卸载；分开包名可避免用户误装）。
+- 签名：**不提交 keystore**。本地走 `scripts/gen-keystore.sh`，CI 走 Secrets。未配置时回退 debug 签名，保证 clone 后即可 `./gradlew assembleDebug`。
+- 变体：`debug` / `release`；另加 `perf`（`initWith(debug)` + `isDebuggable = false` + `isProfileable = true`）用于测量真实帧耗时 —— debuggable 会让 ART 拒绝 AOT，测量结果不可代表用户环境。
 
 | 流水线 | 触发 | 产物 |
 |--------|------|------|
-| `webview-apk.yml` | push / PR / tag `v*` | 构建 `assembleDebug`，上传 APK artifact；打 tag 时创建 Release |
-| `twa-apk.yml` | `workflow_dispatch`（输入 host 等参数） | 用 Secrets 注入 keystore 签名，产出 APK + `assetlinks.json` 并附到 Release |
+| `native-apk.yml` | push / PR / tag `v*` | `assembleDebug` 产物作为 artifact；打 tag 创建 Release |
+| `twa-apk.yml` | `workflow_dispatch` | 同 v1（Secrets 注入签名） |
 
-`twa-apk.yml` 需要的 Secrets（缺省时跳过 TWA 流水线，不阻塞）：
+## 17. 服务端前置（`docs/octop-setup.md`）
 
-- `TWA_KEYSTORE_BASE64`
-- `TWA_KEYSTORE_PASSWORD`
-- `TWA_KEY_ALIAS`
-- `TWA_KEY_PASSWORD`
+1. Octop 可被公网访问且启用 HTTPS。
+2. Nginx 正确处理 WebSocket 与 SSE：`Upgrade` / `Connection` 透传、`proxy_buffering off`、长 `proxy_read_timeout`、`client_max_body_size` 足够大（附件上传，建议 512m）。
+3. **把 agent 的 `conversation_mode` 从 `ask` 改为 `craft`** —— 「只能只读」的根因。
+4. **开启 JS/CSS 压缩**（`gzip_types` 或 brotli）：原生客户端主链路不依赖它，但 WebView 兜底通道与首次加载仍直接受益。
+5. （仅 TWA 用户）配置 `/.well-known/assetlinks.json`。
 
-目的是让使用者**不必安装任何本地工具链**就能拿到 APK。
+## 18. 里程碑
 
-## 服务器侧（`docs/octop-setup.md`）
+| 阶段 | 内容 | 出口条件 |
+|------|------|---------|
+| **M0 契约冻结** | 对照上游源码与真实实例核对 §9 全部帧与路由；产出 `docs/protocol.md`；搭起 Compose + Room + KSP 骨架在 CI 跑通 | 契约逐条确认，DTO 定型 |
+| **M1 只读原生** | 连接向导 + 能力探测 + 登录 + agent 选择 + 会话列表（Room）+ 历史分页 + 流式接收（`token`/`reasoning`/`done`） | 装到真机，冷启动秒出列表，能流畅看一段真实流式输出 |
+| **M2 可写** | 新建会话（`POST /threads`）+ `user_turn` 发送 / `cancel` 中止 + 附件上传 + 工具折叠卡片 + `hitl_required` 原生确认卡（SSE `hitl/resume`）+ `pending_ops` 重放 | 手机下发任务，服务端真实执行并回传 |
+| **M3 手感与缓存** | 骨架屏、合帧渲染、滚动锁定、附件缓存与清理、紧凑标记、断线重连与半截消息 | 无全屏 spinner；飞行模式切换后不丢消息 |
+| **M4 集成与兜底** | 前台服务 + 通知、Shortcuts、分享入口、深链、WebView 兜底通道接通、TWA 流水线回归 | 验收清单全绿 |
 
-网友要跑通客户端，服务端需要满足：
+### 18.1 M2 实现决策（本轮确认）
 
-1. Octop 可被公网访问且启用 HTTPS（Let's Encrypt / 自有证书）。
-2. Nginx（或等价反代）正确处理 WebSocket 与 SSE：`Upgrade`/`Connection` 透传、`proxy_buffering off`、长 `proxy_read_timeout`、足够的 `client_max_body_size`（附件上传）。
-3. **把 agent 的 `conversation_mode` 从 `ask` 改为 `craft`** —— 这才是"只能只读"的根因。说明会同时给出 dashboard 与直接改 SQLite 两种方式。
-4. （仅 TWA 用户）配置 `/.well-known/assetlinks.json`。
+| 决策点 | 结论 | 理由 |
+|--------|------|------|
+| 新建会话时机 | 点「+」**立即** `POST /api/agents/{id}/threads`，随后进入该会话 | 与网页版 `/new` 一致。代价要说清：列表会立刻多一条空会话，且服务端把该 agent 的 **dashboard 会话重绑到新 thread**，同一账号的网页端会话会被切走（旧会话不删，仍在列表里） |
+| 回合进行中再发送 | 输入框**置灰**、发送按钮变「中止」；等 `turn.ended` 后才允许再发 | 本轮**不做 steer**（`delivery:"steer"` + `expected_turn_id`）：它需要 `steer.queued/rejected/drained` 全族状态机与本地待发队列 UI，收益低于复杂度 |
+| 用户消息的本地回显 | 客户端**自己**先落一条本地行 | 上游只在 steer 合并时下发 `user` 帧（`ws_channel.py:413-425` `_steer_user_frame`），正常回合**不回显**用户消息 |
+| 附件上传的发送形态 | 走 `user_turn.messages` 的 content blocks（`workspace_path` + `filename` + `media_type`），不走 `text` | 上传接口返回的就是这三个字段（protocol.md §6） |
+| HITL 续跑 | 确认后由客户端消费 `POST …/chat/hitl/resume` 的 **SSE 流**，把帧喂进同一条事件管线 | 该接口的续跑增量只在 SSE 上，**不推 WS hub**；不消费 SSE 就看不到后续输出 |
+| 发送失败 | 入 `pending_ops`，socket 重新 `Open` 后按 `createdAt` 顺序重放 | 验收第 14 条：断网发送不丢、不重复发 |
 
-## 验收清单
+## 19. 验收清单
 
-**构建与安装**
+**构建与开源卫生**
 
-1. `./gradlew assembleDebug` 在干净环境可成功产出 APK。
-2. GitHub Actions 在 push 后产出 APK artifact；打 tag 后 Release 可下载。
-3. 仓库中不存在任何 keystore、密码、个人域名或密钥文件（`git log --all --name-only` 抽查确认）。
+1. 干净环境 `./gradlew assembleDebug` 成功。
+2. push 后 CI 产出 APK artifact；打 tag 后 Release 可下载。
+3. `git log --all --name-only` 抽查确认仓库无 keystore / 密码 / 个人域名。
 
-**通用壳功能**
+**契约与连接**
 
-4. 未配置时进入配置页；填错地址有明确报错；填对后进入主界面。
-5. 首次登录成功后，**杀掉应用重开仍保持登录**。
-6. 发送一条需要真实执行的指令（例如让 agent 写文件），能看到工具真实调用与流式输出，而非只读拒答。
-7. 附件上传可用（从相册选图 / 选文件）。
-8. 导出或下载文件可落到系统下载目录。
-9. 点击外部链接不在壳内打开。
-10. 返回键行为正确；应用切后台再回前台会话不丢。
-11. Android 15 设备上内容不被状态栏/导航栏遮挡。
-12. 系统字体调到最大时页面布局不崩。
+4. `docs/protocol.md` 中每条帧/路由都能指出上游源码依据或实测依据。
+5. 未配置时进连接向导；填错地址给出具体原因（而非「加载失败」）。
+6. 正常实例探测为 `native`；构造一个 API 不兼容的实例时自动回落 WebView 且**不白屏**。
+7. 首次登录后杀掉应用重开仍是登录态。
 
-**TWA 路径**
+**核心链路**
 
-13. `scripts/build-twa.sh` 在干净环境一次跑通。
-14. 按脚本输出的 Nginx 片段配置后，安装 APK **无地址栏**（说明 assetlinks 校验通过）。
-15. 故意改错指纹时降级为带地址栏（反向验证排查方法有效）。
+8. 会话列表冷启动**先出本地内容**，无全屏加载遮罩。
+9. 打开线程能看到历史消息，上滑可分页。
+10. 发送「需要真实执行的指令」（例如让 agent 写文件），能看到工具真实调用与流式输出，而非只读拒答。
+11. 流式过程中点「中止」能停下，且消息标记为中断、可重新拉取。
+12. 附件上传可用（相册选图 / 选文件），上传后能在会话里内联看到。
+13. HITL 确认弹窗可用，确认后任务继续。
+14. 断网后发送进入待发队列，恢复网络后自动送达且不重复发送。
 
-## 明确不做（YAGNI）
+**手感与缓存**
 
-- 不做推送通知、离线缓存、后台任务。
-- 不做 iOS 版本。
+15. 全程不存在全屏转圈；同步时仅有顶部细进度条。
+16. 用户上滑浏览历史时不被打断；回到底部按钮生效。
+17. 长消息（20k+ 字符）滚动不掉帧，可折叠。
+18. 附件二次打开命中本地缓存。
+19. 清缓存后应用仍可用，重新拉取正常。
+
+**系统集成**
+
+20. 长任务切后台不被系统杀死，通知显示进度。
+21. 从其他 App 分享文本/图片到客户端能落地成会话内容。
+22. Android 15 上内容不被状态栏/导航栏遮挡；系统最大字号下布局不崩。
+
+**TWA（沿用 v1）**
+
+23. `scripts/build-twa.sh` 干净环境一次跑通；配好 Nginx 后安装无地址栏；故意改错指纹时降级为带地址栏。
+
+## 20. 明确不做（YAGNI）
+
+- 不做端侧 agent 沙箱（不跑 PRoot / 本地 Linux，不做 OpenMinis 的竞品形态）—— Octop 的能力在服务端。
+- 不做 iOS。
 - 不上架应用商店，不做 Play App Signing。
-- 不改 Octop 前端代码，不 fork 上游。
-- 不做单应用内多实例并行管理（换地址即切换）。
 - 不做账号体系、不做遥测。
+- **不改 Octop 前端代码，不 fork 上游**；只做客户端 + 文档（若 §17 第 4 条值得上游合入，可单独提 PR）。
+- 不做多实例并行管理（切换地址即切换，本地保留各实例的缓存目录）。
+- **不做离线对话 / 离线全文检索**（v1 曾整条禁止离线缓存，本版修正为：**做**元数据、历史与附件的本地缓存，**不做**离线推理）。
+- 不做附件双向同步（只单向缓存服务端产物；需要上传的走正常附件上传）。
 
-## 风险
+## 21. 风险
 
 | 风险 | 影响 | 应对 |
 |------|------|------|
-| Octop 前端（SPA）在原生 WebView 中存在不兼容的浏览器 API | 主交付不可用 | **首要验证项**：先做最小冒烟 —— 建壳加载现有实例，跑通登录 → 发消息 → 流式输出 → 附件上传，再投入其余功能 |
-| 使用者在反代后带子路径部署 | 地址校验与资源加载失败 | 配置页对"带路径"输入给出明确提示；文档说明需部署在域名根路径 |
-| TWA 指纹不匹配静默降级 | 用户以为成功实则带地址栏 | 构建脚本输出指纹与排查步骤；`docs/octop-setup.md` 给反向验证方法 |
-| Octop 上游更新导致前端行为变化 | 客户端功能回归 | 属外部依赖，README 注明支持范围；冒烟清单可复用 |
+| **API 契约来自逆向，与上游实现存在偏差** | 主交付不可用 | 视作首要风险：M0 只做核对与骨架，不核对完不进入 M1 |
+| 上游无版本号，内部结构可能重构 | 升级后客户端回归 | 能力探测 + 失败回落 WebView + `docs/protocol.md` 作为回归基准 |
+| 实例的 WS 被反代阻断（缺 `Upgrade` 透传） | 实时通道不可用 | 探测阶段识别 → 试 SSE → 再失败回落 WebView；`octop-setup.md` 给 Nginx 片段 |
+| 流式渲染性能（大 Markdown 高频重排） | 掉帧，手感反而变差 | 合帧 + 仅重解析流式块 + 长内容折叠；`perf` 变体量化 |
+| Room 迁移事故 | 用户本地会话被清空 | schema 提交 + 迁移测试；禁用破坏性迁移 |
+| 「原生为主」被理解为放弃通用性 | 使用者对兼容性预期错位 | README 明确写出能力探测与自动兜底的机制与边界 |
 
-## 待定
+## 22. 待定
 
-- 仓库名与 GitHub 组织/用户名（影响 README 徽章与 Release 链接）。
-- 应用显示名默认值：暂定「Octop」，可配置。
-- 默认图标：暂用占位图标 + 文档说明如何替换为自有实例的 PWA 图标。
+- 是否**继续发布 v1 的 WebView 壳 APK**（建议保留，作为「纯兜底版」对外）。
+- 是否把 nginx 压缩配置（§17 第 4 条）提 PR 给上游。
+- 应用显示名默认值（暂定「Octop」）、仓库名与 GitHub 归属。
+- 主题是否提供自定义配色（暂定仅跟随系统深/浅色）。
+- `docs/protocol.md` 是否对外公开（若上游视为内部细节，则只保留「已确认的 DTO + 降级判定点」）。

@@ -3,6 +3,9 @@ import java.util.Properties
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.android)
+    alias(libs.plugins.kotlin.compose)
+    alias(libs.plugins.kotlin.serialization)
+    alias(libs.plugins.ksp)
 }
 
 // 签名信息从 keystore.properties（不入 git）或环境变量读取。
@@ -31,10 +34,12 @@ val hasSigningConfig = listOf(
 
 android {
     namespace = "com.octopmobile.app"
-    compileSdk = 35
+    compileSdk = 36
 
     defaultConfig {
-        applicationId = "com.octopmobile.app"
+        // 原生版与 v1 的 WebView 壳（com.octopmobile.app）分开包名：
+        // 两者签名不同，混装必先卸载；分开可避免用户误装覆盖。
+        applicationId = "com.octopmobile.native"
         minSdk = 26
         targetSdk = 35
         versionCode = 1
@@ -67,6 +72,16 @@ android {
                 signingConfigs.getByName("debug")
             }
         }
+
+        // 测量真实帧耗时用：debug 变体是 debuggable 的，ART 会拒绝 AOT，
+        // 测出来的数据不能代表用户环境；perf 既保留 minify=false 又不 debuggable。
+        create("perf") {
+            initWith(getByName("debug"))
+            isDebuggable = false
+            isProfileable = true
+            signingConfig = signingConfigs.getByName("debug")
+            matchingFallbacks += listOf("debug")
+        }
     }
 
     compileOptions {
@@ -81,7 +96,27 @@ android {
     buildFeatures {
         viewBinding = true
         buildConfig = true
+        compose = true
     }
+
+    packaging {
+        resources {
+            excludes += "/META-INF/{AL2.0,LGPL2.1}"
+        }
+    }
+
+    lint {
+        // lifecycle 2.8.x 自带的 lint 检查基于新版 Kotlin 分析 API，与 AGP 8.7.3 内嵌的 lint
+        // 不兼容，会在 lintVitalRelease 阶段抛 IncompatibleClassChangeError 直接让 release
+        // 构建失败。这是工具链问题、不是代码问题，只关掉这一个检查，其余检查照旧。
+        disable += "NullSafeMutableLiveData"
+    }
+}
+
+// Room schema 导出目录提交进仓库，供迁移测试使用。
+// 禁止 fallbackToDestructiveMigration（见 docs/spec.md §8.4）。
+ksp {
+    arg("room.schemaLocation", "$projectDir/schemas")
 }
 
 dependencies {
@@ -90,10 +125,43 @@ dependencies {
     implementation(libs.material)
     implementation(libs.androidx.datastore.preferences)
     implementation(libs.androidx.browser)
+    implementation(libs.androidx.webkit)
     implementation(libs.androidx.activity.ktx)
+    implementation(libs.androidx.activity.compose)
     implementation(libs.androidx.lifecycle.runtime.ktx)
+    implementation(libs.androidx.lifecycle.runtime.compose)
+    implementation(libs.androidx.lifecycle.viewmodel.compose)
     implementation(libs.androidx.swiperefreshlayout)
     implementation(libs.kotlinx.coroutines.android)
+
+    // Compose
+    implementation(platform(libs.compose.bom))
+    implementation(libs.compose.ui)
+    implementation(libs.compose.ui.graphics)
+    implementation(libs.compose.ui.tooling.preview)
+    implementation(libs.compose.material3)
+    implementation(libs.compose.material.icons.extended)
+    implementation(libs.adaptive)
+    implementation(libs.adaptive.layout)
+    implementation(libs.navigation.compose)
+    debugImplementation(libs.compose.ui.tooling)
+    // perf 变体的配置名没有生成类型安全访问器（自定义 buildType），用字符串形式。
+    add("perfImplementation", libs.compose.ui.tooling)
+
+    // Room
+    implementation(libs.room.runtime)
+    implementation(libs.room.ktx)
+    ksp(libs.room.compiler)
+
+    // 网络与序列化
+    implementation(libs.okhttp)
+    implementation(libs.okhttp.sse)
+    implementation(libs.kotlinx.serialization.json)
+
+    // 图片与凭据
+    implementation(libs.coil.compose)
+    implementation(libs.coil.network.okhttp)
+    implementation(libs.androidx.security.crypto)
 
     testImplementation(libs.junit)
 }

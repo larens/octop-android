@@ -24,7 +24,7 @@
 
 ### 方式 A：通用壳
 
-1. 到 [Releases](../../releases) 下载最新 `octop-mobile.apk`。
+1. 到 [Releases](../../releases) 下载最新 `octop-native.apk`。
 2. 安装（首次需允许「安装未知来源应用」）。
 3. 打开后填入你的实例地址，例如 `https://octop.example.com`，点「连接」。
    - 会自动补 `https://`、去掉尾部 `/`
@@ -67,7 +67,7 @@ cd octop-android
 
 ## 自己构建
 
-前置：JDK 17、Android SDK（`platforms;android-35` + `build-tools;35.0.0`）。
+前置：JDK 17、Android SDK（`platforms;android-36` + `build-tools;36.0.0`）。
 
 ```bash
 ./gradlew :app:assembleDebug        # 产出 app/build/outputs/apk/debug/
@@ -89,7 +89,7 @@ CI 用 Secrets 注入签名：`KEYSTORE_BASE64`、`KEYSTORE_PASSWORD`、`KEY_ALI
 
 | 流水线 | 触发 | 产物 |
 |--------|------|------|
-| [webview-apk.yml](.github/workflows/webview-apk.yml) | push / PR / tag `v*` | APK artifact；打 tag 时创建 Release |
+| [native-apk.yml](.github/workflows/native-apk.yml) | push / PR / tag `v*` | APK artifact；打 tag 时创建 Release |
 | [twa-apk.yml](.github/workflows/twa-apk.yml) | 手动触发，填入域名等参数 | TWA APK + `assetlinks.json` |
 
 TWA 流水线需要 `TWA_KEYSTORE_BASE64` / `TWA_KEYSTORE_PASSWORD` / `TWA_KEY_ALIAS` / `TWA_KEY_PASSWORD` 四个 Secrets，未配置则自动跳过。
@@ -136,7 +136,7 @@ TWA 流水线需要 `TWA_KEYSTORE_BASE64` / `TWA_KEYSTORE_PASSWORD` / `TWA_KEY_A
 ## 目录结构
 
 ```
-app/                            # 主交付：WebView 通用壳
+app/                            # 主交付：原生客户端（Compose + Room），内含 WebView 兜底
 twa/                            # 副交付：TWA 配置化构建
   ├── twa.config.json
   └── scripts/build-twa.sh
@@ -146,6 +146,7 @@ scripts/
   └── write-twa-config.js       # CI 用：由环境变量渲染 TWA 配置
 docs/
   ├── spec.md                   # 设计文档
+  ├── protocol.md               # 客户端协议契约（M0 冻结）
   └── octop-setup.md            # 服务端配置
 .github/workflows/
 ```

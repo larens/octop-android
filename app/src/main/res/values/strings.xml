@@ -59,4 +59,52 @@
     <string name="err_storage_denied">Storage permission is required to save the file.</string>
     <string name="err_download_failed">Could not start the download.</string>
     <string name="main_downloading">Downloading…</string>
+
+    <!-- Login -->
+    <string name="login_title">Sign in</string>
+    <string name="login_username">Username</string>
+    <string name="login_password">Password</string>
+    <string name="login_submit">Sign in</string>
+    <string name="login_show_password">Show password</string>
+    <string name="login_hide_password">Hide password</string>
+
+    <!-- Auth errors (docs/protocol.md §2) -->
+    <string name="err_auth_failed">Incorrect username or password.</string>
+    <string name="err_login_locked">Too many failed attempts. Try again in %1$d seconds.</string>
+    <string name="err_setup_required">This instance has not finished its initial setup.</string>
+    <string name="err_session_expired">Your session has expired. Please sign in again.</string>
+
+    <!-- Native client (docs/spec.md) -->
+    <string name="threads_empty">No conversations yet.</string>
+    <string name="threads_pinned">Pinned</string>
+    <string name="err_webview_only">This instance is not fully compatible with the native client. Opening the web view.</string>
+
+    <!-- Chat (docs/spec.md §18 M1) -->
+    <string name="chat_turn_active">Generating…</string>
+    <string name="chat_history_loading">Preparing history…</string>
+    <string name="chat_no_messages">No messages yet.</string>
+    <string name="chat_load_older">Load earlier messages</string>
+    <string name="chat_reasoning">Thinking</string>
+    <string name="settings_web_fallback">Open web interface</string>
+    <string name="settings_web_fallback_summary">Fall back to the built-in browser view when a feature is missing from the native UI.</string>
+
+    <!-- Chat composer (docs/spec.md §18 M2) -->
+    <string name="threads_new">New conversation</string>
+    <string name="threads_creating">Creating…</string>
+    <string name="chat_input_hint">Assign a task…</string>
+    <string name="chat_send">Send</string>
+    <string name="chat_stop">Stop</string>
+    <string name="chat_attach">Attach a file</string>
+    <string name="chat_uploading">Uploading…</string>
+    <string name="chat_attach_failed">Could not read that file.</string>
+    <string name="chat_queued">Offline. Will send when reconnected.</string>
+    <string name="chat_tool_args">Arguments</string>
+    <string name="chat_tool_result">Result</string>
+    <string name="chat_tool_failed">Tool failed</string>
+    <string name="chat_hitl_title">Confirmation required</string>
+    <string name="chat_hitl_question_title">The agent is asking</string>
+    <string name="chat_hitl_approve">Approve</string>
+    <string name="chat_hitl_reject">Reject</string>
+    <string name="chat_hitl_reply">Send answer</string>
+    <string name="chat_hitl_reason_hint">Reason / answer (required)</string>
 </resources>

@@ -24,7 +24,7 @@ This repo solves the second one; the first is documented in [docs/octop-setup.md
 
 ### Option A: universal shell
 
-1. Grab the latest `octop-mobile.apk` from [Releases](../../releases).
+1. Grab the latest `octop-native.apk` from [Releases](../../releases).
 2. Install it (you may need to allow installing from unknown sources).
 3. Enter your instance address, e.g. `https://octop.example.com`, and tap **Connect**.
    - `https://` is added automatically and a trailing `/` is stripped
@@ -65,7 +65,7 @@ Full configuration, including copy-pasteable Nginx snippets and SQL, is in **[do
 
 ## Building it yourself
 
-Requires JDK 17 and Android SDK (`platforms;android-35` + `build-tools;35.0.0`).
+Requires JDK 17 and Android SDK (`platforms;android-36` + `build-tools;36.0.0`).
 
 ```bash
 ./gradlew :app:assembleDebug        # app/build/outputs/apk/debug/

@@ -1,4 +1,4 @@
-name: Build WebView APK
+name: Build Native APK
 
 on:
   push:
@@ -35,7 +35,8 @@ jobs:
           echo "SDKMANAGER=$SDKMANAGER"
           if [ -n "$SDKMANAGER" ]; then
             yes | "$SDKMANAGER" --licenses > /dev/null 2>&1 || true
-            "$SDKMANAGER" "platform-tools" "platforms;android-35" "build-tools;35.0.0" || true
+            # compileSdk 是 36，runner 预装的 SDK 通常只到 35，缺哪个补哪个
+            "$SDKMANAGER" "platform-tools" "platforms;android-36" "build-tools;36.0.0" || true
           else
             echo "未找到 sdkmanager，依赖 runner 预装的 SDK"
           fi
@@ -63,18 +64,18 @@ jobs:
       - name: Rename artifact
         run: |
           mkdir -p out
-          find app/build/outputs/apk -name "*.apk" -exec cp {} out/octop-mobile.apk \;
+          find app/build/outputs/apk -name "*.apk" -exec cp {} out/octop-native.apk \;
           ls -lh out
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: octop-mobile-apk
-          path: out/octop-mobile.apk
+          name: octop-native-apk
+          path: out/octop-native.apk
 
       - name: Create Release
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
-          files: out/octop-mobile.apk
+          files: out/octop-native.apk
           generate_release_notes: true
