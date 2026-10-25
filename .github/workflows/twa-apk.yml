@@ -1,0 +1,121 @@
+name: Build TWA APK
+
+# TWA 的 host 在构建时固化，所以这里通过手动触发并传入你的域名等参数。
+on:
+  workflow_dispatch:
+    inputs:
+      host:
+        description: "Octop 实例域名（不含协议），例如 octop.example.com"
+        required: true
+      application_id:
+        description: "Android 包名，例如 com.example.octop"
+        required: true
+        default: "com.example.octop"
+      app_name:
+        description: "应用显示名"
+        required: true
+        default: "Octop"
+      version_name:
+        description: "版本名"
+        required: true
+        default: "1.0.0"
+
+permissions:
+  contents: write
+
+jobs:
+  build-twa:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check signing secrets
+        id: check
+        env:
+          KEYSTORE_BASE64: ${{ secrets.TWA_KEYSTORE_BASE64 }}
+        run: |
+          if [ -z "$KEYSTORE_BASE64" ]; then
+            echo "未配置 TWA_KEYSTORE_BASE64，跳过 TWA 构建。请先运行 scripts/gen-keystore.sh 并配置 Secrets。"
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/checkout@v4
+        if: steps.check.outputs.ready == 'true'
+
+      - name: Set up JDK 17
+        if: steps.check.outputs.ready == 'true'
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Android SDK
+        if: steps.check.outputs.ready == 'true'
+        uses: android-actions/setup-android@v3
+
+      - name: Set up Node.js
+        if: steps.check.outputs.ready == 'true'
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install bubblewrap
+        if: steps.check.outputs.ready == 'true'
+        run: npm install -g @bubblewrap/cli
+
+      - name: Prepare keystore
+        if: steps.check.outputs.ready == 'true'
+        env:
+          KEYSTORE_PASSWORD: ${{ secrets.TWA_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.TWA_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.TWA_KEY_PASSWORD }}
+          KEYSTORE_BASE64: ${{ secrets.TWA_KEYSTORE_BASE64 }}
+        run: |
+          mkdir -p keystore
+          printf '%s' "$KEYSTORE_BASE64" | base64 -d > keystore/octop-release.jks
+          {
+            echo "KEYSTORE_FILE=keystore/octop-release.jks"
+            echo "KEYSTORE_PASSWORD=$KEYSTORE_PASSWORD"
+            echo "KEY_ALIAS=$KEY_ALIAS"
+            echo "KEY_PASSWORD=$KEY_PASSWORD"
+          } > keystore.properties
+
+      - name: Write TWA config
+        if: steps.check.outputs.ready == 'true'
+        env:
+          TWA_HOST: ${{ inputs.host }}
+          TWA_APP_ID: ${{ inputs.application_id }}
+          TWA_APP_NAME: ${{ inputs.app_name }}
+          TWA_VERSION_NAME: ${{ inputs.version_name }}
+          TWA_VERSION_CODE: ${{ github.run_number }}
+        run: node scripts/write-twa-config.js
+
+      - name: Build TWA APK
+        if: steps.check.outputs.ready == 'true'
+        run: |
+          chmod +x twa/scripts/build-twa.sh scripts/*.sh
+          ./twa/scripts/build-twa.sh
+
+      - name: Upload artifacts
+        if: steps.check.outputs.ready == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: octop-twa
+          path: |
+            twa/build/app-release-signed.apk
+            build-assetlinks/assetlinks.json
+
+      - name: Create Release
+        if: steps.check.outputs.ready == 'true'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: twa-${{ inputs.host }}-v${{ inputs.version_name }}
+          name: "TWA ${{ inputs.app_name }} (${{ inputs.host }}) v${{ inputs.version_name }}"
+          files: |
+            twa/build/app-release-signed.apk
+            build-assetlinks/assetlinks.json
+          body: |
+            专为 `${{ inputs.host }}` 构建的 TWA 包（包名 `${{ inputs.application_id }}`）。
+
+            安装后若无地址栏，说明 assetlinks 校验通过；若带地址栏，请按
+            `docs/octop-setup.md` 第 4 节排查 `/.well-known/assetlinks.json`。

@@ -1,0 +1,16 @@
+{
+  "host": "octop.example.com",
+  "startUrl": "/",
+  "applicationId": "com.example.octop",
+  "appName": "Octop",
+  "launcherName": "Octop",
+  "versionCode": 1,
+  "versionName": "1.0.0",
+  "themeColor": "#ffffff",
+  "backgroundColor": "#0f1117",
+  "iconUrl": "https://octop.example.com/pwa-512.png",
+  "maskableIconUrl": "",
+  "minSdkVersion": 26,
+  "orientation": "default",
+  "enableNotifications": false
+}
