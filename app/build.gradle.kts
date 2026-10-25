@@ -163,5 +163,8 @@ dependencies {
     implementation(libs.coil.network.okhttp)
     implementation(libs.androidx.security.crypto)
 
+    // Markdown 正文渲染
+    implementation(libs.markdown.renderer.m3)
+
     testImplementation(libs.junit)
 }

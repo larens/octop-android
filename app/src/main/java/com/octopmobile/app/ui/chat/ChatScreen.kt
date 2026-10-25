@@ -84,6 +84,8 @@ import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.SideEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -104,7 +106,10 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.font.FontStyle
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.dp
@@ -116,6 +121,12 @@ import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import coil3.compose.AsyncImage
+import com.mikepenz.markdown.m3.Markdown
+import com.mikepenz.markdown.m3.markdownColor
+import com.mikepenz.markdown.m3.markdownTypography
+import com.mikepenz.markdown.model.MarkdownTypography
+import com.mikepenz.markdown.model.State
+import com.mikepenz.markdown.model.rememberMarkdownState
 import com.octopmobile.app.OctopApp
 import com.octopmobile.app.R
 import com.octopmobile.app.data.attachments.AttachmentRefs
@@ -1272,10 +1283,10 @@ private fun MessageBubble(
 /**
  * 消息正文，带 spec §12 的两条「长内容保护」：
  *
- * 1. 超过 [LONG_TEXT_CHARS] 的正文**默认折叠** —— 一条两万字正文的全量文本布局正是滚动掉帧的
- *    主因（§19 第 17 条），折叠后只布局 [COLLAPSED_TEXT_CHARS] 字。
- * 2. 含超长单行的正文**不折行、改横向滚动** —— 纯文本渲染下没有代码块/表格的语法信息，
- *    按行宽近似判断（见 [hasVeryLongLine]），横向滚动是这类内容唯一读得懂的形态。
+ * 1. 超过 [LONG_TEXT_CHARS] 的正文**默认折叠** —— 一条两万字正文的全量布局正是滚动掉帧的
+ *    主因（§19 第 17 条），折叠后只渲染 [COLLAPSED_TEXT_CHARS] 字。
+ * 2. 超长行交给 Markdown 渲染器：代码块自带横向滚动（`MarkdownCode` 内部就是
+ *    `horizontalScroll`），表格自己处理溢出 —— 不再需要按行宽做近似判断。
  *
  * **流式中的那条不折叠**：用户此刻盯着看的就是它；而且合帧后长度每 50ms 都在变，
  * 折叠态会在「够长 / 不够长」之间来回跳。
@@ -1287,18 +1298,7 @@ private fun MessageText(text: String, caret: Boolean, streaming: Boolean) {
     val shown = if (collapsible && !expanded) text.take(COLLAPSED_TEXT_CHARS) else text
     val body = shown + if (caret) CARET else ""
 
-    if (hasVeryLongLine(body)) {
-        // 不折行时由 Box 承担横向滚动；气泡宽度仍由外层的 `widthIn` 约束。
-        Box(modifier = Modifier.horizontalScroll(rememberScrollState())) {
-            Text(
-                text = body,
-                style = MaterialTheme.typography.bodyMedium,
-                softWrap = false,
-            )
-        }
-    } else {
-        Text(text = body, style = MaterialTheme.typography.bodyMedium)
-    }
+    MarkdownText(markdown = body, contentColor = LocalContentColor.current)
 
     if (collapsible) {
         Text(
@@ -1317,21 +1317,75 @@ private fun MessageText(text: String, caret: Boolean, streaming: Boolean) {
 }
 
 /**
- * 有没有「长到不该折行」的一行。
+ * 正文的 Markdown 渲染（spec §7 选型 `multiplatform-markdown-renderer-m3`）。
  *
- * 纯文本渲染拿不到代码块/表格的语法信息，只能按行宽近似：一行超过 [LONG_LINE_CHARS] 字符，
- * 自动折行后基本读不成样子（代码、表格、长 URL 都属于这类）。
+ * 解析交给 [rememberMarkdownState]：它按内容 `remember` 并在 `Dispatchers.Default` 上异步解析 ——
+ * 历史块的内容不变就命中缓存，只有最后那条还在流式的消息会重新解析（spec §12）。
+ *
+ * 异步解析有个副作用：内容一变，新 state 会先回到 `Loading`。若把 Loading 渲染成空白，
+ * 流式期间每 50ms 一次的内容更新都会让气泡塌一下（代码块、表格尤其明显）。所以这里记住
+ * 最近一次解析成功的节点，解析没回来时继续渲染它；一次都还没解析出来（首帧）就退回纯文本，
+ * 保证任何一帧气泡里都有内容。
+ *
+ * `modifier` 显式传 `Modifier`：渲染器默认是 `fillMaxSize()`，那会让每条消息的气泡都被撑到宽度上限。
  */
-private fun hasVeryLongLine(text: String): Boolean {
-    var start = 0
-    while (start < text.length) {
-        val newline = text.indexOf('\n', start)
-        val end = if (newline < 0) text.length else newline
-        if (end - start > LONG_LINE_CHARS) return true
-        if (newline < 0) return false
-        start = newline + 1
+@Composable
+private fun MarkdownText(markdown: String, contentColor: Color) {
+    val markdownState = rememberMarkdownState(markdown)
+    val parsed by markdownState.state.collectAsState()
+
+    var lastParsed by remember { mutableStateOf<State.Success?>(null) }
+    val success = parsed as? State.Success
+    SideEffect { if (success != null) lastParsed = success }
+
+    val rendered = success ?: lastParsed
+    if (rendered == null) {
+        Text(text = markdown, style = MaterialTheme.typography.bodyMedium, color = contentColor)
+        return
     }
-    return false
+
+    Markdown(
+        state = rendered,
+        colors = markdownColor(
+            text = contentColor,
+            // 气泡底色是 `primaryContainer` / `surfaceVariant`，渲染器默认的 `onBackground`
+            // 系列在这里对比度不够，一律从气泡的内容色派生。
+            codeBackground = contentColor.copy(alpha = 0.10f),
+            inlineCodeBackground = contentColor.copy(alpha = 0.10f),
+            dividerColor = contentColor.copy(alpha = 0.24f),
+            tableBackground = contentColor.copy(alpha = 0.05f),
+        ),
+        typography = chatMarkdownTypography(),
+        modifier = Modifier,
+    )
+}
+
+/**
+ * 聊天气泡里的 Markdown 排版：正文尺寸对齐气泡原本的 `bodyMedium`，各级标题收敛到
+ * `title*` 档 —— 渲染器默认把 h1/h2 映射到 `displayLarge`/`displayMedium`，在气泡里会大得离谱。
+ */
+@Composable
+private fun chatMarkdownTypography(): MarkdownTypography {
+    val body = MaterialTheme.typography.bodyMedium
+    val mono = body.copy(fontFamily = FontFamily.Monospace)
+    return markdownTypography(
+        h1 = MaterialTheme.typography.titleLarge,
+        h2 = MaterialTheme.typography.titleMedium,
+        h3 = MaterialTheme.typography.titleSmall,
+        h4 = MaterialTheme.typography.titleSmall,
+        h5 = MaterialTheme.typography.labelLarge,
+        h6 = MaterialTheme.typography.labelLarge,
+        text = body,
+        paragraph = body,
+        ordered = body,
+        bullet = body,
+        list = body,
+        table = body,
+        quote = body.copy(fontStyle = FontStyle.Italic),
+        code = mono,
+        inlineCode = mono,
+        link = body.copy(fontWeight = FontWeight.Bold, textDecoration = TextDecoration.Underline),
+    )
 }
 
 /** 思考过程默认只露三行，点一下展开（spec §11「`reasoning` 默认折叠」）。 */
@@ -1563,9 +1617,6 @@ private const val LONG_TEXT_CHARS = 20_000
 
 /** 折叠时先露出的字符数：够看清开头，又不至于让文本布局拖慢滚动。 */
 private const val COLLAPSED_TEXT_CHARS = 2_000
-
-/** 单行超过这个字符数就不折行、改横向滚动（`hasVeryLongLine` 的判据）。 */
-private const val LONG_LINE_CHARS = 200
 
 /** 气泡宽度上限（spec §12「大字体」：这个上限随系统字号放宽，见 `MessageBubble`）。 */
 private val BUBBLE_MAX_WIDTH = 340.dp
