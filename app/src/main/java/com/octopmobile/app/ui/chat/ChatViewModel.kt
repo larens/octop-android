@@ -20,6 +20,7 @@ import com.octopmobile.app.data.model.HitlPending
 import com.octopmobile.app.data.model.UploadedAttachment
 import com.octopmobile.app.data.remote.ApiError
 import com.octopmobile.app.data.remote.ApiResult
+import com.octopmobile.app.data.remote.dto.AgentDto
 import com.octopmobile.app.data.remote.dto.HitlDecision
 import com.octopmobile.app.data.repo.ChatRepository
 import com.octopmobile.app.data.ws.ChatSocket
@@ -97,6 +98,18 @@ class ChatViewModel(
     val attachments: StateFlow<List<UploadedAttachment>> = _attachments.asStateFlow()
 
     /**
+     * 可以 `@` 的专家：`GET /api/agents`（`scope=mine` = 自己的 + 别人共享的），
+     * 去掉当前会话这个 agent 自己 —— `target_agent_ids` 是「把**别的**专家拉进本轮」，
+     * `@` 自己没有意义（spec §23.5）。
+     */
+    private val _mentionable = MutableStateFlow<List<AgentDto>>(emptyList())
+    val mentionable: StateFlow<List<AgentDto>> = _mentionable.asStateFlow()
+
+    /** 已选中、等随下一条消息一起发出的专家（对应帧里的 `target_agent_ids`）。 */
+    private val _mentions = MutableStateFlow<List<AgentDto>>(emptyList())
+    val mentions: StateFlow<List<AgentDto>> = _mentions.asStateFlow()
+
+    /**
      * 本地附件缓存索引，按 [com.octopmobile.app.data.attachments.AttachmentRefs.idOf] 的 id 索引。
      *
      * 气泡里的附件先在这里查本地文件，命中就直接内联渲染（spec §19 第 18 条），
@@ -140,6 +153,10 @@ class ChatViewModel(
                 }
             }
             launch { repo.observeCompactMarkers().collect { _compactMarkers.value = it } }
+
+            // `@专家` 候选：一次只读请求，失败就当作「没有别的专家」—— 不打扰用户，
+            // 输入栏也只是不出现那个入口（spec §23.5）。
+            launch { loadMentionable(baseUrl) }
 
             // 永不返回：连接 + 订阅 + 持续消费事件
             launch { repo.run() }
@@ -197,18 +214,30 @@ class ChatViewModel(
 
     /**
      * 发送一轮输入。附件在发送时随帧一起走，所以这里先清空待发列表 ——
-     * 即使 socket 离线被排进 `pending_ops`，帧里也已经带着它们了。
+     * 即使 socket 离线被排进 `pending_ops`，帧里也已经带着它们了。`@专家` 同理。
      */
     fun send(text: String) {
         val repo = repository ?: return
         val files = _attachments.value
         if (text.isBlank() && files.isEmpty()) return
 
+        val targets = _mentions.value.map { it.agentId }
         _attachments.value = emptyList()
+        _mentions.value = emptyList()
         _notice.value = null
         viewModelScope.launch {
-            if (!repo.sendTurn(text, files)) _notice.value = ChatNotice.Queued
+            if (!repo.sendTurn(text, files, targets)) _notice.value = ChatNotice.Queued
         }
+    }
+
+    /** 选中一个专家（重复选中不叠加）。 */
+    fun addMention(agent: AgentDto) {
+        if (_mentions.value.any { it.agentId == agent.agentId }) return
+        _mentions.value = _mentions.value + agent
+    }
+
+    fun removeMention(agent: AgentDto) {
+        _mentions.value = _mentions.value - agent
     }
 
     fun cancel() {
@@ -297,6 +326,13 @@ class ChatViewModel(
 
     fun clearNotice() {
         _notice.value = null
+    }
+
+    /** `@专家` 候选只拉一次。失败静默：这不是主链路，拉不到就只是没有这个入口。 */
+    private suspend fun loadMentionable(baseUrl: String) {
+        val result = container.instanceRepository(baseUrl).agents()
+        if (result !is ApiResult.Ok) return
+        _mentionable.value = result.value.filter { it.agentId != agentId }
     }
 
     private suspend fun loadFirstPage() {

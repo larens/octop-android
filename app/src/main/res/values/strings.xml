@@ -54,6 +54,7 @@
     <string name="action_open_in_browser">Open in browser</string>
     <string name="action_cancel">Cancel</string>
     <string name="action_ok">OK</string>
+    <string name="action_done">Done</string>
 
     <!-- Main states -->
     <string name="err_not_configured_title">Not configured</string>
@@ -123,6 +124,9 @@
     <string name="chat_upload_image">Upload image</string>
     <string name="chat_take_photo">Take a photo</string>
     <string name="chat_record_voice_note">Record voice note</string>
+    <string name="chat_mention">@ Expert</string>
+    <string name="chat_mention_title">Mention an expert</string>
+    <string name="chat_mention_remove">Remove mention</string>
     <string name="chat_voice_input">Voice input</string>
     <string name="chat_voice_listening">Listening…</string>
     <string name="chat_uploading">Uploading…</string>

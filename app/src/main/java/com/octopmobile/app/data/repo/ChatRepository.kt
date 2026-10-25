@@ -179,17 +179,21 @@ class ChatRepository(
      * 上游正常回合**不回显**用户消息 —— `ws_channel.py:413-425` 是全仓唯一发 `user` 帧的地方，
      * 只在 steer 合并时触发。所以本地必须先落一条用户行，否则界面上这轮输入会「断头」。
      *
+     * [targetAgentIds] 是 `@专家`（spec §23.5）要拉进本轮的其它 agent，只有 `user_turn`
+     * 帧能带（上游没有按回合切换角色的机制，见 [ClientFrame.UserTurn]）。
+     *
      * 返回 false 表示 socket 还没连上，帧已进 `pending_ops`，连上后由 [replayPending] 补发。
      */
     suspend fun sendTurn(
         text: String,
         attachments: List<UploadedAttachment> = emptyList(),
+        targetAgentIds: List<String> = emptyList(),
     ): Boolean {
         val trimmed = text.trim()
         if (trimmed.isEmpty() && attachments.isEmpty()) return true
 
         appendLocalUser(trimmed, attachments)
-        return deliver(buildUserTurn(trimmed, attachments))
+        return deliver(buildUserTurn(trimmed, attachments, targetAgentIds))
     }
 
     /**
@@ -275,12 +279,15 @@ class ChatRepository(
     private fun buildUserTurn(
         text: String,
         attachments: List<UploadedAttachment>,
+        targetAgentIds: List<String>,
     ): ClientFrame.UserTurn {
         val pendingId = CLIENT_PENDING_PREFIX + UUID.randomUUID().toString().take(8)
+        val targets = targetAgentIds.takeIf { it.isNotEmpty() }
         if (attachments.isEmpty()) {
             return ClientFrame.UserTurn(
                 text = text,
                 threadId = threadId,
+                targetAgentIds = targets,
                 delivery = DELIVERY_AUTO,
                 clientPendingId = pendingId,
             )
@@ -294,6 +301,7 @@ class ChatRepository(
         return ClientFrame.UserTurn(
             messages = listOf(UserMessage(content = blocks)),
             threadId = threadId,
+            targetAgentIds = targets,
             delivery = DELIVERY_AUTO,
             clientPendingId = pendingId,
         )

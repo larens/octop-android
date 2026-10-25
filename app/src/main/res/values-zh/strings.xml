@@ -54,6 +54,7 @@
     <string name="action_open_in_browser">在浏览器中打开</string>
     <string name="action_cancel">取消</string>
     <string name="action_ok">确定</string>
+    <string name="action_done">完成</string>
 
     <!-- Main states -->
     <string name="err_not_configured_title">尚未配置</string>
@@ -123,6 +124,9 @@
     <string name="chat_upload_image">上传图片</string>
     <string name="chat_take_photo">拍照</string>
     <string name="chat_record_voice_note">录制语音笔记</string>
+    <string name="chat_mention">@ 专家</string>
+    <string name="chat_mention_title">选择要 @ 的专家</string>
+    <string name="chat_mention_remove">移除 @ 专家</string>
     <string name="chat_voice_input">语音输入</string>
     <string name="chat_voice_listening">正在听…</string>
     <string name="chat_uploading">正在上传…</string>

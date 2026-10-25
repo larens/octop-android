@@ -54,6 +54,12 @@ sealed interface ClientFrame {
      * [messages] 只在**带附件**时使用：上游用 content block 里的 `workspace_path` /
      * `filename` / `media_type` 识别附件（protocol.md §6）。纯文本时只发 [text] ——
      * 上游 `from_ws_payload` 会把非空 `text` 包成一条 user 消息（`chat/models.py:86-92`）。
+     *
+     * [targetAgentIds] 是 `@专家`（spec §23.5）唯一的服务端抓手：上游字段说明为
+     * “Optional agent ids to involve via @mention (same user only)”
+     * （`api/routers/chat/models.py:64-67`），服务端把它原样透传给本轮（`chat/turn.py:289`）。
+     * 上游**没有**按回合切换角色 / 系统提示词的机制（`system_prompt` 是 agent 级配置），
+     * 所以「切换专家」在协议层就等于「把另一个专家拉进这一轮」。
      */
     @Serializable
     @SerialName("user_turn")
@@ -63,6 +69,7 @@ sealed interface ClientFrame {
         @SerialName("session_key") val sessionKey: String? = null,
         val messages: List<UserMessage>? = null,
         val model: String? = null,
+        @SerialName("target_agent_ids") val targetAgentIds: List<String>? = null,
         @SerialName("default_model") val defaultModel: String? = null,
         @SerialName("reasoning_mode") val reasoningMode: String? = null,
         @SerialName("reasoning_effort") val reasoningEffort: String? = null,

@@ -52,7 +52,9 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.ArrowDownward
 import androidx.compose.material.icons.filled.AttachFile
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.AlternateEmail
 import androidx.compose.material.icons.filled.Build
+import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Description
 import androidx.compose.material.icons.filled.ExpandLess
@@ -62,6 +64,7 @@ import androidx.compose.material.icons.filled.KeyboardVoice
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.PhotoCamera
 import androidx.compose.material.icons.filled.Stop
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
@@ -139,6 +142,7 @@ import com.octopmobile.app.data.model.Part
 import com.octopmobile.app.data.model.PartType
 import com.octopmobile.app.data.model.PartsCodec
 import com.octopmobile.app.data.model.UploadedAttachment
+import com.octopmobile.app.data.remote.dto.AgentDto
 import com.octopmobile.app.data.remote.dto.HitlDecision
 import com.octopmobile.app.data.ws.ChatSocket
 import com.octopmobile.app.service.TurnService
@@ -183,6 +187,8 @@ fun ChatScreen(
     val notice by viewModel.notice.collectAsStateWithLifecycle()
     val cachedAttachments by viewModel.cachedAttachments.collectAsStateWithLifecycle()
     val compactMarkers by viewModel.compactMarkers.collectAsStateWithLifecycle()
+    val mentionable by viewModel.mentionable.collectAsStateWithLifecycle()
+    val mentions by viewModel.mentions.collectAsStateWithLifecycle()
     // 系统入口（快捷方式 / 分享）带进来的动作，见下面的 LaunchedEffect（spec §14）。
     val chatStart by PendingChatStart.pending.collectAsStateWithLifecycle()
 
@@ -365,6 +371,9 @@ fun ChatScreen(
     val listState = rememberLazyListState()
     val scope = rememberCoroutineScope()
 
+    // `@专家` 选择弹窗（spec §23.5）。候选为空时输入栏不会出现这个入口。
+    var mentionPicker by remember { mutableStateOf(false) }
+
     // 回到前台立刻重连一次（spec §10）：退避等待对「刚恢复网络」这种情况没有意义，
     // 而用户从后台切回来正是最可能刚刚恢复网络的时候。
     val lifecycleOwner = LocalLifecycleOwner.current
@@ -471,6 +480,10 @@ fun ChatScreen(
                 pending = pending,
                 attachments = attachments,
                 busy = busy,
+                mentions = mentions,
+                onRemoveMention = viewModel::removeMention,
+                onOpenMentionPicker = { mentionPicker = true },
+                canMention = mentionable.isNotEmpty(),
                 onSend = viewModel::send,
                 onCancel = viewModel::cancel,
                 onUploadFile = { filePicker.launch(arrayOf("*/*")) },
@@ -598,6 +611,15 @@ fun ChatScreen(
             }
         }
     }
+
+    if (mentionPicker) {
+        MentionPickerDialog(
+            agents = mentionable,
+            selected = mentions,
+            onPick = viewModel::addMention,
+            onDismiss = { mentionPicker = false },
+        )
+    }
 }
 
 // ------------------------------------------------------------------ 输入区
@@ -616,6 +638,10 @@ private fun ChatBottomBar(
     pending: HitlPending?,
     attachments: List<UploadedAttachment>,
     busy: Boolean,
+    mentions: List<AgentDto>,
+    onRemoveMention: (AgentDto) -> Unit,
+    onOpenMentionPicker: () -> Unit,
+    canMention: Boolean,
     onSend: (String) -> Unit,
     onCancel: () -> Unit,
     onUploadFile: () -> Unit,
@@ -643,6 +669,11 @@ private fun ChatBottomBar(
                 Spacer(Modifier.height(6.dp))
             }
 
+            if (mentions.isNotEmpty()) {
+                MentionRow(mentions = mentions, onRemove = onRemoveMention)
+                Spacer(Modifier.height(6.dp))
+            }
+
             if (busy || attachments.isNotEmpty()) {
                 AttachmentRow(
                     attachments = attachments,
@@ -655,6 +686,7 @@ private fun ChatBottomBar(
             InputRow(
                 blocked = blocked,
                 canSend = attachments.isNotEmpty(),
+                canMention = canMention,
                 onSend = onSend,
                 onCancel = onCancel,
                 onUploadFile = onUploadFile,
@@ -662,6 +694,7 @@ private fun ChatBottomBar(
                 onTakePhoto = onTakePhoto,
                 onRecordVoiceNote = onRecordVoiceNote,
                 onVoiceInput = onVoiceInput,
+                onOpenMentionPicker = onOpenMentionPicker,
                 input = input,
                 onInputChange = onInputChange,
                 listening = listening,
@@ -675,6 +708,7 @@ private fun ChatBottomBar(
 private fun InputRow(
     blocked: Boolean,
     canSend: Boolean,
+    canMention: Boolean,
     onSend: (String) -> Unit,
     onCancel: () -> Unit,
     onUploadFile: () -> Unit,
@@ -682,6 +716,7 @@ private fun InputRow(
     onTakePhoto: () -> Unit,
     onRecordVoiceNote: () -> Unit,
     onVoiceInput: () -> Unit,
+    onOpenMentionPicker: () -> Unit,
     input: String,
     onInputChange: (String) -> Unit,
     listening: Boolean,
@@ -764,6 +799,22 @@ private fun InputRow(
                         onRecordVoiceNote()
                     },
                 )
+                // `@专家`（spec §23.5）：候选为空时不出现 —— 单 agent 实例上这个入口没有意义。
+                if (canMention) {
+                    DropdownMenuItem(
+                        text = { Text(stringResource(R.string.chat_mention)) },
+                        leadingIcon = {
+                            Icon(
+                                imageVector = Icons.Filled.AlternateEmail,
+                                contentDescription = null,
+                            )
+                        },
+                        onClick = {
+                            menuExpanded = false
+                            onOpenMentionPicker()
+                        },
+                    )
+                }
             }
         }
 
@@ -880,6 +931,121 @@ private fun AttachmentChip(filename: String, onRemove: (() -> Unit)?) {
         }
     }
 }
+
+/**
+ * 已选中的 `@专家`（spec §23.5）。
+ *
+ * 与附件同样做成「待发 chip」而不是往正文里插 `@名字` 文本：上游收的是 `target_agent_ids`
+ * 这个独立字段（`UserTurn.targetAgentIds`），正文里写不写 `@` 都不影响它。
+ */
+@Composable
+private fun MentionRow(mentions: List<AgentDto>, onRemove: (AgentDto) -> Unit) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .horizontalScroll(rememberScrollState()),
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        mentions.forEach { agent ->
+            MentionChip(name = agent.displayName(), onRemove = { onRemove(agent) })
+        }
+    }
+}
+
+@Composable
+private fun MentionChip(name: String, onRemove: () -> Unit) {
+    Surface(
+        color = MaterialTheme.colorScheme.primaryContainer,
+        shape = RoundedCornerShape(8.dp),
+    ) {
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            modifier = Modifier.padding(start = 8.dp, top = 3.dp, bottom = 3.dp),
+        ) {
+            Icon(
+                imageVector = Icons.Filled.AlternateEmail,
+                contentDescription = null,
+                modifier = Modifier.size(12.dp),
+            )
+            Spacer(Modifier.width(2.dp))
+            Text(
+                text = name,
+                style = MaterialTheme.typography.labelSmall,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.widthIn(max = 160.dp),
+            )
+            IconButton(onClick = onRemove, modifier = Modifier.size(24.dp)) {
+                Icon(
+                    imageVector = Icons.Filled.Close,
+                    contentDescription = stringResource(R.string.chat_mention_remove),
+                    modifier = Modifier.size(14.dp),
+                )
+            }
+        }
+    }
+}
+
+/** `@专家` 选择器：列出同用户名下**除当前会话这个之外**的 agent（spec §23.5）。 */
+@Composable
+private fun MentionPickerDialog(
+    agents: List<AgentDto>,
+    selected: List<AgentDto>,
+    onPick: (AgentDto) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(stringResource(R.string.chat_mention_title)) },
+        text = {
+            LazyColumn(modifier = Modifier.heightIn(max = 320.dp)) {
+                items(agents, key = { it.agentId }) { agent ->
+                    val picked = selected.any { it.agentId == agent.agentId }
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable(!picked) { onPick(agent) }
+                            .padding(vertical = 10.dp, horizontal = 4.dp),
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = agent.displayName(),
+                                style = MaterialTheme.typography.bodyMedium,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                            val subtitle = agent.description?.takeIf { it.isNotBlank() }
+                            if (subtitle != null) {
+                                Text(
+                                    text = subtitle,
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    maxLines = 2,
+                                    overflow = TextOverflow.Ellipsis,
+                                )
+                            }
+                        }
+                        if (picked) {
+                            Icon(
+                                imageVector = Icons.Filled.Check,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.primary,
+                            )
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = onDismiss) { Text(stringResource(R.string.action_done)) }
+        },
+    )
+}
+
+/** 专家名缺失时退回 `agent_id` —— 气泡与 chip 上总得有东西可显示。 */
+private fun AgentDto.displayName(): String = name?.takeIf { it.isNotBlank() } ?: agentId
 
 /**
  * 消息里的附件（spec §13）。
