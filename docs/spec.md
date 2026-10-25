@@ -1,6 +1,6 @@
-# Octop 安卓客户端（原生版）
+# Octop 安卓客户端（Today 化原生版）
 
-> 本文件是 v2，**取代** v1 的「WebView 通用壳为主交付」方案。v1 的 WebView 代码不删除，降级为**兜底通道**保留在同一 APK 内。
+> 本文件是 v3，在 v2「原生客户端 + WebView 兜底」的基础上继续演进为**Today 化的个人 Agent 工作台**。v1 的 WebView 代码不删除，继续保留为**兜底通道**。
 
 ## 0. 本版相对 v1 的变化
 
@@ -28,6 +28,7 @@
 4. **一个 APK 适配任意实例**：首次启动填地址即可；实例 API 面不兼容时自动回落 WebView，不白屏。
 5. 使用者**不需要** JDK / Android SDK —— 通过 GitHub Release 下载。
 6. 仓库**不含密钥与个人信息**。
+7. 在已有「可聊天、可执行、可上传」的基础上，继续做成**围绕人和项目状态运转**的产品：会话可打标签、记忆可整理、任务可定时、Today 页可主动给出下一步。
 
 ## 3. 背景：为什么必须转原生（定量结论）
 
@@ -82,7 +83,7 @@ octop-android/
 │       │   ├── settings/
 │       │   └── web/                         # WebView 兜底 Activity（复用现有 web/ 包）
 │       ├── service/                         # 前台服务 + 通知进度
-│       └── share/                           # ShareReceiverActivity
+│       └── ui/Handoff.kt                    # 快捷方式 / 分享的一次性交接槽（不再单开 share/ 包）
 ├── twa/                                     # 副交付（同 v1）
 ├── scripts/                                 # gen-keystore.sh / gen-assetlinks.sh / write-twa-config.js
 ├── docs/{spec.md, octop-setup.md, protocol.md}
@@ -125,6 +126,9 @@ octop-android/
 |----|---------|
 | `instances` | `base_url`(PK) / `display_name` / `capability`(native\|webview_only) / `last_connected_at` |
 | `threads` | `thread_id`(PK) / `agent_id` / `title` / `category` / `last_message` / `pinned_at` / `updated_at` / `unread_count` / `model_id` |
+| `thread_tags` | `thread_id` / `tag` / `kind(project\|topic)` / `created_at` —— 一个会话可挂多个项目/主题标签，作为记忆归档与任务作用域的主锚点 |
+| `memory_items` | `id` / `kind(person\|project\|preference\|commitment)` / `title` / `summary` / `source_thread_id` / `source_message_id` / `updated_at` —— 结构化、可审计的长期记忆 |
+| `automation_tasks` | `id` / `title` / `prompt` / `schedule_rule` / `scope_kind(all\|tag\|thread)` / `scope_ref` / `status` / `last_run_at` / `next_run_at` / `created_at` —— 可重复执行的自动任务 |
 | `messages` | `id`(PK) / `thread_id` / `turn_id` / `role` / `sort_order` / `parts_json` / `status` / `error_info` / `stream_interrupt_count` / `updated_at` |
 | `compact_markers` | `thread_id` / `created_at` / `summary` —— 标记上下文压缩点，UI 画分隔线。**来源是轨迹接口**（`GET …/trajectory?kinds=compacted`，protocol.md §5.4），`created_at` = 事件的 `ts × 1000`，与 `messages.sort_order` 同量纲 |
 | `attachments` | `id` / `thread_id` / `message_id` / `remote_url` / `local_path` / `mime` / `size` / `state` |
@@ -228,7 +232,10 @@ schema 导出目录提交进仓库；每次改表必须附迁移 + 一条 JVM �
 
 - **首次连接向导**：输入地址 → 规范化（自动补 `https://`、去尾部 `/`）→ 探测（§9.5）→ 登录 → 选 agent → 进会话列表。对「带路径 / 带端口 / http / 漏协议」给出针对性提示。
 - **会话列表**：骨架屏占位 → 置顶分组 → 未读标记 → 下拉刷新（触发增量同步，不是重载页面）→ 长按置顶/删除/改名。
-- **对话页**：顶部标题 + 连接状态点；消息流；底部输入框（多行自增、发送 ↔ 中止状态机）；工具调用以卡片呈现（工具名 + 参数折叠 + 结果摘要）；`hitl_required` 弹原生确认卡片 —— **这是「可派活」闭环的关键一环**；`reasoning` 默认折叠。
+- **对话页**：顶部标题 + 连接状态点；消息流；底部输入框改为 **Today 风格操作流**：左侧 `+` 展开「上传文件 / 拍照 / 上传图片 / 录制语音笔记」，右侧为语音输入，文本发送走键盘 IME；回合中右侧按钮切为「中止」。工具调用以卡片呈现（工具名 + 参数折叠 + 结果摘要）；`hitl_required` 弹原生确认卡片 —— **这是「可派活」闭环的关键一环**；`reasoning` 默认折叠。
+- **Today 页**：不显示空白输入框，改为围绕「今天值得推进什么」的主动卡片流。卡片至少分为三类：`今天值得看`（外部变化）、`现在可以推进`（已准备好下一步）、`等你确认`（涉及写操作/发送/改数据）。
+- **任务页**：集中展示一次性任务与自动任务。自动任务支持按时间规则重复执行，并限定作用域为「全部 / 某标签 / 某会话」。
+- **记忆页**：集中管理结构化记忆与会话标签。标签分成 `项目` 与 `主题` 两类，记忆条目允许查看、修改、删除，来源可追溯到线程或消息。
 - **设置页**：改地址（切换实例）、登出、允许明文 HTTP、主题跟随系统、关于（版本 / 主页 / 协议）、清理本地缓存。
 - **WebView 兜底页**：复用 v1 的 `OctopWebViewClient` / `OctopWebChromeClient`（新窗口、文件选择、网页权限三项处理继续沿用），用于 `webview_only` 实例、用户手选「网页模式」、以及原生未覆盖的管理类页面。
 
@@ -258,9 +265,9 @@ schema 导出目录提交进仓库；每次改表必须附迁移 + 一条 JVM �
 | 能力 | 说明 |
 |------|------|
 | 前台服务 | 长任务执行中保持连接并显示进度通知；`POST_NOTIFICATIONS`（33+）运行时申请，被拒则静默降级 |
-| 通知进度 | SDK 36+ 走 Live Updates（`Notification.ProgressStyle`），以下版本用普通进行中通知 |
+| 通知进度 | SDK 36+ 走 Live Updates（`Notification.ProgressStyle`），以下版本用普通进行中通知。注：android-36 公开 API 里没有 `setRequestPromotedOngoing`，实测只做「前台服务 + 进行中通知」，不追求状态栏胶囊提升 |
 | App Shortcuts | 新会话 / 语音输入 / 拍照 |
-| 分享入口 | `ACTION_SEND` / `SEND_MULTIPLE`（文本、图片、文件）→ 新建会话或追加到当前会话 |
+| 分享入口 | `ACTION_SEND` / `SEND_MULTIPLE`（文本、图片、文件）→ 落到一个新会话里（不做追加） |
 | 深链 | `octopmobile://thread/{id}`，用于通知点击与会话直达（自定义 scheme，无需每个实例配 assetlinks） |
 
 ## 15. 安全与权限
@@ -390,3 +397,78 @@ schema 导出目录提交进仓库；每次改表必须附迁移 + 一条 JVM �
 - 应用显示名默认值（暂定「Octop」）、仓库名与 GitHub 归属。
 - 主题是否提供自定义配色（暂定仅跟随系统深/浅色）。
 - `docs/protocol.md` 是否对外公开（若上游视为内部细节，则只保留「已确认的 DTO + 降级判定点」）。
+
+## 23. V3 Today 化升级（本轮新增）
+
+### 23.1 产品判断
+
+本轮调研后的结论是：**Today 的核心不是多专家聊天，而是“围绕用户状态运转的长期记忆 + 主动推进 + 可持续执行”**。因此 Octop Android 的优先级调整为：
+
+1. **先改输入层**：让对话入口具备 Today 式多模态操作流。
+2. **再补记忆锚点**：标签、结构化记忆、可追溯来源。
+3. **再做 Today 页**：把会话、任务、记忆重组为「今天要推进什么」。
+4. **再做自动任务**：定时/规则执行重复工作。
+5. **最后做多专家协作**：以 `@专家` 方式增强，而不是一开始就做群聊式多 agent UI。
+
+### 23.2 输入层重构
+
+输入区采用以下交互约束：
+
+- 左侧只有一个 `+` 主按钮，不再平铺多个入口；
+- `+` 展开四个动作：`上传文件`、`拍照`、`上传图片`、`录制语音笔记`；
+- 右侧不再放发送按钮；**发送走键盘的 Send/Done**；
+- 右侧按钮用于**语音输入（说话转文字）**，不是音频附件；
+- `录制语音笔记` 与 `语音输入` 必须区分：前者产出音频附件，后者产出可编辑文本；
+- 回合进行中 / HITL 挂起时，右侧按钮切换为 `中止`。
+
+### 23.3 标签、记忆、任务的最小模型
+
+- **标签**：会话支持多标签；标签必须显式区分 `项目` 与 `主题` 两类。
+- **记忆**：只沉淀结构化、可审计的记忆，不把整段聊天原样抄进「记忆」页。首批只支持 `人物`、`项目`、`偏好`、`承诺` 四类。
+- **任务**：自动任务以 `schedule_rule + scope` 为核心。`scope` 支持 `全部`、`标签`、`会话` 三档；任何会改外部状态的动作默认仍需用户确认。
+
+### 23.4 Today 页的卡片模型
+
+Today 页不做成普通列表，而是把现有数据重组为三种卡片：
+
+- **今天值得看**：新的外部变化、等待处理的消息、该知道的提醒；
+- **现在可以推进**：已经具备下一步条件的事项；
+- **等你确认**：涉及发消息、改内容、执行动作的待确认项。
+
+每张卡片至少包含：
+
+- 为什么现在出现；
+- 来自哪个会话 / 标签 / 记忆 / 任务；
+- 建议的下一步；
+- 一键进入相关上下文。
+
+### 23.5 多专家的边界
+
+多专家不是本轮主轴。最小可行方案定义为：
+
+- 用 `@planner` / `@research` / `@reviewer` 这类角色切换增强单线程；
+- 专家首先是不同的提示词、工具权限与输出模板，不急着做多线程编排；
+- 所有结果仍回到同一会话，避免过早引入复杂的多 agent 状态同步。
+
+### 23.6 工作台导航骨架
+
+会话、`Today`、任务、记忆是**同一层**的四块，用**底部导航**切换（`WorkbenchScreen`），不再互相往对方页面的顶部放跳转按钮 —— 那种「页头放兄弟页面入口」的样式在只有两三个入口时还凑合，到四块之后就会把页头变成长满按钮的工具栏。
+
+具体约束：
+
+- 全应用只有 `WorkbenchScreen` 这一层持有 `Scaffold` 与 `NavigationBar`；四个栏自己**不带顶部栏**。
+- 唯一例外是会话列表：它的页头兼着「新建会话 / 设置」两个**不是页面跳转**的动作，所以保留 `TopAppBar`。
+- 任务页 / 记忆页用 `PaneHeader` 作页内标题（内容的第一行，不是 `TopAppBar`）。
+- 栏间切换**不进返回栈**：导航图里只注册一个 `threads` destination，返回键从任何一栏都退回上一级。
+- 选中栏用 `rememberSaveable` 记住，从会话详情返回时回到离开前那一栏。
+- 外层 `Scaffold` 算出的 `padding` 通过 `.padding(padding).consumeWindowInsets(padding)` 传给内容，避免状态栏高度被算两遍。
+
+### 23.7 分阶段落地顺序
+
+| 阶段 | 目标 | 状态 |
+|------|------|---------|
+| **M5-1 输入层** | `+` 菜单、图片/文件/相机/语音笔记、右侧语音输入、键盘发送 | 已落地 |
+| **M5-2 记忆锚点** | 标签、结构化记忆、来源追溯 | 已落地（标签纯本地、记忆纯本地，理由见 `data/repo/TagRepository.kt` / `MemoryRepository.kt`） |
+| **M6 Today 页** | 主动卡片流、基于现有会话/任务/记忆的聚合展示 | 已落地第一版（等你确认 / 正在执行 / 最近推进 + 记忆摘要） |
+| **M7 自动任务** | 定时/规则任务、按标签/会话作用域执行 | 已落地镜像与增删改（`docs/protocol.md` §5.5）；`scope` 仍是服务端的 `session_key`，未做「按标签」选择器 |
+| **M8 多专家增强** | `@专家` 角色切换与团队协作 | 待实现 |

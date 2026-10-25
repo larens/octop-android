@@ -32,6 +32,9 @@
 
     <!-- Settings -->
     <string name="settings_title">Settings</string>
+    <string name="today_title">Today</string>
+    <string name="tasks_title">Tasks</string>
+    <string name="memory_title">Memory</string>
     <string name="settings_instance">Instance</string>
     <string name="settings_host_label">Address</string>
     <string name="settings_change_host">Change address</string>
@@ -81,6 +84,8 @@
     <string name="threads_unpin">Unpin</string>
     <string name="threads_rename">Rename</string>
     <string name="threads_rename_label">Title</string>
+    <string name="threads_edit_tags">Edit tags</string>
+    <string name="threads_save_memory">Save to memory</string>
     <string name="threads_delete">Delete</string>
     <string name="threads_delete_message">Delete “%1$s”? Its messages will be removed from the server too.</string>
     <string name="err_webview_only">This instance is not fully compatible with the native client. Opening the web view.</string>
@@ -112,7 +117,14 @@
     <string name="chat_input_hint">Assign a task…</string>
     <string name="chat_send">Send</string>
     <string name="chat_stop">Stop</string>
+    <string name="chat_more_actions">More actions</string>
     <string name="chat_attach">Attach a file</string>
+    <string name="chat_upload_file">Upload file</string>
+    <string name="chat_upload_image">Upload image</string>
+    <string name="chat_take_photo">Take a photo</string>
+    <string name="chat_record_voice_note">Record voice note</string>
+    <string name="chat_voice_input">Voice input</string>
+    <string name="chat_voice_listening">Listening…</string>
     <string name="chat_uploading">Uploading…</string>
     <string name="chat_attach_failed">Could not read that file.</string>
     <string name="chat_queued">Offline. Will send when reconnected.</string>
@@ -125,4 +137,91 @@
     <string name="chat_hitl_reject">Reject</string>
     <string name="chat_hitl_reply">Send answer</string>
     <string name="chat_hitl_reason_hint">Reason / answer (required)</string>
+
+    <!-- System integration (docs/spec.md §14, §18 M4) -->
+    <string name="notif_channel_name">Task progress</string>
+    <string name="notif_channel_desc">Shown while a task keeps running in the background.</string>
+    <string name="notif_turn_text">Task running in the background</string>
+
+    <string name="shortcut_new_thread_short">New task</string>
+    <string name="shortcut_new_thread_long">Start a new task</string>
+    <string name="shortcut_voice_short">Voice input</string>
+    <string name="shortcut_voice_long">Start a new task with voice input</string>
+    <string name="shortcut_camera_short">Take a photo</string>
+    <string name="shortcut_camera_long">Take a photo and attach it to a new task</string>
+
+    <string name="err_camera_unavailable">No camera app is available.</string>
+    <string name="err_voice_failed">Voice input failed.</string>
+    <string name="err_voice_note_unavailable">No recorder app is available.</string>
+
+    <string name="today_hero_title">What is worth moving forward today?</string>
+    <string name="today_hero_body">Start from the threads that are still running, waiting on you, or recently active. Tags, memory, and automations are all reachable from the bottom bar.</string>
+    <string name="today_waiting_title">Waiting On You</string>
+    <string name="today_waiting_subtitle">This thread is paused until you reply or confirm.</string>
+    <string name="today_running_title">Still Running</string>
+    <string name="today_running_subtitle">The server is still working on it. Jump back in for the latest progress.</string>
+    <string name="today_recent_title">Recent Momentum</string>
+    <string name="today_recent_subtitle">Open the thread and keep the next step moving.</string>
+    <string name="today_empty_title">Nothing to organize yet</string>
+    <string name="today_empty_body">Run a few real tasks first. This page will then start surfacing progress, waiting items, and next steps.</string>
+    <string name="today_unread_count">%1$d unread</string>
+    <string name="today_memory_title">Recent Memory</string>
+    <string name="today_memory_empty">No memory items yet. Add them from the Memory tab.</string>
+    <string name="today_memory_more">Open Memory</string>
+
+    <!-- Bottom navigation (docs/spec.md §23) -->
+    <string name="tab_chats">Chats</string>
+
+    <!-- Thread tags (docs/spec.md §23.3) -->
+    <string name="tags_title">Tags</string>
+    <string name="tags_empty">No tags on this thread yet.</string>
+    <string name="tags_add_hint">New tag</string>
+    <string name="tags_add">Add</string>
+    <string name="tags_remove">Remove</string>
+    <string name="tags_kind_project">Project</string>
+    <string name="tags_kind_topic">Topic</string>
+    <string name="tags_count">%1$d tagged</string>
+
+    <!-- Memory (docs/spec.md §23.3) -->
+    <string name="memory_new">New memory</string>
+    <string name="memory_edit">Edit memory</string>
+    <string name="memory_empty_title">No memory yet</string>
+    <string name="memory_empty_body">Keep only what is worth remembering: people, projects, preferences, and commitments. Each item stays editable and traceable to its source thread.</string>
+    <string name="memory_title_label">Title</string>
+    <string name="memory_summary_label">Content</string>
+    <string name="memory_kind_person">Person</string>
+    <string name="memory_kind_project">Project</string>
+    <string name="memory_kind_preference">Preference</string>
+    <string name="memory_kind_commitment">Commitment</string>
+    <string name="memory_source">From “%1$s”</string>
+    <string name="memory_delete_message">Delete “%1$s”?</string>
+
+    <!-- Automations (server cron, docs/spec.md §23.3, protocol §5.5) -->
+    <string name="tasks_new">New automation</string>
+    <string name="tasks_edit">Edit automation</string>
+    <string name="tasks_empty_title">No automations yet</string>
+    <string name="tasks_empty_body">Schedules run on the server, so they keep firing whether or not the app is open. Add one and it will mirror back here.</string>
+    <string name="tasks_name_label">Name</string>
+    <string name="tasks_prompt_label">What to run</string>
+    <string name="tasks_schedule_label">Trigger</string>
+    <string name="tasks_schedule_hint">cron:0 9 * * *</string>
+    <string name="tasks_schedule_help">Four forms are accepted: cron:min hour day month weekday, interval:seconds, date:ISO time, or agently:&lt;connector id&gt;. The server evaluates the rule in its own timezone.</string>
+    <string name="tasks_status_active">Enabled</string>
+    <string name="tasks_status_paused">Paused</string>
+    <string name="tasks_next_run">Next %1$s</string>
+    <string name="tasks_last_run">Last %1$s</string>
+    <string name="tasks_last_failed">Last run failed: %1$s</string>
+    <string name="tasks_never_run">Never ran</string>
+    <string name="tasks_run_now">Run now</string>
+    <string name="tasks_pause">Pause</string>
+    <string name="tasks_resume">Resume</string>
+    <string name="tasks_run_triggered">Triggered on the server.</string>
+    <string name="tasks_delete_message">Delete “%1$s”? The server will stop running it.</string>
+    <string name="tasks_agent_missing">No agent selected yet.</string>
+    <string name="err_schedule_required">Enter a trigger rule.</string>
+    <string name="err_prompt_required">Enter what the automation should run.</string>
+
+    <string name="action_save">Save</string>
+    <string name="action_edit">Edit</string>
+    <string name="action_delete">Delete</string>
 </resources>

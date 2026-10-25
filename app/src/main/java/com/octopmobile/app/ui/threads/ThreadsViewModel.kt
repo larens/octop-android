@@ -10,6 +10,7 @@ import androidx.lifecycle.viewmodel.initializer
 import androidx.lifecycle.viewmodel.viewModelFactory
 import com.octopmobile.app.data.AppContainer
 import com.octopmobile.app.data.db.ThreadEntity
+import com.octopmobile.app.data.db.ThreadTagEntity
 import com.octopmobile.app.data.remote.ApiError
 import com.octopmobile.app.data.remote.ApiResult
 import com.octopmobile.app.data.remote.dto.AgentDto
@@ -18,6 +19,7 @@ import com.octopmobile.app.data.repo.InstanceRepository
 import com.octopmobile.app.data.repo.ThreadRepository
 import com.octopmobile.app.ui.appContainer
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -180,24 +182,50 @@ class ThreadsViewModel(private val container: AppContainer) : ViewModel() {
 
     fun rename(threadId: String, title: String) = mutate { it.rename(threadId, title) }
 
-    fun delete(threadId: String) = mutate { it.delete(threadId) }
+    /**
+     * 删会话时顺带清掉它的标签 —— 标签是纯本地的（[com.octopmobile.app.data.repo.TagRepository]），
+     * 会话没了以后那些行永远指不回去，留着就是孤儿。
+     */
+    fun delete(threadId: String) = mutate(
+        onSuccess = { container.tagRepository().deleteForThread(threadId) },
+    ) { it.delete(threadId) }
 
     fun consumeNotice() {
         uiState = uiState.copy(notice = null)
     }
 
-    private fun mutate(action: suspend (ThreadRepository) -> ApiResult<Unit>) {
+    private fun mutate(
+        onSuccess: suspend () -> Unit = {},
+        action: suspend (ThreadRepository) -> ApiResult<Unit>,
+    ) {
         val baseUrl = host.value ?: return
         val id = agentId.value ?: return
         viewModelScope.launch {
             when (val result = action(container.threadRepository(baseUrl, id))) {
-                is ApiResult.Ok -> Unit
+                is ApiResult.Ok -> onSuccess()
                 is ApiResult.Failure -> uiState = uiState.copy(
                     notice = result.error,
                     needsLogin = result.error.isUnauthorized,
                 )
             }
         }
+    }
+
+    // ------------------------------------------------------------ 标签（spec §23.3）
+
+    /**
+     * 某个会话的标签。**不经过网络**：上游没有 tag 接口，标签只存在本机库里，
+     * 写库即生效、Flow 立刻推给对话框。
+     */
+    fun tagsForThread(threadId: String): Flow<List<ThreadTagEntity>> =
+        container.tagRepository().observeForThread(threadId)
+
+    fun addTag(threadId: String, tag: String, kind: String) {
+        viewModelScope.launch { container.tagRepository().add(threadId, tag, kind) }
+    }
+
+    fun removeTag(threadId: String, tag: String) {
+        viewModelScope.launch { container.tagRepository().remove(threadId, tag) }
     }
 
     private suspend fun loadAgents(baseUrl: String) {

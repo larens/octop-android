@@ -291,6 +291,53 @@ Authorization: Bearer <jwt>
 
 **客户端用法**：`ts * 1000` 得到毫秒，与消息 `sortOrder` 同一量纲（历史消息为 `created_at * 1000 + index`），因此可以直接按时间把分隔线插进消息流。失败一律静默 —— 老实例没有该路由时是 404，不该影响会话本身。
 
+### 5.5 自动任务（服务端 cron）
+
+自动任务的**真值在服务端**：执行由服务端 APScheduler 完成，客户端只做「镜像 + 增删改」。因此客户端**没有**任何本地定时器，也不需要 `WorkManager`。
+
+```
+GET    /api/agents/{agent_id}/cron               → 裸数组
+POST   /api/agents/{agent_id}/cron               → 201，返回新建的 task
+GET    /api/agents/{agent_id}/cron/{cron_id}     → 单个 task
+PATCH  /api/agents/{agent_id}/cron/{cron_id}     → 部分更新
+DELETE /api/agents/{agent_id}/cron/{cron_id}     → 204
+POST   /api/agents/{agent_id}/cron/{cron_id}/run-now → 204（旁路触发一次，不改排期）
+Authorization: Bearer <jwt>
+```
+
+**两个必须注意的点**：
+
+1. `GET …/cron` 返回的是**裸数组**，不是 `{items: [...]}`；
+2. **没有权限时返回空数组，而不是 403**（`routers/cron.py:117-122`）。所以「列表为空」既可能是真的没有任务，也可能是这个令牌没有 cron 权限 —— 客户端不能把空列表当成错误。
+
+DTO 来自 `CronJobRow.to_public_dict`（`infra/db/repos/cron.py:108-126`）：
+
+```jsonc
+{
+  "id": "...", "name": "每日早报", "trigger": "cron:0 9 * * *",
+  "prompt": "…", "session_key": null, "model": null,
+  "fresh_thread": true, "enabled": true, "task_type": "cron",
+  "mcp_servers": [], "last_run_at": 1792900437.0, "last_status": "ok",
+  "agent_id": "...", "last_error": null      // include_agent=True 时才有
+}
+```
+
+`trigger` 有四种形态，由 `infra/cron/trigger.py:build_trigger` 解析：
+
+| 形态 | 例子 | 含义 |
+|------|------|------|
+| `cron:<分 时 日 月 周>` | `cron:0 9 * * *` | Unix crontab 语义，按服务端时区的挂钟时间 |
+| `interval:<秒>` | `interval:3600` | 每 N 秒一次 |
+| `date:<ISO>` | `date:2030-01-01T08:00:00` | 一次性，跑过即止 |
+| `agently:<连接器实例 id>` | `agently:abc123` | 由外部事件（如新邮件）触发 |
+
+**客户端约定**：
+
+- 编辑器**直接让用户填规则原文**，不在客户端造一套规则 DSL —— 服务端是唯一解析方，两边各存一份只会多出一处不一致。
+- 「下次执行时间」由 `data/repo/ScheduleRules.kt` **本地估算**，只用于展示，不参与任何逻辑：服务端按自己的 `default_timezone` 解释挂钟时间，与设备时区不一致时会差几小时。
+- 所有写操作遵循「服务端先成功再改本地镜像」。本地表是纯缓存，可以整体重建。
+- 空列表走 `deleteByAgent` 而不是 `NOT IN ()` —— 后者在 SQLite 上是语法错的写法。
+
 ---
 
 ## 6. 附件

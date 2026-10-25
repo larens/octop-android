@@ -2,7 +2,11 @@ package com.octopmobile.app.data.remote
 
 import com.octopmobile.app.data.remote.dto.AgentDto
 import com.octopmobile.app.data.remote.dto.ApiErrorEnvelope
+import com.octopmobile.app.data.remote.dto.ConversationMode
 import com.octopmobile.app.data.remote.dto.CreateThreadResponse
+import com.octopmobile.app.data.remote.dto.CronJobCreateBody
+import com.octopmobile.app.data.remote.dto.CronJobDto
+import com.octopmobile.app.data.remote.dto.CronJobPatchBody
 import com.octopmobile.app.data.remote.dto.HistoryResponse
 import com.octopmobile.app.data.remote.dto.HitlResumeBody
 import com.octopmobile.app.data.remote.dto.LoginRequest
@@ -216,9 +220,68 @@ class OctopApi(
                 .build(),
         )
 
+    // ------------------------------------------------------------ 定时任务（cron）
+
+    /**
+     * 列出该 agent 的定时任务（`GET /api/agents/{agent_id}/cron`，裸数组）。
+     *
+     * 没有权限的用户拿到的是**空数组**而不是 403（`routers/cron.py:117-122`），
+     * 所以「任务页是空的」既可能是真没有、也可能是没权限，客户端不做区分。
+     */
+    suspend fun cronJobs(agentId: String): ApiResult<List<CronJobDto>> =
+        execute(
+            request = Request.Builder().url(url(API, AGENTS, agentId, CRON)).build(),
+            deserializer = ListSerializer(CronJobDto.serializer()),
+        )
+
+    /** 新建定时任务（`POST /api/agents/{agent_id}/cron`，201）。返回服务端生成的完整对象。 */
+    suspend fun createCronJob(agentId: String, body: CronJobCreateBody): ApiResult<CronJobDto> =
+        execute(
+            request = Request.Builder()
+                .url(url(API, AGENTS, agentId, CRON))
+                .post(json.encodeToString(CronJobCreateBody.serializer(), body).toRequestBody(JSON_MEDIA_TYPE))
+                .build(),
+            deserializer = CronJobDto.serializer(),
+        )
+
+    /** 更新定时任务（`PATCH …/cron/{cron_id}`）。上游返回更新后的对象，这里解析出来直接回写本地。 */
+    suspend fun patchCronJob(
+        agentId: String,
+        cronId: String,
+        body: CronJobPatchBody,
+    ): ApiResult<CronJobDto> =
+        execute(
+            request = Request.Builder()
+                .url(url(API, AGENTS, agentId, CRON, cronId))
+                .patch(json.encodeToString(CronJobPatchBody.serializer(), body).toRequestBody(JSON_MEDIA_TYPE))
+                .build(),
+            deserializer = CronJobDto.serializer(),
+        )
+
+    /** 删除定时任务（`DELETE …/cron/{cron_id}`，204）。 */
+    suspend fun deleteCronJob(agentId: String, cronId: String): ApiResult<Unit> =
+        executeUnit(
+            Request.Builder()
+                .url(url(API, AGENTS, agentId, CRON, cronId))
+                .delete()
+                .build(),
+        )
+
+    /**
+     * 立刻跑一次（`POST …/cron/{cron_id}/run-now`，204）。
+     *
+     * 不影响原有排期：服务端在 APScheduler 之外单独触发一次投递。
+     */
+    suspend fun runCronNow(agentId: String, cronId: String): ApiResult<Unit> =
+        executeUnit(
+            Request.Builder()
+                .url(url(API, AGENTS, agentId, CRON, cronId, RUN_NOW))
+                .post(EMPTY_BODY)
+                .build(),
+        )
+
     /**
      * 附件上传（`POST /api/agents/{agent_id}/upload`）。
-     *
      * multipart 字段名固定 `file`（`routers/uploads.py:59-83`）。返回的
      * `workspace_path` / `filename` / `media_type` 是发送时要放进 content block 的那三个。
      */
@@ -396,6 +459,8 @@ class OctopApi(
         private const val TRAJECTORY = "trajectory"
         private const val READ = "read"
         private const val UPLOAD = "upload"
+        private const val CRON = "cron"
+        private const val RUN_NOW = "run-now"
         private const val CHAT = "chat"
         private const val HITL = "hitl"
         private const val RESUME = "resume"

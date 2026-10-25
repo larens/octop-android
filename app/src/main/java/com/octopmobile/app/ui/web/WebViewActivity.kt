@@ -255,8 +255,18 @@ class WebViewActivity : AppCompatActivity(), OctopWebChromeClient.Host {
         binding.webView.loadUrl(baseUrl)
     }
 
+    /**
+     * 回到原生界面（docs/spec.md §7 方案 C）。
+     *
+     * `CLEAR_TOP` 把任务栈清到 MainActivity 那一层 —— 兜底页自己就出栈了，不需要额外 `finish()`；
+     * 配 `SINGLE_TOP` 保证复用栈里那个实例（它是 `singleTask`）而不是重建一次。
+     */
     private fun openNative() {
-        startActivity(Intent(this, MainActivity::class.java))
+        startActivity(
+            Intent(this, MainActivity::class.java).apply {
+                flags = Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP
+            },
+        )
     }
 
     private fun showLoading() {

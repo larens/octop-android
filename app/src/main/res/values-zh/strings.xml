@@ -32,6 +32,9 @@
 
     <!-- Settings -->
     <string name="settings_title">设置</string>
+    <string name="today_title">Today</string>
+    <string name="tasks_title">任务</string>
+    <string name="memory_title">记忆</string>
     <string name="settings_instance">实例</string>
     <string name="settings_host_label">地址</string>
     <string name="settings_change_host">修改地址</string>
@@ -81,6 +84,8 @@
     <string name="threads_unpin">取消置顶</string>
     <string name="threads_rename">重命名</string>
     <string name="threads_rename_label">标题</string>
+    <string name="threads_edit_tags">编辑标签</string>
+    <string name="threads_save_memory">存为记忆</string>
     <string name="threads_delete">删除</string>
     <string name="threads_delete_message">删除「%1$s」？该会话的消息也会从服务端移除。</string>
     <string name="err_webview_only">该实例与原生客户端不完全兼容，已切换到网页版。</string>
@@ -112,7 +117,14 @@
     <string name="chat_input_hint">派一个任务…</string>
     <string name="chat_send">发送</string>
     <string name="chat_stop">中止</string>
+    <string name="chat_more_actions">更多操作</string>
     <string name="chat_attach">添加附件</string>
+    <string name="chat_upload_file">上传文件</string>
+    <string name="chat_upload_image">上传图片</string>
+    <string name="chat_take_photo">拍照</string>
+    <string name="chat_record_voice_note">录制语音笔记</string>
+    <string name="chat_voice_input">语音输入</string>
+    <string name="chat_voice_listening">正在听…</string>
     <string name="chat_uploading">正在上传…</string>
     <string name="chat_attach_failed">无法读取该文件。</string>
     <string name="chat_queued">当前离线，恢复连接后自动发送。</string>
@@ -125,4 +137,91 @@
     <string name="chat_hitl_reject">拒绝</string>
     <string name="chat_hitl_reply">提交回答</string>
     <string name="chat_hitl_reason_hint">拒绝原因 / 回答（必填）</string>
+
+    <!-- System integration (docs/spec.md §14, §18 M4) -->
+    <string name="notif_channel_name">任务进度</string>
+    <string name="notif_channel_desc">任务在后台继续执行时显示。</string>
+    <string name="notif_turn_text">任务正在后台执行</string>
+
+    <string name="shortcut_new_thread_short">新建任务</string>
+    <string name="shortcut_new_thread_long">开始一个新任务</string>
+    <string name="shortcut_voice_short">语音输入</string>
+    <string name="shortcut_voice_long">用语音输入开始一个新任务</string>
+    <string name="shortcut_camera_short">拍照</string>
+    <string name="shortcut_camera_long">拍一张照片作为新任务的附件</string>
+
+    <string name="err_camera_unavailable">没有可用的相机应用。</string>
+    <string name="err_voice_failed">语音输入失败。</string>
+    <string name="err_voice_note_unavailable">没有可用的录音应用。</string>
+
+    <string name="today_hero_title">今天值得推进什么？</string>
+    <string name="today_hero_body">先从正在执行、等你确认和最近活跃的会话里挑重点。标签、记忆和自动任务都在底部的其他几栏。</string>
+    <string name="today_waiting_title">等你确认</string>
+    <string name="today_waiting_subtitle">这个会话正在等待你的回复或确认。</string>
+    <string name="today_running_title">正在执行</string>
+    <string name="today_running_subtitle">服务端还在继续跑，适合回来查看最新进展。</string>
+    <string name="today_recent_title">最近推进</string>
+    <string name="today_recent_subtitle">打开会话继续推进下一步。</string>
+    <string name="today_empty_title">还没有可整理的会话</string>
+    <string name="today_empty_body">先发起几个真实任务，Today 页就能开始把最近进展和待确认事项整理出来。</string>
+    <string name="today_unread_count">%1$d 条未读</string>
+    <string name="today_memory_title">最近的记忆</string>
+    <string name="today_memory_empty">还没有记忆条目，去「记忆」栏添加。</string>
+    <string name="today_memory_more">打开记忆</string>
+
+    <!-- Bottom navigation (docs/spec.md §23) -->
+    <string name="tab_chats">会话</string>
+
+    <!-- Thread tags (docs/spec.md §23.3) -->
+    <string name="tags_title">标签</string>
+    <string name="tags_empty">这个会话还没有标签。</string>
+    <string name="tags_add_hint">新标签</string>
+    <string name="tags_add">添加</string>
+    <string name="tags_remove">移除</string>
+    <string name="tags_kind_project">项目</string>
+    <string name="tags_kind_topic">主题</string>
+    <string name="tags_count">已标注 %1$d 个</string>
+
+    <!-- Memory (docs/spec.md §23.3) -->
+    <string name="memory_new">新建记忆</string>
+    <string name="memory_edit">编辑记忆</string>
+    <string name="memory_empty_title">还没有记忆</string>
+    <string name="memory_empty_body">只留值得记住的东西：人物、项目、偏好和承诺。每条都可编辑，也能追溯回它的来源会话。</string>
+    <string name="memory_title_label">标题</string>
+    <string name="memory_summary_label">内容</string>
+    <string name="memory_kind_person">人物</string>
+    <string name="memory_kind_project">项目</string>
+    <string name="memory_kind_preference">偏好</string>
+    <string name="memory_kind_commitment">承诺</string>
+    <string name="memory_source">来自「%1$s」</string>
+    <string name="memory_delete_message">删除「%1$s」？</string>
+
+    <!-- Automations (server cron, docs/spec.md §23.3, protocol §5.5) -->
+    <string name="tasks_new">新建自动任务</string>
+    <string name="tasks_edit">编辑自动任务</string>
+    <string name="tasks_empty_title">还没有自动任务</string>
+    <string name="tasks_empty_body">定时执行在服务端完成，App 是否打开都会照跑。新建一条即可镜像到这里。</string>
+    <string name="tasks_name_label">名称</string>
+    <string name="tasks_prompt_label">执行内容</string>
+    <string name="tasks_schedule_label">触发规则</string>
+    <string name="tasks_schedule_hint">cron:0 9 * * *</string>
+    <string name="tasks_schedule_help">支持四种写法：cron:分 时 日 月 周、interval:秒、date:ISO 时间、agently:&lt;连接器实例 id&gt;。规则由服务端按它自己的时区解析。</string>
+    <string name="tasks_status_active">已启用</string>
+    <string name="tasks_status_paused">已暂停</string>
+    <string name="tasks_next_run">下次 %1$s</string>
+    <string name="tasks_last_run">上次 %1$s</string>
+    <string name="tasks_last_failed">上次执行失败：%1$s</string>
+    <string name="tasks_never_run">从未执行</string>
+    <string name="tasks_run_now">立即执行</string>
+    <string name="tasks_pause">暂停</string>
+    <string name="tasks_resume">恢复</string>
+    <string name="tasks_run_triggered">已在服务端触发。</string>
+    <string name="tasks_delete_message">删除「%1$s」？服务端会停止执行它。</string>
+    <string name="tasks_agent_missing">还没有选中智能体。</string>
+    <string name="err_schedule_required">请填写触发规则。</string>
+    <string name="err_prompt_required">请填写要执行的内容。</string>
+
+    <string name="action_save">保存</string>
+    <string name="action_edit">编辑</string>
+    <string name="action_delete">删除</string>
 </resources>

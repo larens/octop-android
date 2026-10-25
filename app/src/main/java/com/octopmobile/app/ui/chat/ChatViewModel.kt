@@ -60,6 +60,16 @@ class ChatViewModel(
 
     private var repository: ChatRepository? = null
 
+    /**
+     * 仓库是否可用（[repository] 已赋值且首屏历史已处理完）。
+     *
+     * [repository] 是 `init` 里异步拿到的 —— 要先从 DataStore 读 host。快捷方式 / 分享
+     * 交给会话页的那一发可能在它之前到，所以这个信号得显式暴露出去让 UI 排队等，
+     * 而不是让 [share] 撞上 null 把内容默默吞掉。
+     */
+    private val _ready = MutableStateFlow(false)
+    val ready: StateFlow<Boolean> = _ready.asStateFlow()
+
     /** 已从服务端拉回的消息条数，即下一次 `/history` 的 `offset`（从最新往前计数）。 */
     private var nextOffset = 0
 
@@ -135,6 +145,9 @@ class ChatViewModel(
             launch { repo.run() }
 
             loadFirstPage()
+
+            // 首屏处理完再放行，避免分享写进去的本地行被 `loadHistory` 的占位清理当成残留删掉。
+            _ready.value = true
         }
     }
 
@@ -239,6 +252,35 @@ class ChatViewModel(
 
     fun removeAttachment(attachment: UploadedAttachment) {
         _attachments.value = _attachments.value - attachment
+    }
+
+    /**
+     * 把其他 App 分享进来的内容落地成一次发送（docs/spec.md §14、§19 第 21 条）。
+     *
+     * 附件逐个读、逐个传：分享来的 `content://` 常常没有长期读取权限，读不出来的直接跳过，
+     * 不因为其中一个坏掉就把整条分享丢掉。只剩不下任何内容时才什么都不做。
+     */
+    fun share(context: Context, text: String?, uris: List<Uri>) {
+        val repo = repository ?: return
+        if (_busy.value) return
+
+        _busy.value = true
+        _notice.value = null
+        viewModelScope.launch {
+            val uploaded = mutableListOf<UploadedAttachment>()
+            for (uri in uris) {
+                val payload = withContext(Dispatchers.IO) { readAttachment(context, uri) } ?: continue
+                when (val result = repo.upload(payload.name, payload.mime, payload.bytes)) {
+                    is ApiResult.Ok -> uploaded += result.value
+                    is ApiResult.Failure -> _notice.value = ChatNotice.Failure(result.error)
+                }
+            }
+            _busy.value = false
+
+            val body = text?.trim().orEmpty()
+            if (body.isEmpty() && uploaded.isEmpty()) return@launch
+            if (!repo.sendTurn(body, uploaded)) _notice.value = ChatNotice.Queued
+        }
     }
 
     /**

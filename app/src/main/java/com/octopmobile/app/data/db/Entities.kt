@@ -46,6 +46,92 @@ data class ThreadEntity(
     val awaitingUser: Boolean,
 )
 
+/** 会话标签。Today 化之后会话不只是一串消息，还要能挂到项目 / 主题下面。 */
+object ThreadTagKind {
+    const val PROJECT = "project"
+    const val TOPIC = "topic"
+
+    /** 界面上的可选项顺序，与 docs/spec.md §23.3 的「必须显式区分两类」对应。 */
+    val ALL = listOf(PROJECT, TOPIC)
+}
+
+@Entity(
+    tableName = "thread_tags",
+    primaryKeys = ["threadId", "tag"],
+    indices = [Index("tag"), Index("kind")],
+)
+data class ThreadTagEntity(
+    val threadId: String,
+    val tag: String,
+    /** [ThreadTagKind] 之一。 */
+    val kind: String,
+    val createdAt: Long,
+)
+
+/** 长期记忆条目。这里只放可审计、可编辑的结构化摘要，不直接把整段聊天塞进来。 */
+object MemoryKind {
+    const val PERSON = "person"
+    const val PROJECT = "project"
+    const val PREFERENCE = "preference"
+    const val COMMITMENT = "commitment"
+
+    /** 首批只支持这四类（docs/spec.md §23.3），界面上的可选顺序即此。 */
+    val ALL = listOf(PERSON, PROJECT, PREFERENCE, COMMITMENT)
+}
+
+@Entity(
+    tableName = "memory_items",
+    indices = [Index("kind"), Index("sourceThreadId"), Index("updatedAt")],
+)
+data class MemoryItemEntity(
+    @PrimaryKey val id: String,
+    /** [MemoryKind] 之一。 */
+    val kind: String,
+    val title: String,
+    val summary: String,
+    val sourceThreadId: String?,
+    val sourceMessageId: String?,
+    val updatedAt: Long,
+)
+
+/**
+ * 自动任务。**真值在服务端**（`/api/agents/{id}/cron`）：服务端才是真正按点执行的那一方，
+ * 本地这张表只是镜像，供列表离线可读（docs/protocol.md §5.5）。
+ */
+object AutomationTaskStatus {
+    const val ACTIVE = "active"
+    const val PAUSED = "paused"
+}
+
+@Entity(
+    tableName = "automation_tasks",
+    indices = [Index("agentId"), Index("status"), Index("nextRunAt")],
+)
+data class AutomationTaskEntity(
+    /** 服务端 cron 的 `cron_id`，本地直接沿用，省掉一层映射。 */
+    @PrimaryKey val id: String,
+    val agentId: String,
+    /** 服务端 `name`。 */
+    val title: String,
+    val prompt: String,
+    /** 服务端 `trigger` 原文：`cron:0 9 * * *` / `interval:3600` / `date:…` / `agently:…`。 */
+    val scheduleRule: String,
+    /** 服务端 `session_key`；为 null 表示任务自己另起会话。 */
+    val scopeRef: String?,
+    /** [AutomationTaskStatus] 之一，由服务端 `enabled` 映射而来。 */
+    val status: String,
+    /** 服务端 `last_run_at`（epoch 秒 → 毫秒）。 */
+    val lastRunAt: Long?,
+    /** 服务端 `last_status`：`ok` / `error`，从未跑过为 null。 */
+    val lastStatus: String?,
+    /** 服务端 `last_error`，失败时的原因摘要。 */
+    val lastError: String?,
+    /** 本地按 [scheduleRule] 推算出来的下次执行时间，只用于展示。 */
+    val nextRunAt: Long?,
+    /** 服务端没有创建时间字段，本地首次见到它时记一次。 */
+    val createdAt: Long,
+)
+
 /** 消息状态。流式进行中的那行会被持续 UPDATE，因此杀进程重进也能看到半截输出（§8.1）。 */
 object MessageStatus {
     const val PENDING = "pending"

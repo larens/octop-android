@@ -62,7 +62,8 @@ jobs:
           echo "SDKMANAGER=$SDKMANAGER"
           if [ -n "$SDKMANAGER" ]; then
             yes | "$SDKMANAGER" --licenses > /dev/null 2>&1 || true
-            "$SDKMANAGER" "platform-tools" "platforms;android-35" "build-tools;35.0.0" || true
+            # 两个平台都装上：bubblewrap 生成的工程 compileSdk 不固定，缺哪个补哪个
+            "$SDKMANAGER" "platform-tools" "platforms;android-35" "build-tools;35.0.0" "platforms;android-36" "build-tools;36.0.0" || true
           else
             echo "未找到 sdkmanager，依赖 runner 预装的 SDK"
           fi

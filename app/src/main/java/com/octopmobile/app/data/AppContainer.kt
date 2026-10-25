@@ -6,8 +6,11 @@ import com.octopmobile.app.data.db.OctopDatabase
 import com.octopmobile.app.data.prefs.SecurePrefs
 import com.octopmobile.app.data.remote.AuthInterceptor
 import com.octopmobile.app.data.remote.OctopApi
+import com.octopmobile.app.data.repo.AutomationRepository
 import com.octopmobile.app.data.repo.ChatRepository
 import com.octopmobile.app.data.repo.InstanceRepository
+import com.octopmobile.app.data.repo.MemoryRepository
+import com.octopmobile.app.data.repo.TagRepository
 import com.octopmobile.app.data.repo.ThreadRepository
 import com.octopmobile.app.data.ws.ChatSocket
 import kotlinx.serialization.json.Json
@@ -113,5 +116,19 @@ class AppContainer(context: Context) {
             attachmentStore = attachments,
             compactMarkerDao = database.compactMarkers(),
             json = json,
+        )
+
+    /** 会话标签。**纯本地**，与实例无关（`TagRepository` 顶部说明了为什么没有服务端那一侧）。 */
+    fun tagRepository(): TagRepository = TagRepository(database.threadTags())
+
+    /** 结构化记忆。同样是本地优先的一层，与实例无关。 */
+    fun memoryRepository(): MemoryRepository = MemoryRepository(database.memoryItems())
+
+    /** 自动任务镜像。带实例与 agent —— 服务端 cron 是按 agent 分组的。 */
+    fun automationRepository(baseUrl: String, agentId: String): AutomationRepository =
+        AutomationRepository(
+            agentId = agentId,
+            api = api(baseUrl),
+            dao = database.automationTasks(),
         )
 }

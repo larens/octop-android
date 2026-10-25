@@ -71,13 +71,23 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import com.octopmobile.app.R
 import com.octopmobile.app.data.db.ThreadEntity
 import com.octopmobile.app.data.remote.dto.AgentDto
+import com.octopmobile.app.ui.AppActions
+import com.octopmobile.app.ui.PendingChatStart
+import com.octopmobile.app.ui.PendingHandoff
 import com.octopmobile.app.ui.asText
+import com.octopmobile.app.ui.workbench.MemoryDraft
+import com.octopmobile.app.ui.workbench.MemoryEditorDialog
+import com.octopmobile.app.ui.workbench.MemoryViewModel
 
 /**
  * 会话列表（docs/spec.md §11 M1）。
  *
  * 列表内容来自 Room（见 [ThreadsViewModel]），所以冷启动第一帧就有内容、不空转；
  * 骨架屏只在「本地一条会话都没有」时出现，不是全屏遮罩。
+ *
+ * 页头留着 `TopAppBar`：它兼着「新建会话 / 设置」两个不是页面跳转的动作。页面之间的切换
+ * 已经交给工作台的底部导航（[com.octopmobile.app.ui.workbench.WorkbenchScreen]），
+ * 所以这里不再有「去 Today」那个入口。
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -89,6 +99,7 @@ fun ThreadsScreen(
 ) {
     val context = LocalContext.current
     val viewModel: ThreadsViewModel = viewModel(factory = ThreadsViewModel.Factory)
+    val memoryViewModel: MemoryViewModel = viewModel(factory = MemoryViewModel.Factory)
     val state = viewModel.uiState
     val threads by viewModel.threads.collectAsStateWithLifecycle()
 
@@ -102,6 +113,17 @@ fun ThreadsScreen(
         val agentId = state.selectedAgentId ?: return@LaunchedEffect
         viewModel.consumeCreated()
         onOpenThread(agentId, threadId)
+    }
+
+    // 系统入口（App Shortcuts / 分享）都落在这一级（spec §14）：只有这里能建会话。
+    // 建完再把剩下的动作转交会话页 —— 分享内容与语音/拍照都得等输入区就位才好使。
+    // 还没选中 agent 时先留着不动（此时也建不出会话），超过 OneShot 的 TTL 会自然作废。
+    val handoff by PendingHandoff.pending.collectAsStateWithLifecycle()
+    LaunchedEffect(handoff, state.selectedAgentId) {
+        if (handoff == null || state.selectedAgentId == null) return@LaunchedEffect
+        val start = PendingHandoff.take() ?: return@LaunchedEffect
+        if (start.action != AppActions.NEW_THREAD) PendingChatStart.arm(start)
+        viewModel.createThread()
     }
 
     // 判定为 webview_only 时切到兜底通道。只切一次 —— 用户从兜底页按返回键回来时不该被弹回去。
@@ -125,6 +147,8 @@ fun ThreadsScreen(
 
     var renameTarget by remember { mutableStateOf<ThreadEntity?>(null) }
     var deleteTarget by remember { mutableStateOf<ThreadEntity?>(null) }
+    var tagTarget by remember { mutableStateOf<ThreadEntity?>(null) }
+    var memoryTarget by remember { mutableStateOf<ThreadEntity?>(null) }
 
     val selectedAgent = state.agents.firstOrNull { it.agentId == state.selectedAgentId }
 
@@ -205,6 +229,8 @@ fun ThreadsScreen(
                             onOpenThread = onOpenThread,
                             onTogglePin = viewModel::togglePin,
                             onRename = { renameTarget = it },
+                            onEditTags = { tagTarget = it },
+                            onSaveMemory = { memoryTarget = it },
                             onDelete = { deleteTarget = it },
                         )
                     }
@@ -245,6 +271,40 @@ fun ThreadsScreen(
             },
         )
     }
+
+    tagTarget?.let { target ->
+        // 标签存在本机库里，对话框开着的时候增删都会经 Flow 回到这里
+        val tags by remember(target.threadId) { viewModel.tagsForThread(target.threadId) }
+            .collectAsStateWithLifecycle(initialValue = emptyList())
+        TagEditorDialog(
+            threadTitle = target.title?.takeIf { it.isNotBlank() } ?: target.threadId,
+            tags = tags,
+            onAdd = { tag, kind -> viewModel.addTag(target.threadId, tag, kind) },
+            onRemove = { tag -> viewModel.removeTag(target.threadId, tag) },
+            onDismiss = { tagTarget = null },
+        )
+    }
+
+    memoryTarget?.let { target ->
+        // 从会话里存记忆：来源直接记下来，标题先用会话标题占位，用户在框里改成自己想留的那句话
+        MemoryEditorDialog(
+            initial = MemoryDraft(
+                title = target.title.orEmpty(),
+                sourceThreadId = target.threadId,
+            ),
+            onDismiss = { memoryTarget = null },
+            onConfirm = { draft ->
+                memoryViewModel.save(
+                    id = null,
+                    kind = draft.kind,
+                    title = draft.title,
+                    summary = draft.summary,
+                    sourceThreadId = target.threadId,
+                )
+                memoryTarget = null
+            },
+        )
+    }
 }
 
 @Composable
@@ -274,6 +334,8 @@ private fun ThreadList(
     onOpenThread: (agentId: String, threadId: String) -> Unit,
     onTogglePin: (ThreadEntity) -> Unit,
     onRename: (ThreadEntity) -> Unit,
+    onEditTags: (ThreadEntity) -> Unit,
+    onSaveMemory: (ThreadEntity) -> Unit,
     onDelete: (ThreadEntity) -> Unit,
 ) {
     // DAO 已按 `pinned DESC, lastActiveAt DESC` 排序，置顶项天然在前，这里只负责分组标题。
@@ -287,6 +349,8 @@ private fun ThreadList(
             onClick = { onOpenThread(thread.agentId, thread.threadId) },
             onTogglePin = { onTogglePin(thread) },
             onRename = { onRename(thread) },
+            onEditTags = { onEditTags(thread) },
+            onSaveMemory = { onSaveMemory(thread) },
             onDelete = { onDelete(thread) },
         )
     }
@@ -309,7 +373,7 @@ private fun ThreadList(
 }
 
 /**
- * 一行会话。点开进会话，长按出菜单（置顶 / 改名 / 删除，docs/spec.md §11）。
+ * 一行会话。点开进会话，长按出菜单（标签 / 存为记忆 / 置顶 / 改名 / 删除，docs/spec.md §11、§23.3）。
  *
  * 长按菜单挂在行内的 [Box] 上而不是屏幕级状态里：菜单要贴着被长按的那一行弹出，
  * 而且只可能有一行处于展开态，没必要把这个状态提到上层。
@@ -320,6 +384,8 @@ private fun ThreadRow(
     onClick: () -> Unit,
     onTogglePin: () -> Unit,
     onRename: () -> Unit,
+    onEditTags: () -> Unit,
+    onSaveMemory: () -> Unit,
     onDelete: () -> Unit,
 ) {
     val subtitle = thread.lastMessage?.takeIf { it.isNotBlank() }
@@ -404,6 +470,20 @@ private fun ThreadRow(
                 onClick = {
                     menuOpen = false
                     onRename()
+                },
+            )
+            DropdownMenuItem(
+                text = { Text(stringResource(R.string.threads_edit_tags)) },
+                onClick = {
+                    menuOpen = false
+                    onEditTags()
+                },
+            )
+            DropdownMenuItem(
+                text = { Text(stringResource(R.string.threads_save_memory)) },
+                onClick = {
+                    menuOpen = false
+                    onSaveMemory()
                 },
             )
             DropdownMenuItem(

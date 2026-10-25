@@ -1,0 +1,46 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  App Shortcuts（docs/spec.md §14）：长按桌面图标直达。
+  action 与 Handoff.AppActions 逐字一致 —— MainActivity 靠它区分点了哪一个。
+  shortcutId="new_thread" 同时也是任务进度通知挂靠的快捷方式 id
+  （AppActions.SHORTCUT_NEW_THREAD，Android 16 Live Updates 用它把通知关联到快捷方式）。
+-->
+<shortcuts xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <shortcut
+        android:enabled="true"
+        android:icon="@drawable/ic_launcher_foreground"
+        android:shortcutId="new_thread"
+        android:shortcutLongLabel="@string/shortcut_new_thread_long"
+        android:shortcutShortLabel="@string/shortcut_new_thread_short">
+        <intent
+            android:action="com.octopmobile.app.action.NEW_THREAD"
+            android:targetClass="com.octopmobile.app.ui.MainActivity"
+            android:targetPackage="com.octopmobile.native" />
+    </shortcut>
+
+    <shortcut
+        android:enabled="true"
+        android:icon="@drawable/ic_launcher_foreground"
+        android:shortcutId="voice_input"
+        android:shortcutLongLabel="@string/shortcut_voice_long"
+        android:shortcutShortLabel="@string/shortcut_voice_short">
+        <intent
+            android:action="com.octopmobile.app.action.VOICE"
+            android:targetClass="com.octopmobile.app.ui.MainActivity"
+            android:targetPackage="com.octopmobile.native" />
+    </shortcut>
+
+    <shortcut
+        android:enabled="true"
+        android:icon="@drawable/ic_launcher_foreground"
+        android:shortcutId="take_photo"
+        android:shortcutLongLabel="@string/shortcut_camera_long"
+        android:shortcutShortLabel="@string/shortcut_camera_short">
+        <intent
+            android:action="com.octopmobile.app.action.CAMERA"
+            android:targetClass="com.octopmobile.app.ui.MainActivity"
+            android:targetPackage="com.octopmobile.native" />
+    </shortcut>
+
+</shortcuts>

@@ -71,6 +71,90 @@ interface ThreadDao {
 }
 
 @Dao
+interface ThreadTagDao {
+
+    @Query("SELECT * FROM thread_tags WHERE threadId = :threadId ORDER BY kind ASC, tag ASC")
+    fun observeByThread(threadId: String): Flow<List<ThreadTagEntity>>
+
+    @Query("SELECT * FROM thread_tags ORDER BY kind ASC, tag ASC")
+    fun observeAll(): Flow<List<ThreadTagEntity>>
+
+    @Upsert
+    suspend fun upsert(entity: ThreadTagEntity)
+
+    @Upsert
+    suspend fun upsertAll(entities: List<ThreadTagEntity>)
+
+    @Query("DELETE FROM thread_tags WHERE threadId = :threadId")
+    suspend fun deleteByThread(threadId: String)
+
+    @Query("DELETE FROM thread_tags WHERE threadId = :threadId AND tag = :tag")
+    suspend fun deleteOne(threadId: String, tag: String)
+
+    @Query("DELETE FROM thread_tags")
+    suspend fun clear()
+}
+
+@Dao
+interface MemoryItemDao {
+
+    @Query("SELECT * FROM memory_items ORDER BY updatedAt DESC")
+    fun observeAll(): Flow<List<MemoryItemEntity>>
+
+    @Query("SELECT * FROM memory_items WHERE kind = :kind ORDER BY updatedAt DESC")
+    fun observeByKind(kind: String): Flow<List<MemoryItemEntity>>
+
+    /** 编辑时要拿原值做底（`updatedAt` 等）再改，不能凭空造一条。 */
+    @Query("SELECT * FROM memory_items WHERE id = :id LIMIT 1")
+    suspend fun find(id: String): MemoryItemEntity?
+
+    @Upsert
+    suspend fun upsert(entity: MemoryItemEntity)
+
+    @Upsert
+    suspend fun upsertAll(entities: List<MemoryItemEntity>)
+
+    @Query("DELETE FROM memory_items WHERE id = :id")
+    suspend fun delete(id: String)
+
+    @Query("DELETE FROM memory_items")
+    suspend fun clear()
+}
+
+@Dao
+interface AutomationTaskDao {
+
+    /** 服务端 cron 列表是**全量**接口，所以镜像也按 agent 整体替换（见 `AutomationRepository.refresh`）。 */
+    @Query("SELECT * FROM automation_tasks WHERE agentId = :agentId ORDER BY nextRunAt ASC, createdAt DESC")
+    fun observeByAgent(agentId: String): Flow<List<AutomationTaskEntity>>
+
+    /**
+     * 一次性读全量，供刷新时合并：服务端没有 `createdAt` 字段，本地首次见到某条任务时记一次，
+     * 覆盖写不能把这个值冲掉。
+     */
+    @Query("SELECT * FROM automation_tasks WHERE agentId = :agentId")
+    suspend fun listByAgent(agentId: String): List<AutomationTaskEntity>
+
+    @Upsert
+    suspend fun upsert(entity: AutomationTaskEntity)
+
+    @Upsert
+    suspend fun upsertAll(entities: List<AutomationTaskEntity>)
+
+    @Query("DELETE FROM automation_tasks WHERE agentId = :agentId AND id NOT IN (:keepIds)")
+    suspend fun deleteMissing(agentId: String, keepIds: List<String>)
+
+    @Query("DELETE FROM automation_tasks WHERE agentId = :agentId")
+    suspend fun deleteByAgent(agentId: String)
+
+    @Query("DELETE FROM automation_tasks WHERE id = :id")
+    suspend fun delete(id: String)
+
+    @Query("DELETE FROM automation_tasks")
+    suspend fun clear()
+}
+
+@Dao
 interface MessageDao {
 
     /**

@@ -1,6 +1,18 @@
 package com.octopmobile.app.ui.chat
 
+import android.Manifest
+import android.content.Context
+import android.content.Intent
+import android.content.pm.PackageManager
+import android.net.Uri
+import android.os.Bundle
+import android.provider.MediaStore
+import android.speech.RecognitionListener
+import android.speech.RecognizerIntent
+import android.speech.SpeechRecognizer
+import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
@@ -9,9 +21,9 @@ import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -32,25 +44,35 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
-import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.ArrowDownward
 import androidx.compose.material.icons.filled.AttachFile
+import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Build
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Description
 import androidx.compose.material.icons.filled.ExpandLess
 import androidx.compose.material.icons.filled.ExpandMore
+import androidx.compose.material.icons.filled.Image
+import androidx.compose.material.icons.filled.KeyboardVoice
+import androidx.compose.material.icons.filled.Mic
+import androidx.compose.material.icons.filled.PhotoCamera
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilledTonalIconButton
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
+import androidx.compose.material3.LocalContentColor
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
@@ -73,15 +95,21 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.dp
+import androidx.core.content.ContextCompat
+import androidx.core.content.FileProvider
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
@@ -102,10 +130,14 @@ import com.octopmobile.app.data.model.PartsCodec
 import com.octopmobile.app.data.model.UploadedAttachment
 import com.octopmobile.app.data.remote.dto.HitlDecision
 import com.octopmobile.app.data.ws.ChatSocket
+import com.octopmobile.app.service.TurnService
+import com.octopmobile.app.ui.AppActions
+import com.octopmobile.app.ui.PendingChatStart
 import com.octopmobile.app.ui.asText
 import kotlinx.coroutines.launch
 import kotlinx.serialization.json.Json
 import java.io.File
+import java.util.Locale
 
 /**
  * 单会话页（docs/spec.md §18 M1–M3）。
@@ -140,6 +172,8 @@ fun ChatScreen(
     val notice by viewModel.notice.collectAsStateWithLifecycle()
     val cachedAttachments by viewModel.cachedAttachments.collectAsStateWithLifecycle()
     val compactMarkers by viewModel.compactMarkers.collectAsStateWithLifecycle()
+    // 系统入口（快捷方式 / 分享）带进来的动作，见下面的 LaunchedEffect（spec §14）。
+    val chatStart by PendingChatStart.pending.collectAsStateWithLifecycle()
 
     // 消息与压缩标记合成一条渲染序列，标记插在「第一条晚于它的消息」之前（spec §8.2）。
     val rows = remember(messages, compactMarkers) { buildChatRows(messages, compactMarkers) }
@@ -149,6 +183,172 @@ fun ChatScreen(
 
     val filePicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         if (uri != null) viewModel.attach(context, uri)
+    }
+    val imagePicker = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
+        if (uri != null) viewModel.attach(context, uri)
+    }
+    val voiceNoteRecorder = rememberLauncherForActivityResult(
+        ActivityResultContracts.StartActivityForResult(),
+    ) { result ->
+        val uri = result.data?.data ?: return@rememberLauncherForActivityResult
+        viewModel.attach(context, uri)
+    }
+
+    // 语音输入与语音快捷方式都落回同一个输入框；焦点用于识别不可用时的输入法兜底。
+    val inputFocus = remember { FocusRequester() }
+    val keyboard = LocalSoftwareKeyboardController.current
+
+    // 拍照快捷方式：`ACTION_IMAGE_CAPTURE` 需要一个可写的 content:// 目标，落在 cacheDir 里。
+    var cameraUri by remember { mutableStateOf<Uri?>(null) }
+    val cameraLauncher = rememberLauncherForActivityResult(ActivityResultContracts.TakePicture()) { saved ->
+        val uri = cameraUri
+        cameraUri = null
+        if (saved && uri != null) viewModel.attach(context, uri)
+    }
+    fun launchCamera() {
+        val uri = runCatching { newCameraUri(context) }.getOrNull()
+        if (uri == null) {
+            Toast.makeText(context, R.string.err_camera_unavailable, Toast.LENGTH_SHORT).show()
+            return
+        }
+        cameraUri = uri
+        cameraLauncher.launch(uri)
+    }
+
+    fun launchVoiceNoteRecorder() {
+        val intent = Intent(MediaStore.Audio.Media.RECORD_SOUND_ACTION)
+        val available = intent.resolveActivity(context.packageManager) != null
+        if (!available) {
+            Toast.makeText(context, R.string.err_voice_note_unavailable, Toast.LENGTH_SHORT).show()
+            return
+        }
+        voiceNoteRecorder.launch(intent)
+    }
+
+    // 清单里声明了 CAMERA，就得先拿到授权，否则 ACTION_IMAGE_CAPTURE 会被系统拒掉。
+    val cameraPermission = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission(),
+    ) { granted -> if (granted) launchCamera() }
+
+    // 语音输入（spec §14）：用系统识别服务把说的话转成文字填进输入框，用户过目后再发。
+    // 输入框文本提在这里持有，就是为了让识别结果和手打文字落在同一个地方。
+    // 识别器一直挂在组合里（不是按下才建），省掉每次点击的初始化延迟。
+    var input by remember { mutableStateOf("") }
+    var listening by remember { mutableStateOf(false) }
+    // 开口前已有的文字。识别过程中返回的是「整句话的重写」，所以在它后面整体覆盖，
+    // 而不是把每个中间结果往输入框尾巴上追加 —— 那会拼出一串重复的前缀。
+    var voiceBase by remember { mutableStateOf("") }
+
+    val recognizer = remember {
+        runCatching {
+            if (SpeechRecognizer.isRecognitionAvailable(context)) {
+                SpeechRecognizer.createSpeechRecognizer(context)
+            } else {
+                null
+            }
+        }.getOrNull()
+    }
+    val speechIntent = remember {
+        Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH)
+            .putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
+            .putExtra(RecognizerIntent.EXTRA_LANGUAGE, Locale.getDefault().toLanguageTag())
+            .putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
+    }
+    DisposableEffect(recognizer) {
+        recognizer?.setRecognitionListener(object : RecognitionListener {
+            override fun onReadyForSpeech(params: Bundle?) {}
+            override fun onBeginningOfSpeech() {}
+            override fun onRmsChanged(rmsdB: Float) {}
+            override fun onBufferReceived(buffer: ByteArray?) {}
+            override fun onEndOfSpeech() { listening = false }
+
+            override fun onError(error: Int) {
+                listening = false
+                // ERROR_NO_MATCH / ERROR_SPEECH_TIMEOUT 只是「没听清」，不是故障，不打扰用户。
+                if (error != SpeechRecognizer.ERROR_NO_MATCH &&
+                    error != SpeechRecognizer.ERROR_SPEECH_TIMEOUT
+                ) {
+                    Toast.makeText(context, R.string.err_voice_failed, Toast.LENGTH_SHORT).show()
+                }
+            }
+
+            override fun onResults(results: Bundle?) {
+                listening = false
+                val text = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
+                    ?.firstOrNull()
+                if (!text.isNullOrBlank()) input = withVoicePrefix(voiceBase, text)
+            }
+
+            override fun onPartialResults(partialResults: Bundle?) {
+                val text = partialResults?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
+                    ?.firstOrNull()
+                if (!text.isNullOrBlank()) input = withVoicePrefix(voiceBase, text)
+            }
+
+            override fun onEvent(eventType: Int, params: Bundle?) {}
+        })
+        onDispose { recognizer?.destroy() }
+    }
+
+    fun startVoice() {
+        if (recognizer == null) {
+            // 设备上没有识别服务（少见）：退回「聚焦输入框 + 唤起输入法」，键盘上也带语音键。
+            runCatching { inputFocus.requestFocus() }
+            keyboard?.show()
+            return
+        }
+        if (listening) {
+            recognizer.stopListening()
+            return
+        }
+        voiceBase = input
+        val started = runCatching { recognizer.startListening(speechIntent) }.isSuccess
+        if (started) {
+            listening = true
+        } else {
+            Toast.makeText(context, R.string.err_voice_failed, Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    // 录音的是识别服务，但要拿 RECORD_AUDIO —— 没授权时 startListening 只会回
+    // ERROR_INSUFFICIENT_PERMISSIONS，所以先要权限再开口。
+    val audioPermission = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission(),
+    ) { granted -> if (granted) startVoice() }
+
+    fun requestVoice() {
+        if (hasPermission(context, Manifest.permission.RECORD_AUDIO)) {
+            startVoice()
+        } else {
+            audioPermission.launch(Manifest.permission.RECORD_AUDIO)
+        }
+    }
+
+    // 回合开始或被 HITL 挂起时输入区会禁用，识别也该停下来，免得录进来的话没人接。
+    LaunchedEffect(blocked) {
+        if (blocked && listening) recognizer?.stopListening()
+    }
+
+    // 快捷方式 / 分享的最后一跳：会话已由列表页建好，这里把动作补上（spec §14）。
+    // `ready` 是门槛：ViewModel 的仓库是异步就绪的，早于它执行会被 `share` 静默丢掉。
+    val ready by viewModel.ready.collectAsStateWithLifecycle()
+    LaunchedEffect(chatStart, ready) {
+        if (!ready) return@LaunchedEffect
+        val start = PendingChatStart.take() ?: return@LaunchedEffect
+        when (start.action) {
+            AppActions.SHARE -> viewModel.share(context, start.text, start.uris)
+
+            AppActions.VOICE -> requestVoice()
+
+            AppActions.CAMERA -> if (hasPermission(context, Manifest.permission.CAMERA)) {
+                launchCamera()
+            } else {
+                cameraPermission.launch(Manifest.permission.CAMERA)
+            }
+
+            // NEW_THREAD 到此为止：一条空会话就是终点，用户自己输入。
+            else -> Unit
+        }
     }
 
     val listState = rememberLazyListState()
@@ -162,7 +362,22 @@ fun ChatScreen(
             if (event == Lifecycle.Event.ON_RESUME) viewModel.reconnect()
         }
         lifecycleOwner.lifecycle.addObserver(observer)
-        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+        onDispose {
+            lifecycleOwner.lifecycle.removeObserver(observer)
+            // 离开会话页就意味着连接要断（ViewModel 被清、socket 关掉），通知没有理由继续挂着。
+            TurnService.stop(context)
+        }
+    }
+
+    // 回合进行中挂一条前台通知，切到后台不会被系统顺手杀掉（spec §14、§19 第 20 条）。
+    // 跟着 turnActive 起停，而不是自己判断存活 —— 服务本身不持有连接，只负责让进程活着。
+    val turnTitle = thread?.title?.takeIf { it.isNotBlank() } ?: threadId
+    LaunchedEffect(turnActive, turnTitle) {
+        if (turnActive) {
+            TurnService.start(context, threadId, turnTitle)
+        } else {
+            TurnService.stop(context)
+        }
     }
 
     // 「用户是否还在底部」是唯一的跟随开关（spec §12）：只认离底 32dp 的死区，
@@ -247,9 +462,29 @@ fun ChatScreen(
                 busy = busy,
                 onSend = viewModel::send,
                 onCancel = viewModel::cancel,
-                onAttach = { filePicker.launch(arrayOf("*/*")) },
+                onUploadFile = { filePicker.launch(arrayOf("*/*")) },
+                onUploadImage = {
+                    imagePicker.launch(
+                        PickVisualMediaRequest(
+                            ActivityResultContracts.PickVisualMedia.ImageOnly,
+                        ),
+                    )
+                },
+                onTakePhoto = {
+                    if (hasPermission(context, Manifest.permission.CAMERA)) {
+                        launchCamera()
+                    } else {
+                        cameraPermission.launch(Manifest.permission.CAMERA)
+                    }
+                },
+                onRecordVoiceNote = { launchVoiceNoteRecorder() },
+                onVoiceInput = { requestVoice() },
+                input = input,
+                onInputChange = { input = it },
+                listening = listening,
                 onRemove = viewModel::removeAttachment,
                 onResolve = viewModel::resolveHitl,
+                inputModifier = Modifier.focusRequester(inputFocus),
             )
         },
     ) { padding ->
@@ -361,6 +596,8 @@ fun ChatScreen(
  *
  * [blocked]（回合进行中或 HITL 挂起）时输入框与附件按钮置灰、发送键换成中止
  * —— M2 不做 steer，等 `turn.ended` 后才允许再发（docs/spec.md §18.1）。
+ *
+ * [inputModifier] 单独留给输入框：语音输入快捷方式要靠它把焦点送进去（spec §14）。
  */
 @Composable
 private fun ChatBottomBar(
@@ -370,9 +607,17 @@ private fun ChatBottomBar(
     busy: Boolean,
     onSend: (String) -> Unit,
     onCancel: () -> Unit,
-    onAttach: () -> Unit,
+    onUploadFile: () -> Unit,
+    onUploadImage: () -> Unit,
+    onTakePhoto: () -> Unit,
+    onRecordVoiceNote: () -> Unit,
+    onVoiceInput: () -> Unit,
+    input: String,
+    onInputChange: (String) -> Unit,
+    listening: Boolean,
     onRemove: (UploadedAttachment) -> Unit,
     onResolve: (String, String?) -> Unit,
+    inputModifier: Modifier = Modifier,
 ) {
     Surface(tonalElevation = 3.dp) {
         Column(
@@ -401,7 +646,15 @@ private fun ChatBottomBar(
                 canSend = attachments.isNotEmpty(),
                 onSend = onSend,
                 onCancel = onCancel,
-                onAttach = onAttach,
+                onUploadFile = onUploadFile,
+                onUploadImage = onUploadImage,
+                onTakePhoto = onTakePhoto,
+                onRecordVoiceNote = onRecordVoiceNote,
+                onVoiceInput = onVoiceInput,
+                input = input,
+                onInputChange = onInputChange,
+                listening = listening,
+                modifier = inputModifier,
             )
         }
     }
@@ -413,28 +666,115 @@ private fun InputRow(
     canSend: Boolean,
     onSend: (String) -> Unit,
     onCancel: () -> Unit,
-    onAttach: () -> Unit,
+    onUploadFile: () -> Unit,
+    onUploadImage: () -> Unit,
+    onTakePhoto: () -> Unit,
+    onRecordVoiceNote: () -> Unit,
+    onVoiceInput: () -> Unit,
+    input: String,
+    onInputChange: (String) -> Unit,
+    listening: Boolean,
+    modifier: Modifier = Modifier,
 ) {
-    var input by remember { mutableStateOf("") }
     val sendable = !blocked && (input.isNotBlank() || canSend)
+    var menuExpanded by remember { mutableStateOf(false) }
+
+    fun submit() {
+        if (!sendable) return
+        val text = input
+        onInputChange("")
+        onSend(text)
+    }
 
     Row(verticalAlignment = Alignment.Bottom) {
-        IconButton(onClick = onAttach, enabled = !blocked) {
-            Icon(
-                imageVector = Icons.Filled.AttachFile,
-                contentDescription = stringResource(R.string.chat_attach),
-            )
+        Box {
+            IconButton(
+                onClick = { menuExpanded = true },
+                enabled = !blocked,
+            ) {
+                Icon(
+                    imageVector = Icons.Filled.Add,
+                    contentDescription = stringResource(R.string.chat_more_actions),
+                )
+            }
+            DropdownMenu(
+                expanded = menuExpanded,
+                onDismissRequest = { menuExpanded = false },
+            ) {
+                DropdownMenuItem(
+                    text = { Text(stringResource(R.string.chat_upload_file)) },
+                    leadingIcon = {
+                        Icon(
+                            imageVector = Icons.Filled.Description,
+                            contentDescription = null,
+                        )
+                    },
+                    onClick = {
+                        menuExpanded = false
+                        onUploadFile()
+                    },
+                )
+                DropdownMenuItem(
+                    text = { Text(stringResource(R.string.chat_take_photo)) },
+                    leadingIcon = {
+                        Icon(
+                            imageVector = Icons.Filled.PhotoCamera,
+                            contentDescription = null,
+                        )
+                    },
+                    onClick = {
+                        menuExpanded = false
+                        onTakePhoto()
+                    },
+                )
+                DropdownMenuItem(
+                    text = { Text(stringResource(R.string.chat_upload_image)) },
+                    leadingIcon = {
+                        Icon(
+                            imageVector = Icons.Filled.Image,
+                            contentDescription = null,
+                        )
+                    },
+                    onClick = {
+                        menuExpanded = false
+                        onUploadImage()
+                    },
+                )
+                DropdownMenuItem(
+                    text = { Text(stringResource(R.string.chat_record_voice_note)) },
+                    leadingIcon = {
+                        Icon(
+                            imageVector = Icons.Filled.KeyboardVoice,
+                            contentDescription = null,
+                        )
+                    },
+                    onClick = {
+                        menuExpanded = false
+                        onRecordVoiceNote()
+                    },
+                )
+            }
         }
 
         OutlinedTextField(
             value = input,
-            onValueChange = { input = it },
-            modifier = Modifier.weight(1f),
+            onValueChange = onInputChange,
+            modifier = Modifier
+                .weight(1f)
+                .then(modifier),
             enabled = !blocked,
-            placeholder = { Text(stringResource(R.string.chat_input_hint)) },
+            placeholder = {
+                Text(
+                    stringResource(
+                        if (listening) R.string.chat_voice_listening else R.string.chat_input_hint,
+                    ),
+                )
+            },
             // 自增高到 6 行，再多就内部滚动（spec §12：输入区不做全屏展开）。
             maxLines = 6,
             shape = RoundedCornerShape(20.dp),
+            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
+            keyboardActions = KeyboardActions(onSend = { submit() }),
         )
 
         if (blocked) {
@@ -446,17 +786,19 @@ private fun InputRow(
                 )
             }
         } else {
-            IconButton(
-                onClick = {
-                    val text = input
-                    input = ""
-                    onSend(text)
-                },
-                enabled = sendable,
-            ) {
+            IconButton(onClick = onVoiceInput) {
                 Icon(
-                    imageVector = Icons.AutoMirrored.Filled.Send,
-                    contentDescription = stringResource(R.string.chat_send),
+                    imageVector = Icons.Filled.Mic,
+                    contentDescription = stringResource(
+                        if (listening) R.string.chat_voice_listening else R.string.chat_voice_input,
+                    ),
+                    tint = if (listening) {
+                        MaterialTheme.colorScheme.error
+                    } else if (sendable) {
+                        MaterialTheme.colorScheme.primary
+                    } else {
+                        LocalContentColor.current
+                    },
                 )
             }
         }
@@ -1188,6 +1530,30 @@ private fun buildChatRows(
 
 private const val ROLE_USER = "user"
 private const val CARET = "▍"
+
+/**
+ * 拍照要写的临时文件（spec §14）。authority 必须与 `AndroidManifest.xml` 里那个
+ * FileProvider 的 `android:authorities`（`${applicationId}.fileprovider`）一致，
+ * 路径也要落在 `res/xml/file_paths.xml` 开出来的 `camera/` 里，否则会抛 IllegalArgumentException。
+ */
+private fun newCameraUri(context: Context): Uri {
+    val dir = File(context.cacheDir, "camera").apply { mkdirs() }
+    return FileProvider.getUriForFile(
+        context,
+        "${context.packageName}.fileprovider",
+        File(dir, "shot-${System.currentTimeMillis()}.jpg"),
+    )
+}
+
+private fun hasPermission(context: Context, permission: String): Boolean =
+    ContextCompat.checkSelfPermission(context, permission) == PackageManager.PERMISSION_GRANTED
+
+/**
+ * 把识别结果接到开口前已有的文字后面（spec §14）。识别服务每次给的都是「这一句话的完整
+ * 重写」，所以整体覆盖而不是追加；已有的文字按句读留一个空格，别粘在一起。
+ */
+private fun withVoicePrefix(base: String, text: String): String =
+    if (base.isBlank()) text else "${base.trim()} $text"
 
 /** 短于这个长度的工具结果默认展开，长输出折叠成一行预览。 */
 private const val TOOL_PREVIEW_CHARS = 160

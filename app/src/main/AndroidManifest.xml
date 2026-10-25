@@ -7,6 +7,16 @@
     <uses-permission android:name="android.permission.CAMERA" />
 
     <!--
+      长任务通知（docs/spec.md §14）。Android 13 起发通知要运行时授权，被拒就静默降级：
+      前台服务本身不需要这个权限就能跑，只是通知看不见。
+      FOREGROUND_SERVICE_DATA_SYNC 是 Android 14 起 dataSync 类型前台服务的配套声明。
+    -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+
+
+    <!--
       Android 9 及以下把文件写进公共「下载」目录需要这个权限；Android 10 起由系统接管，无需声明。
     -->
     <uses-permission
@@ -19,6 +29,16 @@
     <uses-feature
         android:name="android.hardware.microphone"
         android:required="false" />
+
+    <!--
+      Android 11 起默认看不见别的应用（包可见性过滤），`SpeechRecognizer` 要拿到系统里的
+      识别服务就得显式声明这条 queries，否则语音输入会直接判为「设备不支持」。
+    -->
+    <queries>
+        <intent>
+            <action android:name="android.speech.RecognitionService" />
+        </intent>
+    </queries>
 
     <!--
       usesCleartextTraffic 必须为 true，否则「允许明文 HTTP」开关在运行期无法生效
@@ -46,6 +66,41 @@
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
+
+            <!--
+              深链（docs/spec.md §14）：octopmobile://thread/{thread_id}。
+              自定义 scheme，不用给每个自建实例配 assetlinks；scheme/host 与
+              Routes.DEEP_LINK_* 必须逐字一致。launchMode=singleTask 下已在栈里时走 onNewIntent。
+            -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data
+                    android:host="thread"
+                    android:scheme="octopmobile" />
+            </intent-filter>
+
+            <!--
+              分享入口（docs/spec.md §14）：文本、图片、文件都可以丢进来变成一次新会话。
+              `*/*` 让「分享到 Octop」出现在所有应用里 —— 这是分享目标该有的样子。
+              内容由 MainActivity.handleSystemEntry 取出，再交给会话列表页落地。
+            -->
+            <intent-filter>
+                <action android:name="android.intent.action.SEND" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="*/*" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.SEND_MULTIPLE" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="*/*" />
+            </intent-filter>
+
+            <!-- App Shortcuts（docs/spec.md §14）：长按图标直达新会话 / 语音输入 / 拍照。 -->
+            <meta-data
+                android:name="android.app.shortcuts"
+                android:resource="@xml/shortcuts" />
         </activity>
 
         <!--
@@ -57,6 +112,29 @@
             android:exported="false"
             android:launchMode="singleTop"
             android:windowSoftInputMode="adjustResize" />
+
+        <!--
+          长任务前台服务（docs/spec.md §14）：回合进行中挂着进度通知，避免切到后台被系统杀死。
+          只挂通知，不持有连接 —— WebSocket 归 ChatRepository，见 TurnService 的类注释。
+        -->
+        <service
+            android:name=".service.TurnService"
+            android:exported="false"
+            android:foregroundServiceType="dataSync" />
+
+        <!--
+          拍照快捷方式写临时文件用（`ACTION_IMAGE_CAPTURE` 需要一个可写的 content:// 目标）。
+          文件落在 cacheDir/camera 下，见 res/xml/file_paths.xml。
+        -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.fileprovider"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/file_paths" />
+        </provider>
     </application>
 
 </manifest>

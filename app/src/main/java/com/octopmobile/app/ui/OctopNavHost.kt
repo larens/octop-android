@@ -2,6 +2,7 @@ package com.octopmobile.app.ui
 
 import android.content.Intent
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.ui.platform.LocalContext
 import androidx.navigation.NavHostController
 import androidx.navigation.NavType
@@ -13,19 +14,24 @@ import com.octopmobile.app.ui.chat.ChatScreen
 import com.octopmobile.app.ui.connect.ConnectScreen
 import com.octopmobile.app.ui.login.LoginScreen
 import com.octopmobile.app.ui.settings.SettingsScreen
-import com.octopmobile.app.ui.threads.ThreadsScreen
 import com.octopmobile.app.ui.web.WebViewActivity
+import com.octopmobile.app.ui.workbench.WorkbenchScreen
 
 /**
  * 全应用唯一的导航图。连接向导、登录、会话列表、会话、设置都是全屏 destination，
- * 因此不用嵌套导航；平板分栏（`material3.adaptive`）留到 M4 再考虑。
+ * 因此不用嵌套导航；平板分栏（`material3.adaptive`）留到之后再考虑。
  *
  * 登录这一跳由 [ThreadsScreen] 通过 `onNeedsLogin` 触发，不做成连接向导的下一步 ——
  * 「有没有令牌」是会话列表自己必须校验的事（冷启动、令牌被服务端换密钥废掉都是同一条路径）。
+ *
+ * [pendingRoute] 用于深链（docs/spec.md §14）：由 [MainActivity] 解析好一条完整路由塞进来，
+ * 导航图只负责跳过去，不关心链接长什么样。
  */
 @Composable
 fun OctopNavHost(
     startDestination: String,
+    pendingRoute: String? = null,
+    onPendingRouteConsumed: () -> Unit = {},
     navController: NavHostController = rememberNavController(),
 ) {
     val context = LocalContext.current
@@ -57,8 +63,10 @@ fun OctopNavHost(
             )
         }
 
+        // 会话 / Today / 任务 / 记忆是同一个工作台的四个栏，由底部导航切换（docs/spec.md §23），
+        // 所以这里只注册一个 destination —— 栏间切换不进返回栈，返回键从任何一栏都退回上一级。
         composable(Routes.THREADS) {
-            ThreadsScreen(
+            WorkbenchScreen(
                 onOpenThread = { agentId, threadId ->
                     navController.navigate(Routes.chat(agentId, threadId))
                 },
@@ -98,6 +106,15 @@ fun OctopNavHost(
                     navController.navigate(Routes.LOGIN) { popUpTo(0) }
                 },
             )
+        }
+    }
+
+    // 深链（docs/spec.md §14）。放在 NavHost 之后：图这时已经装好，navigate 才是安全的。
+    // 跳完立刻消费掉，否则旋转屏幕重组时会再跳一次。
+    if (pendingRoute != null) {
+        LaunchedEffect(pendingRoute) {
+            navController.navigate(pendingRoute)
+            onPendingRouteConsumed()
         }
     }
 }
