@@ -94,6 +94,8 @@ CI 用 Secrets 注入签名：`KEYSTORE_BASE64`、`KEYSTORE_PASSWORD`、`KEY_ALI
 
 TWA 流水线需要 `TWA_KEYSTORE_BASE64` / `TWA_KEYSTORE_PASSWORD` / `TWA_KEY_ALIAS` / `TWA_KEY_PASSWORD` 四个 Secrets，未配置则自动跳过。
 
+> **关于安装与升级**：未配置 Secrets 时，CI 用的是 runner 上临时生成的 debug 签名，**每次构建的签名都不一样**，所以新版本装上去会提示「应用未安装」或要求先卸载（数据会丢）。要支持覆盖升级，请生成自己的 keystore 并按上面的名字配好 Secrets。本地构建不受影响——本机 `~/.android/debug.keystore` 是稳定的。
+
 ## 客户端做了什么
 
 原生 `WebView`，没有引入 Capacitor / Cordova。以下配置缺一项都会导致可感知的功能残缺：

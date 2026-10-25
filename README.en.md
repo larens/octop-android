@@ -81,6 +81,8 @@ Release signing:
 
 **No keys are stored in this repo.** Without a signing config, release builds fall back to the debug signature so a fresh clone builds out of the box. In CI, inject the signing config via the `KEYSTORE_BASE64`, `KEYSTORE_PASSWORD`, `KEY_ALIAS`, and `KEY_PASSWORD` secrets.
 
+> **Installing and upgrading**: without those secrets, CI signs with a throwaway debug key that **changes on every run**, so a newer APK cannot be installed over an older one (you'd have to uninstall first, losing data). To support in-place upgrades, generate your own keystore and add the secrets above. Local builds are unaffected — your `~/.android/debug.keystore` is stable.
+
 ## Privacy
 
 No analytics, no telemetry. No network requests beyond the instance address you enter.
