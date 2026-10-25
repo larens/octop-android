@@ -7,13 +7,13 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.currentCoroutineContext
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
@@ -70,6 +70,14 @@ class ChatSocket(
     private var loop: Job? = null
     private var backoffMs = BACKOFF_FIRST_MS
 
+    /**
+     * 退避等待的叫醒信号（spec §10「应用回前台立即重连一次」）。
+     *
+     * 用 `SharedFlow` 而不是 `Channel`：它这里的语义只是「缩短这次等待」，不需要严格消费 ——
+     * 多收一次最多让重连早一点发生，没有任何副作用。
+     */
+    private val wake = MutableSharedFlow<Unit>(extraBufferCapacity = 1)
+
     @Volatile
     private var lastInboundAt = 0L
 
@@ -103,6 +111,17 @@ class ChatSocket(
 
     fun ping() {
         send(ClientFrame.Ping)
+    }
+
+    /**
+     * 让退避中的重连**立刻**发生，不等剩下那段等待（spec §10「应用回前台立即重连一次」）。
+     *
+     * 只作用于等待期，**不会**去拆一条已经连上的 socket：一条看着还通、其实早断了的链路
+     * 由心跳的静默判定负责，硬拆反而会把正在流式的输出切成半截。
+     */
+    fun reconnectNow() {
+        backoffMs = BACKOFF_FIRST_MS
+        wake.tryEmit(Unit)
     }
 
     fun send(frame: ClientFrame): Boolean {
@@ -171,12 +190,17 @@ class ChatSocket(
         }
     }
 
-    /** 指数退避 + 抖动，上限 30s（spec §10）。返回 false 表示已被要求停止。 */
+    /**
+     * 指数退避 + 抖动，上限 30s（spec §10）。返回 false 表示已被要求停止。
+     *
+     * 等待期间被 [reconnectNow] 叫醒就提前结束这一轮 —— 退避对「网络刚回来」这种情况
+     * 没有意义，而应用回前台正是最可能刚刚恢复网络的时候。
+     */
     private suspend fun awaitBackoff(): Boolean {
         val wait = backoffMs
         backoffMs = (backoffMs * 2).coerceAtMost(BACKOFF_MAX_MS)
         val jitter = (wait * JITTER_RATIO * (Random.nextDouble() * 2 - 1)).toLong()
-        delay((wait + jitter).coerceAtLeast(0L))
+        withTimeoutOrNull((wait + jitter).coerceAtLeast(0L)) { wake.first() }
         return wantConnection && currentCoroutineContext().isActive
     }
 

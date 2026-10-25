@@ -7,8 +7,11 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.safeDrawingPadding
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Visibility
 import androidx.compose.material.icons.outlined.VisibilityOff
@@ -62,6 +65,12 @@ fun LoginScreen(
         Column(
             modifier = Modifier
                 .fillMaxSize()
+                // 边到边（targetSdk 35）下必须自己让开系统栏（spec §19 第 22 条）；safeDrawing
+                // 同时含 IME，所以键盘弹起时按钮和报错都还能滚上来，不会被盖住。
+                .safeDrawingPadding()
+                // 系统最大字号时这一列会高过一屏，必须可滚 —— 否则顶部的标题和底部的
+                // 「打开网页版」两头都会被裁掉。
+                .verticalScroll(rememberScrollState())
                 .padding(horizontal = 24.dp)
                 .padding(vertical = 32.dp),
             horizontalAlignment = Alignment.CenterHorizontally,

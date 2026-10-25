@@ -77,16 +77,34 @@
     <!-- Native client (docs/spec.md) -->
     <string name="threads_empty">No conversations yet.</string>
     <string name="threads_pinned">Pinned</string>
+    <string name="threads_pin">Pin</string>
+    <string name="threads_unpin">Unpin</string>
+    <string name="threads_rename">Rename</string>
+    <string name="threads_rename_label">Title</string>
+    <string name="threads_delete">Delete</string>
+    <string name="threads_delete_message">Delete “%1$s”? Its messages will be removed from the server too.</string>
     <string name="err_webview_only">This instance is not fully compatible with the native client. Opening the web view.</string>
 
     <!-- Chat (docs/spec.md §18 M1) -->
     <string name="chat_turn_active">Generating…</string>
-    <string name="chat_history_loading">Preparing history…</string>
+    <string name="chat_back_to_bottom">Back to latest</string>
     <string name="chat_no_messages">No messages yet.</string>
     <string name="chat_load_older">Load earlier messages</string>
     <string name="chat_reasoning">Thinking</string>
+    <string name="chat_compacted">Context compacted</string>
+    <string name="chat_interrupted">Output interrupted</string>
+    <string name="chat_refetch_turn">Reload this turn</string>
+    <string name="chat_text_expand">Show all (%1$d chars)</string>
+    <string name="chat_text_collapse">Collapse</string>
     <string name="settings_web_fallback">Open web interface</string>
     <string name="settings_web_fallback_summary">Fall back to the built-in browser view when a feature is missing from the native UI.</string>
+
+    <!-- Attachment cache (docs/spec.md §13, §19) -->
+    <string name="settings_clear_cache">Clear attachment cache</string>
+    <string name="settings_clear_cache_summary">%1$s used. Sign-in state and conversations are kept.</string>
+    <string name="settings_cache_measuring">Measuring…</string>
+    <string name="settings_cache_cleared">Attachment cache cleared.</string>
+    <string name="chat_attachment_generic">Attachment</string>
 
     <!-- Chat composer (docs/spec.md §18 M2) -->
     <string name="threads_new">New conversation</string>

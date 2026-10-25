@@ -43,6 +43,7 @@ import com.octopmobile.app.OctopApp
 import com.octopmobile.app.R
 import com.octopmobile.app.ui.web.WebViewActivity
 import kotlinx.coroutines.launch
+import java.util.Locale
 
 /**
  * 设置（docs/spec.md §6 `ui/settings`）。
@@ -60,9 +61,12 @@ fun SettingsScreen(
     val container = remember(context) { (context.applicationContext as OctopApp).container }
     val scope = rememberCoroutineScope()
     var host by remember { mutableStateOf<String?>(null) }
+    /** 附件缓存占用，null 表示还没算出来。 */
+    var cacheBytes by remember { mutableStateOf<Long?>(null) }
 
     LaunchedEffect(Unit) {
         host = container.prefs.currentHost()
+        cacheBytes = container.attachments.totalBytes()
     }
 
     fun toast(message: String) {
@@ -98,6 +102,20 @@ fun SettingsScreen(
             container.database.clearAll()
             toast(context.getString(R.string.settings_logged_out))
             onLoggedOut()
+        }
+    }
+
+    /**
+     * 清理附件缓存（docs/spec.md §13、§19 第 19 条）。
+     *
+     * 只删附件二进制与索引，**不动**登录态、会话与消息 —— 清完 App 仍然可用，
+     * 已经渲染过的图片会按需重新拉取。
+     */
+    fun clearCache() {
+        scope.launch {
+            container.attachments.clear()
+            cacheBytes = container.attachments.totalBytes()
+            toast(context.getString(R.string.settings_cache_cleared))
         }
     }
 
@@ -165,6 +183,15 @@ fun SettingsScreen(
             )
 
             ActionRow(
+                title = stringResource(R.string.settings_clear_cache),
+                subtitle = stringResource(
+                    R.string.settings_clear_cache_summary,
+                    cacheBytes?.let(::formatBytes) ?: stringResource(R.string.settings_cache_measuring),
+                ),
+                onClick = { clearCache() },
+            )
+
+            ActionRow(
                 title = stringResource(R.string.settings_logout),
                 subtitle = stringResource(R.string.settings_logout_summary),
                 onClick = { logout() },
@@ -205,6 +232,15 @@ private fun SectionHeader(text: String) {
         modifier = Modifier.padding(start = 24.dp, top = 20.dp, bottom = 4.dp),
     )
 }
+
+/**
+ * 缓存占用的可读文本。
+ *
+ * 用 1024 进制（磁盘占用的常规口径），并保留一位小数 —— 清缓存的判断只需要看到量级，
+ * 不需要精确到字节。
+ */
+private fun formatBytes(bytes: Long): String =
+    String.format(Locale.US, "%.1f MB", bytes / 1024.0 / 1024.0)
 
 @Composable
 private fun ActionRow(

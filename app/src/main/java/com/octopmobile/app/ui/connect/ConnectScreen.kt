@@ -8,6 +8,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.safeDrawingPadding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
@@ -114,6 +115,10 @@ fun ConnectScreen(onConnected: () -> Unit) {
     Column(
         modifier = Modifier
             .fillMaxSize()
+            // 这一页没有 Scaffold，边到边（targetSdk 35）下得自己让开系统栏，
+            // 否则内容会顶到状态栏 / 压到导航栏底下（spec §19 第 22 条）。
+            // safeDrawing 同时含 IME：输入地址时键盘弹起也不会盖住按钮。
+            .safeDrawingPadding()
             .verticalScroll(rememberScrollState())
             .padding(horizontal = 24.dp, vertical = 32.dp),
         verticalArrangement = Arrangement.Center,

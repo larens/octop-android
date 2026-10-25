@@ -81,17 +81,27 @@ data class CompactMarkerEntity(
     val summary: String,
 )
 
+/** 附件缓存状态。 */
+object AttachmentState {
+    /** 只知道远端地址，本地还没有文件。 */
+    const val REMOTE_ONLY = "remote_only"
+    const val CACHED = "cached"
+    const val FAILED = "failed"
+}
+
 /** 附件缓存索引。二进制落在 `filesDir/attachments/<threadId>/`，本表只记引用与状态。 */
 @Entity(tableName = "attachments", indices = [Index("threadId"), Index("messageId")])
 data class AttachmentEntity(
+    /** [com.octopmobile.app.data.attachments.AttachmentRefs.idOf] 算出的引用哈希，也用作落盘文件名。 */
     @PrimaryKey val id: String,
     val threadId: String,
     val messageId: String?,
+    /** **归一化后的相对引用**（不含主机名），见 `data/attachments/AttachmentRefs.kt`。 */
     val remoteUrl: String,
     val localPath: String?,
     val mime: String?,
     val size: Long,
-    /** `remote_only` / `cached` / `failed`。 */
+    /** [AttachmentState] 之一。 */
     val state: String,
 )
 

@@ -49,6 +49,8 @@ data class ContentBlockDto(
     @SerialName("workspace_path") val workspacePath: String? = null,
     val filename: String? = null,
     @SerialName("media_type") val mediaType: String? = null,
+    /** 图片块用的是 `mime_type` 而不是 `media_type`（上游 `attachment_hints.make_workspace_image_ref`）。 */
+    @SerialName("mime_type") val mimeType: String? = null,
     val url: String? = null,
 )
 

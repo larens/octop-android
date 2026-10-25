@@ -12,6 +12,8 @@ import androidx.lifecycle.viewModelScope
 import androidx.lifecycle.viewmodel.initializer
 import androidx.lifecycle.viewmodel.viewModelFactory
 import com.octopmobile.app.data.AppContainer
+import com.octopmobile.app.data.db.AttachmentEntity
+import com.octopmobile.app.data.db.CompactMarkerEntity
 import com.octopmobile.app.data.db.MessageEntity
 import com.octopmobile.app.data.db.ThreadEntity
 import com.octopmobile.app.data.model.HitlPending
@@ -84,6 +86,19 @@ class ChatViewModel(
     private val _attachments = MutableStateFlow<List<UploadedAttachment>>(emptyList())
     val attachments: StateFlow<List<UploadedAttachment>> = _attachments.asStateFlow()
 
+    /**
+     * 本地附件缓存索引，按 [com.octopmobile.app.data.attachments.AttachmentRefs.idOf] 的 id 索引。
+     *
+     * 气泡里的附件先在这里查本地文件，命中就直接内联渲染（spec §19 第 18 条），
+     * 没命中才由 [ensureAttachment] 去拉。
+     */
+    private val _cachedAttachments = MutableStateFlow<Map<String, AttachmentEntity>>(emptyMap())
+    val cachedAttachments: StateFlow<Map<String, AttachmentEntity>> = _cachedAttachments.asStateFlow()
+
+    /** 上下文压缩点，按时间正序。消息流里的分隔线由它决定插在哪两条消息之间（spec §8.2）。 */
+    private val _compactMarkers = MutableStateFlow<List<CompactMarkerEntity>>(emptyList())
+    val compactMarkers: StateFlow<List<CompactMarkerEntity>> = _compactMarkers.asStateFlow()
+
     /** 附件上传中。 */
     private val _busy = MutableStateFlow(false)
     val busy: StateFlow<Boolean> = _busy.asStateFlow()
@@ -109,6 +124,12 @@ class ChatViewModel(
             launch { repo.turnActive.collect { _turnActive.value = it } }
             launch { repo.hitl.collect { _hitl.value = it } }
             launch { repo.errors.collect { uiState = uiState.copy(streamError = it) } }
+            launch {
+                repo.observeAttachments().collect { list ->
+                    _cachedAttachments.value = list.associateBy { it.id }
+                }
+            }
+            launch { repo.observeCompactMarkers().collect { _compactMarkers.value = it } }
 
             // 永不返回：连接 + 订阅 + 持续消费事件
             launch { repo.run() }
@@ -148,6 +169,15 @@ class ChatViewModel(
 
     fun retry() {
         viewModelScope.launch { loadFirstPage() }
+    }
+
+    /**
+     * 应用回到前台：让退避中的重连立刻发生（spec §10）。
+     *
+     * 不处理「已经连着但其实断了」的情况 —— 那是 socket 心跳静默判定的职责。
+     */
+    fun reconnect() {
+        repository?.reconnectNow()
     }
 
     // ------------------------------------------------------------ 发送 / 中止 / 确认
@@ -211,6 +241,18 @@ class ChatViewModel(
         _attachments.value = _attachments.value - attachment
     }
 
+    /**
+     * 气泡渲染到某个远端附件、而本地还没有那份文件时触发下载（spec §13）。
+     *
+     * [ref] 是消息 part 上那个已经归一化过的相对引用；没有引用（用户刚发出的本地附件、
+     * 或内联帧）时直接返回 —— 那时界面上只剩文件名，没有可下载的东西。
+     */
+    fun ensureAttachment(ref: String?, mime: String?) {
+        val repo = repository ?: return
+        if (ref.isNullOrBlank()) return
+        viewModelScope.launch { repo.ensureAttachment(ref, mime) }
+    }
+
     fun clearNotice() {
         _notice.value = null
     }
@@ -218,6 +260,16 @@ class ChatViewModel(
     private suspend fun loadFirstPage() {
         val repo = repository ?: return
         uiState = uiState.copy(historyLoading = true, error = null)
+
+        // 打开会话即已读（spec §11）。单独挂一个协程：它是一次多余的往返，
+        // 不能让首屏历史等它。
+        viewModelScope.launch { repo.markRead() }
+
+        // 压缩标记只是消息流上的分隔线，不能拖慢首屏：跟着历史并行走，失败静默（见 repo）。
+        viewModelScope.launch { repo.syncCompactMarkers() }
+
+        // 上个进程被杀时留下的流式行要先收尾，否则界面会一直显示成正在输出（spec §10）。
+        repo.markStaleInterrupted()
 
         when (val result = repo.loadHistory(offset = 0)) {
             is ApiResult.Ok -> {

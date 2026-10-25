@@ -5,6 +5,7 @@ import com.octopmobile.app.data.db.ThreadEntity
 import com.octopmobile.app.data.remote.ApiResult
 import com.octopmobile.app.data.remote.OctopApi
 import com.octopmobile.app.data.remote.dto.ConversationMode
+import com.octopmobile.app.data.remote.dto.RenameThreadBody
 import com.octopmobile.app.data.remote.dto.ThreadDto
 import kotlinx.coroutines.flow.Flow
 
@@ -23,12 +24,16 @@ class ThreadRepository(
     fun observeThreads(): Flow<List<ThreadEntity>> = threadDao.observeByAgent(agentId)
 
     /**
-     * 拉一页会话列表并覆盖本地缓存。返回本次落库的条数，供 UI 区分「没有会话」与「拉取失败」。
+     * 拉一页会话列表并合并进本地缓存。返回本次落库的条数，供 UI 区分「没有会话」与「拉取失败」。
+     *
+     * 是**合并**而不是覆盖：`ThreadDto` 既不含最后一条消息，也不含未读数（字段清单见
+     * docs/protocol.md §5.2），整体 `upsert` 会把本地攒的东西抹掉。
      */
     suspend fun refresh(limit: Int = OctopApi.DEFAULT_PAGE_SIZE): ApiResult<Int> =
         when (val result = api.threads(agentId, limit)) {
             is ApiResult.Ok -> {
-                val entities = result.value.map { it.toEntity(agentId) }
+                val local = threadDao.listByAgent(agentId).associateBy { it.threadId }
+                val entities = result.value.map { it.toEntity(agentId, local[it.threadId]) }
                 threadDao.upsertAll(entities)
                 ApiResult.Ok(entities.size)
             }
@@ -68,28 +73,92 @@ class ThreadRepository(
 
             is ApiResult.Failure -> result
         }
+
+    /**
+     * 置顶 / 取消置顶（`PATCH pinned`，docs/protocol.md §5.2）。
+     *
+     * 一律**服务端先成功、再写本地**：列表完全由 Room 驱动，写库那一刻界面就更新了，
+     * 不需要在 UI 上另存一份「正在置顶」的状态；失败时界面保持原样，只提示。
+     */
+    suspend fun setPinned(threadId: String, pinned: Boolean): ApiResult<Unit> =
+        when (val result = api.patchThread(agentId, threadId, RenameThreadBody(pinned = pinned))) {
+            is ApiResult.Ok -> {
+                threadDao.setPinned(threadId, pinned)
+                result
+            }
+
+            is ApiResult.Failure -> result
+        }
+
+    /** 改名（`PATCH title`）。UI 在标题空白时就禁用确认，所以这里收到的一定是非空串。 */
+    suspend fun rename(threadId: String, title: String): ApiResult<Unit> {
+        val trimmed = title.trim()
+        return when (val result = api.patchThread(agentId, threadId, RenameThreadBody(title = trimmed))) {
+            is ApiResult.Ok -> {
+                threadDao.setTitle(threadId, trimmed)
+                result
+            }
+
+            is ApiResult.Failure -> result
+        }
+    }
+
+    /** 删除会话（`DELETE`，204）。服务端删成功后本地一并删掉 —— 列表里就不该再有它。 */
+    suspend fun delete(threadId: String): ApiResult<Unit> =
+        when (val result = api.deleteThread(agentId, threadId)) {
+            is ApiResult.Ok -> {
+                threadDao.delete(threadId)
+                result
+            }
+
+            is ApiResult.Failure -> result
+        }
+
+    /**
+     * 打开会话即已读（docs/spec.md §11）：本地清零，并把服务端那份也清掉。
+     *
+     * 服务端的每个会话都有自己的未读计数，但列表接口不下发它，客户端只能自己攒
+     * （见 [refresh]）；不顺手清服务端的话，下次刷新会把旧值再翻出来。
+     * 服务端那次失败不影响界面 —— 返回结论以本地为准，所以没有返回值。
+     */
+    suspend fun markRead(threadId: String) {
+        threadDao.markRead(threadId)
+        api.markThreadRead(agentId, threadId)
+    }
 }
 
 /**
  * 服务端时间戳是 epoch **秒**，本地统一毫秒（docs/spec.md §8.2）。
  *
  * `last_active` 缺失时退到 `created_at` —— 排序键不能是 0，否则会话会全部堆到列表底部。
- * 列表接口不返回最后一条消息，所以 [ThreadEntity.lastMessage] 留空，由会话页回填。
+ * 列表接口不返回最后一条消息，所以 [ThreadEntity.lastMessage] 沿用本地那份、由会话页回填。
+ *
+ * **未读数**（docs/protocol.md §5.2）：服务端只在「有消息落进这个会话」时才推 `last_active`，
+ * 所以「比本地新」就是一个可靠的变化信号，据此 +1；[local] 为空的新会话从 0 起算。
  */
-private fun ThreadDto.toEntity(agentId: String): ThreadEntity {
+private fun ThreadDto.toEntity(agentId: String, local: ThreadEntity?): ThreadEntity {
     val activeSeconds = lastActive ?: createdAt ?: 0L
+    val activeAt = activeSeconds * 1000
+    val unread = when {
+        local == null -> 0
+        activeAt > local.lastActiveAt -> (local.unreadCount + 1).coerceAtMost(UNREAD_CAP)
+        else -> local.unreadCount
+    }
     return ThreadEntity(
         threadId = threadId,
         agentId = agentId,
         title = title?.takeIf { it.isNotBlank() },
-        lastMessage = null,
+        lastMessage = local?.lastMessage,
         pinned = pinned,
-        lastActiveAt = activeSeconds * 1000,
+        lastActiveAt = activeAt,
         createdAt = (createdAt ?: activeSeconds) * 1000,
-        unreadCount = 0,
+        unreadCount = unread,
         modelRef = modelRef,
         conversationMode = conversationMode,
         turnActive = turnActive,
         awaitingUser = awaitingUser,
     )
 }
+
+/** 角标显示上限，防止 `unreadCount` 无限累加（也避免徽标被撑成一条）。 */
+private const val UNREAD_CAP = 99

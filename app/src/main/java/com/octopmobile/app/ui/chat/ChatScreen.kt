@@ -2,6 +2,11 @@ package com.octopmobile.app.ui.chat
 
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
@@ -31,6 +36,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.Send
+import androidx.compose.material.icons.filled.ArrowDownward
 import androidx.compose.material.icons.filled.AttachFile
 import androidx.compose.material.icons.filled.Build
 import androidx.compose.material.icons.filled.Close
@@ -40,8 +46,11 @@ import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FilledTonalIconButton
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
@@ -51,42 +60,60 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
+import coil3.compose.AsyncImage
 import com.octopmobile.app.OctopApp
 import com.octopmobile.app.R
+import com.octopmobile.app.data.attachments.AttachmentRefs
+import com.octopmobile.app.data.db.AttachmentEntity
+import com.octopmobile.app.data.db.CompactMarkerEntity
 import com.octopmobile.app.data.db.MessageEntity
 import com.octopmobile.app.data.db.MessageStatus
 import com.octopmobile.app.data.model.HitlPending
+import com.octopmobile.app.data.model.Part
 import com.octopmobile.app.data.model.PartType
 import com.octopmobile.app.data.model.PartsCodec
 import com.octopmobile.app.data.model.UploadedAttachment
 import com.octopmobile.app.data.remote.dto.HitlDecision
 import com.octopmobile.app.data.ws.ChatSocket
 import com.octopmobile.app.ui.asText
+import kotlinx.coroutines.launch
 import kotlinx.serialization.json.Json
+import java.io.File
 
 /**
- * 单会话页（docs/spec.md §18 M1/M2）。
+ * 单会话页（docs/spec.md §18 M1–M3）。
  *
  * M1 做「看」：历史分页 + `token` / `reasoning` 流式渲染 + 连接状态。
  * M2 做「写」：输入栏发 `user_turn`、回合中置灰并可 `cancel`、附件上传、工具调用折叠卡、
  * HITL 确认卡（挂起期间输入栏同样禁用 —— 服务端会以 `hitl_paused` 拒绝新回合）。
+ * M3 做「手感」：气泡骨架屏 + 顶部细进度条（去掉全屏转圈）、底部 32dp 死区的滚动跟随。
  *
  * 消息正文存在 Room 里，这里只负责把 `parts_json` 解析成气泡；解析结果按 `partsJson`
  * 记忆化，所以流式期间只有最后一条消息在重新解析（spec §12）。
@@ -111,6 +138,11 @@ fun ChatScreen(
     val attachments by viewModel.attachments.collectAsStateWithLifecycle()
     val busy by viewModel.busy.collectAsStateWithLifecycle()
     val notice by viewModel.notice.collectAsStateWithLifecycle()
+    val cachedAttachments by viewModel.cachedAttachments.collectAsStateWithLifecycle()
+    val compactMarkers by viewModel.compactMarkers.collectAsStateWithLifecycle()
+
+    // 消息与压缩标记合成一条渲染序列，标记插在「第一条晚于它的消息」之前（spec §8.2）。
+    val rows = remember(messages, compactMarkers) { buildChatRows(messages, compactMarkers) }
 
     // 挂起期间服务端会拒绝新回合（`SteerRejectReason.HITL_PAUSED`），所以和「回合中」一样禁用输入。
     val blocked = turnActive || pending != null
@@ -120,19 +152,42 @@ fun ChatScreen(
     }
 
     val listState = rememberLazyListState()
+    val scope = rememberCoroutineScope()
 
-    // 滚动跟随：只有用户没主动上滑时才贴住底部（spec §12 的死区判定在 M3 细化）
-    val followBottom = remember { mutableStateOf(true) }
-    LaunchedEffect(listState) {
-        snapshotFlow { listState.isScrollInProgress to listState.canScrollForward }
-            .collect { (scrolling, canScrollForward) ->
-                if (scrolling) followBottom.value = !canScrollForward
-            }
+    // 回到前台立刻重连一次（spec §10）：退避等待对「刚恢复网络」这种情况没有意义，
+    // 而用户从后台切回来正是最可能刚刚恢复网络的时候。
+    val lifecycleOwner = LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) viewModel.reconnect()
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
     }
 
+    // 「用户是否还在底部」是唯一的跟随开关（spec §12）：只认离底 32dp 的死区，
+    // 不在死区内就不再自动贴底，并浮出「回到最新」按钮。
+    val deadZone = with(LocalDensity.current) { SCROLL_DEAD_ZONE.toPx() }
+    val atBottom by remember(deadZone) {
+        derivedStateOf {
+            val info = listState.layoutInfo
+            val last = info.visibleItemsInfo.lastOrNull() ?: return@derivedStateOf true
+            // 第二个条件是「消息比一屏还短」的情况：那时最后一项不是 total-1（旧内容仍在下标里），
+            // 但它就贴在底部，同样应该继续跟随。
+            last.index >= info.totalItemsCount - 1 ||
+                last.offset + last.size >= info.viewportEndOffset - deadZone
+        }
+    }
+
+    // 「load-older」也是 LazyColumn 里的独立一项；算绝对下标时必须带上它，
+    // 否则新内容到达时会停在倒数第二条上。
+    val lastItemIndex = rows.lastIndex + if (state.hasMore || state.loadingOlder) 1 else 0
+
+    // 新内容到达时才滚动，且只在用户仍处于死区内时。这里读 atBottom 的当前值（不是在
+    // 组合期捕获）—— 用 snapshotFlow 监听它会变成「用户滑到底就强制贴底」，反而抢滚动。
     val stickKey = messages.size to (messages.lastOrNull()?.partsJson?.length ?: 0)
     LaunchedEffect(stickKey) {
-        if (followBottom.value && messages.isNotEmpty()) listState.scrollToItem(messages.lastIndex)
+        if (atBottom && messages.isNotEmpty()) listState.scrollToItem(lastItemIndex)
     }
 
     // 滑到顶部自动续拉更早的一页。这里读 viewModel.uiState 而不是捕获的 state ——
@@ -204,10 +259,8 @@ fun ChatScreen(
                 .padding(padding),
         ) {
             when {
-                messages.isEmpty() && state.historyLoading -> CenteredNotice(
-                    text = stringResource(R.string.chat_history_loading),
-                    busy = true,
-                )
+                // 首屏没有本地内容时给气泡骨架屏，不是全屏转圈（spec §12、§19 第 15 条）。
+                messages.isEmpty() && state.historyLoading -> ChatSkeleton()
 
                 messages.isEmpty() && state.error != null -> CenteredNotice(
                     text = state.error!!.asText(),
@@ -229,9 +282,48 @@ fun ChatScreen(
                             OlderRow(loading = state.loadingOlder, onLoad = viewModel::loadOlder)
                         }
                     }
-                    items(messages, key = { it.id }) { entity ->
-                        MessageBubble(entity = entity, json = container.json)
+                    items(rows, key = { it.key }) { row ->
+                        when (row) {
+                            is ChatRow.Message -> MessageBubble(
+                                entity = row.entity,
+                                json = container.json,
+                                threadId = threadId,
+                                cachedAttachments = cachedAttachments,
+                                onEnsureAttachment = viewModel::ensureAttachment,
+                                // 「重新拉取该轮」= 以服务端为准重取最新一页：本地那半截行会在
+                                // 历史占位清理里退场（见 ChatRepository.loadHistory）。
+                                onRefetch = viewModel::retry,
+                            )
+
+                            is ChatRow.Compact -> CompactDivider()
+                        }
                     }
+                }
+            }
+
+            // 同步中只给顶部一条细进度条，全页唯一的「忙」提示就是它（spec §12）。
+            if (state.historyLoading || state.loadingOlder) {
+                LinearProgressIndicator(
+                    modifier = Modifier
+                        .align(Alignment.TopCenter)
+                        .fillMaxWidth()
+                        .height(TOP_PROGRESS_HEIGHT),
+                    trackColor = Color.Transparent,
+                )
+            }
+
+            // 用户上滑离开死区后就不再自动贴底，这时给出回到最新的入口。
+            if (!atBottom && messages.isNotEmpty()) {
+                FilledTonalIconButton(
+                    onClick = { scope.launch { listState.animateScrollToItem(lastItemIndex) } },
+                    modifier = Modifier
+                        .align(Alignment.BottomEnd)
+                        .padding(end = 16.dp, bottom = 16.dp),
+                ) {
+                    Icon(
+                        imageVector = Icons.Filled.ArrowDownward,
+                        contentDescription = stringResource(R.string.chat_back_to_bottom),
+                    )
                 }
             }
 
@@ -436,6 +528,51 @@ private fun AttachmentChip(filename: String, onRemove: (() -> Unit)?) {
     }
 }
 
+/**
+ * 消息里的附件（spec §13）。
+ *
+ * 图片在本地有文件时直接内联渲染，否则退回文件名卡片，并在渲染时**按需**去拉一次
+ * —— 所以第一次打开是文件名、拉完自动变成图，第二次打开直接命中本地缓存
+ * （spec §19 第 18 条）。
+ *
+ * 刻意不做「先显示网络图、后台再落盘」：那要求把带鉴权的 OkHttp 客户端接进 Coil 的
+ * 网络层，而这里的下载本来就要走一遍自己的落盘 + 容量控制，两条路只会互相打架。
+ */
+@Composable
+private fun AttachmentBubble(
+    part: Part,
+    threadId: String,
+    cachedAttachments: Map<String, AttachmentEntity>,
+    onEnsure: suspend (String?, String?) -> Unit,
+) {
+    val ref = part.url
+    val id = ref?.let { AttachmentRefs.idOf(threadId, it) }
+    val localPath = id?.let { cachedAttachments[it]?.localPath }
+    val filename = part.filename.orEmpty()
+        .ifBlank { stringResource(R.string.chat_attachment_generic) }
+    val isImage = AttachmentRefs.isImage(part.mime)
+
+    if (!isImage || localPath == null) {
+        // 只有图片值得下载：非图片在这条界面上本来就只显示文件名，拉下来也无处可用。
+        // 没有引用时（刚发出的本地附件、内联帧）同样无从下载。
+        if (isImage && localPath == null && ref != null) {
+            LaunchedEffect(id) { onEnsure(ref, part.mime) }
+        }
+        AttachmentChip(filename = filename, onRemove = null)
+        return
+    }
+
+    AsyncImage(
+        model = File(localPath),
+        contentDescription = filename,
+        contentScale = ContentScale.Fit,
+        modifier = Modifier
+            .widthIn(max = 260.dp)
+            .heightIn(max = 240.dp)
+            .clip(RoundedCornerShape(8.dp)),
+    )
+}
+
 // ------------------------------------------------------------------ HITL
 
 /**
@@ -542,8 +679,12 @@ private fun OlderRow(loading: Boolean, onLoad: () -> Unit) {
     }
 }
 
+/**
+ * 居中占位文案。**故意不带任何进度指示**：忙态一律走顶部细进度条或骨架屏
+ * （spec §12、§19 第 15 条「全程不存在全屏转圈」）。
+ */
 @Composable
-private fun CenteredNotice(text: String, busy: Boolean = false, onRetry: (() -> Unit)? = null) {
+private fun CenteredNotice(text: String, onRetry: (() -> Unit)? = null) {
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -551,10 +692,6 @@ private fun CenteredNotice(text: String, busy: Boolean = false, onRetry: (() -> 
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center,
     ) {
-        if (busy) {
-            CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
-            Spacer(Modifier.height(12.dp))
-        }
         Text(
             text = text,
             style = MaterialTheme.typography.bodyMedium,
@@ -568,6 +705,64 @@ private fun CenteredNotice(text: String, busy: Boolean = false, onRetry: (() -> 
             }
         }
     }
+}
+
+/**
+ * 会话骨架屏（spec §12「会话用气泡占位」）。
+ *
+ * 首次进入会话时本地还没有任何一行可渲染，这里先给出「消息正在到达」的形状 ——
+ * 形状与 [MessageBubble] 对齐，左右交错，让首屏就有方向感。
+ */
+@Composable
+private fun ChatSkeleton() {
+    val pulse = rememberInfiniteTransition(label = "chat-skeleton")
+    val alpha by pulse.animateFloat(
+        initialValue = 0.35f,
+        targetValue = 0.8f,
+        animationSpec = infiniteRepeatable(tween(900), RepeatMode.Reverse),
+        label = "chat-skeleton-alpha",
+    )
+
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(horizontal = 12.dp, vertical = 10.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        repeat(SKELETON_BUBBLES) { index ->
+            // 每三条有一个「用户」气泡靠右，其余靠左，和真实消息的排布一致
+            val isUser = index % 3 == 0
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = if (isUser) Arrangement.End else Arrangement.Start,
+            ) {
+                Column(
+                    modifier = Modifier
+                        .widthIn(max = 340.dp)
+                        .fillMaxWidth(if (isUser) 0.45f else 0.7f)
+                        .alpha(alpha)
+                        .clip(RoundedCornerShape(14.dp))
+                        .background(MaterialTheme.colorScheme.surfaceVariant)
+                        .padding(horizontal = 12.dp, vertical = 10.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
+                    SkeletonLine(fraction = 1f)
+                    SkeletonLine(fraction = if (index % 2 == 0) 0.7f else 0.5f)
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun SkeletonLine(fraction: Float) {
+    Box(
+        modifier = Modifier
+            .fillMaxWidth(fraction)
+            .height(12.dp)
+            .clip(RoundedCornerShape(4.dp))
+            .background(MaterialTheme.colorScheme.onSurfaceVariant),
+    )
 }
 
 /** 浮在内容顶部的短提示。比 Snackbar 更适合这里：不需要额外的作用域，也不会盖住输入栏。 */
@@ -615,11 +810,23 @@ private fun OverlayNotice(
 }
 
 @Composable
-private fun MessageBubble(entity: MessageEntity, json: Json) {
-    // 按 partsJson 记忆化：流式期间每 120ms 只有最后一条消息的内容变化，其余直接命中缓存
+private fun MessageBubble(
+    entity: MessageEntity,
+    json: Json,
+    threadId: String,
+    cachedAttachments: Map<String, AttachmentEntity>,
+    onEnsureAttachment: suspend (String?, String?) -> Unit,
+    onRefetch: () -> Unit,
+) {
+    // 按 partsJson 记忆化：流式期间每 ~50ms（spec §12 的合帧间隔）只有最后一条消息的内容变化，
+    // 其余历史块直接命中缓存，不重新解析。
     val parts = remember(entity.partsJson) { PartsCodec.decode(json, entity.partsJson) }
     val isUser = entity.role == ROLE_USER
     val streaming = entity.status == MessageStatus.STREAMING
+
+    // 气泡宽度上限跟着系统字号走（spec §12「大字体」、§19 第 22 条）：默认字号下仍是 340dp，
+    // 字号放大后要是不放宽，一条正文会被挤成又窄又高的一列。最终宽度仍受所在行的屏宽约束。
+    val bubbleMaxWidth = BUBBLE_MAX_WIDTH * LocalDensity.current.fontScale.coerceAtLeast(1f)
 
     Row(
         modifier = Modifier.fillMaxWidth(),
@@ -632,7 +839,7 @@ private fun MessageBubble(entity: MessageEntity, json: Json) {
                 MaterialTheme.colorScheme.surfaceVariant
             },
             shape = RoundedCornerShape(14.dp),
-            modifier = Modifier.widthIn(max = 340.dp),
+            modifier = Modifier.widthIn(max = bubbleMaxWidth),
         ) {
             Column(modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) {
                 if (parts.isEmpty()) {
@@ -643,9 +850,10 @@ private fun MessageBubble(entity: MessageEntity, json: Json) {
                 parts.forEachIndexed { index, part ->
                     val isTail = streaming && index == parts.lastIndex
                     when (part.type) {
-                        PartType.TEXT -> Text(
-                            text = (part.text.orEmpty()) + if (isTail) CARET else "",
-                            style = MaterialTheme.typography.bodyMedium,
+                        PartType.TEXT -> MessageText(
+                            text = part.text.orEmpty(),
+                            caret = isTail,
+                            streaming = streaming,
                         )
 
                         PartType.REASONING -> ReasoningBlock(part.text.orEmpty())
@@ -666,9 +874,11 @@ private fun MessageBubble(entity: MessageEntity, json: Json) {
                             initiallyExpanded = (part.output?.length ?: 0) <= TOOL_PREVIEW_CHARS,
                         )
 
-                        PartType.ATTACHMENT -> AttachmentChip(
-                            filename = part.filename.orEmpty().ifBlank { DEFAULT_ATTACHMENT_NAME },
-                            onRemove = null,
+                        PartType.ATTACHMENT -> AttachmentBubble(
+                            part = part,
+                            threadId = threadId,
+                            cachedAttachments = cachedAttachments,
+                            onEnsure = onEnsureAttachment,
                         )
 
                         PartType.ERROR -> ToolCard(
@@ -691,9 +901,95 @@ private fun MessageBubble(entity: MessageEntity, json: Json) {
                         color = MaterialTheme.colorScheme.error,
                     )
                 }
+
+                // 半截消息（spec §10、§19 第 11 条）：明确说出「这轮是断的」，并给一个以服务端
+                // 为准重取的入口。不自动重取 —— 断流时用户最需要的是先看清眼前这一截。
+                if (entity.status == MessageStatus.INTERRUPTED) {
+                    Spacer(Modifier.height(2.dp))
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(
+                            text = stringResource(R.string.chat_interrupted),
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.error,
+                        )
+                        Text(
+                            text = stringResource(R.string.chat_refetch_turn),
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier
+                                .clickable(onClick = onRefetch)
+                                .padding(horizontal = 8.dp, vertical = 2.dp),
+                        )
+                    }
+                }
             }
         }
     }
+}
+
+/**
+ * 消息正文，带 spec §12 的两条「长内容保护」：
+ *
+ * 1. 超过 [LONG_TEXT_CHARS] 的正文**默认折叠** —— 一条两万字正文的全量文本布局正是滚动掉帧的
+ *    主因（§19 第 17 条），折叠后只布局 [COLLAPSED_TEXT_CHARS] 字。
+ * 2. 含超长单行的正文**不折行、改横向滚动** —— 纯文本渲染下没有代码块/表格的语法信息，
+ *    按行宽近似判断（见 [hasVeryLongLine]），横向滚动是这类内容唯一读得懂的形态。
+ *
+ * **流式中的那条不折叠**：用户此刻盯着看的就是它；而且合帧后长度每 50ms 都在变，
+ * 折叠态会在「够长 / 不够长」之间来回跳。
+ */
+@Composable
+private fun MessageText(text: String, caret: Boolean, streaming: Boolean) {
+    val collapsible = !streaming && text.length > LONG_TEXT_CHARS
+    var expanded by remember { mutableStateOf(false) }
+    val shown = if (collapsible && !expanded) text.take(COLLAPSED_TEXT_CHARS) else text
+    val body = shown + if (caret) CARET else ""
+
+    if (hasVeryLongLine(body)) {
+        // 不折行时由 Box 承担横向滚动；气泡宽度仍由外层的 `widthIn` 约束。
+        Box(modifier = Modifier.horizontalScroll(rememberScrollState())) {
+            Text(
+                text = body,
+                style = MaterialTheme.typography.bodyMedium,
+                softWrap = false,
+            )
+        }
+    } else {
+        Text(text = body, style = MaterialTheme.typography.bodyMedium)
+    }
+
+    if (collapsible) {
+        Text(
+            text = if (expanded) {
+                stringResource(R.string.chat_text_collapse)
+            } else {
+                stringResource(R.string.chat_text_expand, text.length)
+            },
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.primary,
+            modifier = Modifier
+                .clickable { expanded = !expanded }
+                .padding(top = 4.dp),
+        )
+    }
+}
+
+/**
+ * 有没有「长到不该折行」的一行。
+ *
+ * 纯文本渲染拿不到代码块/表格的语法信息，只能按行宽近似：一行超过 [LONG_LINE_CHARS] 字符，
+ * 自动折行后基本读不成样子（代码、表格、长 URL 都属于这类）。
+ */
+private fun hasVeryLongLine(text: String): Boolean {
+    var start = 0
+    while (start < text.length) {
+        val newline = text.indexOf('\n', start)
+        val end = if (newline < 0) text.length else newline
+        if (end - start > LONG_LINE_CHARS) return true
+        if (newline < 0) return false
+        start = newline + 1
+    }
+    return false
 }
 
 /** 思考过程默认只露三行，点一下展开（spec §11「`reasoning` 默认折叠」）。 */
@@ -819,9 +1115,100 @@ private fun connectionColor(state: ChatSocket.State) = when (state) {
     ChatSocket.State.Idle -> MaterialTheme.colorScheme.outline
 }
 
+/**
+ * 上下文压缩分隔线（docs/spec.md §8.2）。
+ *
+ * 只说明「这里发生过压缩」，不展开服务端给的摘要：摘要是一段完整叙述，摊在消息流中间会把
+ * 对话本身挤散，而它真正的用处是提示用户更早的内容已经不是原文了。
+ */
+@Composable
+private fun CompactDivider() {
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 4.dp),
+    ) {
+        HorizontalDivider(modifier = Modifier.weight(1f))
+        Text(
+            text = stringResource(R.string.chat_compacted),
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(horizontal = 8.dp),
+        )
+        HorizontalDivider(modifier = Modifier.weight(1f))
+    }
+}
+
+/**
+ * 消息流里的一行。
+ *
+ * 压缩标记与消息混在同一条序列里，LazyColumn 才能统一编号 —— 「回到最新」要滚到的绝对
+ * 下标就依赖这个编号（spec §12）。
+ */
+private sealed interface ChatRow {
+    val key: String
+
+    data class Message(val entity: MessageEntity) : ChatRow {
+        override val key: String get() = entity.id
+    }
+
+    /** 同一个毫秒不会被压缩两次，所以时间戳本身足够当稳定 key。 */
+    data class Compact(val createdAt: Long) : ChatRow {
+        override val key: String get() = "compact-$createdAt"
+    }
+}
+
+/**
+ * 把压缩标记插进消息流（docs/spec.md §8.2）。
+ *
+ * 标记只带时间戳，而消息的 `sortOrder` 与它同一量纲（历史消息是 `created_at * 1000`，
+ * 本地实时行是毫秒时间戳），所以「第一条晚于标记的消息」就是它该出现的位置。
+ * 比所有消息都新的标记排在队尾：压缩本来就发生在回合之间，那时确实还没有下一条消息。
+ *
+ * [markers] 必须按时间正序（`CompactMarkerDao.observeByThread` 已经保证了）。
+ */
+private fun buildChatRows(
+    messages: List<MessageEntity>,
+    markers: List<CompactMarkerEntity>,
+): List<ChatRow> {
+    if (markers.isEmpty()) return messages.map { ChatRow.Message(it) }
+
+    val rows = ArrayList<ChatRow>(messages.size + markers.size)
+    var next = 0
+    messages.forEach { message ->
+        while (next < markers.size && markers[next].createdAt <= message.sortOrder) {
+            rows += ChatRow.Compact(markers[next++].createdAt)
+        }
+        rows += ChatRow.Message(message)
+    }
+    while (next < markers.size) rows += ChatRow.Compact(markers[next++].createdAt)
+    return rows
+}
+
 private const val ROLE_USER = "user"
 private const val CARET = "▍"
 
 /** 短于这个长度的工具结果默认展开，长输出折叠成一行预览。 */
 private const val TOOL_PREVIEW_CHARS = 160
-private const val DEFAULT_ATTACHMENT_NAME = "attachment"
+
+/** 正文超过这个字符数就默认折叠（spec §12「长内容保护」、§19 第 17 条）。 */
+private const val LONG_TEXT_CHARS = 20_000
+
+/** 折叠时先露出的字符数：够看清开头，又不至于让文本布局拖慢滚动。 */
+private const val COLLAPSED_TEXT_CHARS = 2_000
+
+/** 单行超过这个字符数就不折行、改横向滚动（`hasVeryLongLine` 的判据）。 */
+private const val LONG_LINE_CHARS = 200
+
+/** 气泡宽度上限（spec §12「大字体」：这个上限随系统字号放宽，见 `MessageBubble`）。 */
+private val BUBBLE_MAX_WIDTH = 340.dp
+
+/** 底部死区：用户落在离底 32dp 以内才继续自动跟随（spec §12）。 */
+private val SCROLL_DEAD_ZONE = 32.dp
+
+/** 同步中的顶部细进度条高度（spec §12「顶部 1px 不定进度条」）。 */
+private val TOP_PROGRESS_HEIGHT = 2.dp
+
+/** 骨架屏气泡条数：够铺满一屏即可，不做无限占位。 */
+private const val SKELETON_BUBBLES = 4

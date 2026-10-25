@@ -7,7 +7,9 @@ import com.octopmobile.app.data.remote.dto.HistoryResponse
 import com.octopmobile.app.data.remote.dto.HitlResumeBody
 import com.octopmobile.app.data.remote.dto.LoginRequest
 import com.octopmobile.app.data.remote.dto.LoginResponse
+import com.octopmobile.app.data.remote.dto.RenameThreadBody
 import com.octopmobile.app.data.remote.dto.ThreadDto
+import com.octopmobile.app.data.remote.dto.TrajectoryHistoryDto
 import com.octopmobile.app.data.remote.dto.UploadResponse
 import com.octopmobile.app.data.remote.dto.UserDto
 import kotlinx.coroutines.Dispatchers
@@ -73,23 +75,13 @@ class OctopApi(
      * 登出。服务端只记审计（204），JWT 无状态、不会立即失效 —— 真正让你登出的是本地清令牌，
      * 所以这里失败也不影响结果，调用方可以忽略返回值。
      */
-    suspend fun logout(): ApiResult<Unit> = withContext(Dispatchers.IO) {
-        try {
-            val request = Request.Builder()
+    suspend fun logout(): ApiResult<Unit> =
+        executeUnit(
+            Request.Builder()
                 .url(url(API, AUTH, LOGOUT))
                 .post(EMPTY_BODY)
-                .build()
-            client.newCall(request).execute().use { response ->
-                if (response.isSuccessful) {
-                    ApiResult.Ok(Unit)
-                } else {
-                    ApiResult.Failure(parseError(response.code, response.body?.string().orEmpty()))
-                }
-            }
-        } catch (e: IOException) {
-            ApiResult.Failure(ApiError.Network(e.message ?: e.javaClass.simpleName))
-        }
-    }
+                .build(),
+        )
 
     /** 返回**裸数组**（docs/protocol.md §5.1），不是 `{"items":[...]}`。 */
     suspend fun agents(): ApiResult<List<AgentDto>> =
@@ -131,6 +123,39 @@ class OctopApi(
         )
 
     /**
+     * 会话轨迹（`GET /api/agents/{agent_id}/threads/{thread_id}/trajectory`，
+     * `routers/chat/trajectory.py:239-283`）。
+     *
+     * 客户端只用到 `kinds=compacted` 这一种事件，拿它画消息流里的压缩分隔线
+     * （docs/spec.md §8.2）。**压缩不推 WS**（`infra/gateway/ws/` 里没有任何 `compacted`
+     * 事件），所以这是该信息的唯一来源。
+     *
+     * [beforeSeq] 是向更早翻页的游标，来自上一页的 `next_before_seq`。
+     */
+    suspend fun trajectory(
+        agentId: String,
+        threadId: String,
+        kinds: String? = null,
+        limit: Int = DEFAULT_PAGE_SIZE,
+        beforeSeq: Int? = null,
+    ): ApiResult<TrajectoryHistoryDto> =
+        execute(
+            request = Request.Builder()
+                .url(
+                    url(API, AGENTS, agentId, THREADS, threadId, TRAJECTORY)
+                        .newBuilder()
+                        .addQueryParameter("limit", limit.toString())
+                        .apply {
+                            if (!kinds.isNullOrBlank()) addQueryParameter("kinds", kinds)
+                            if (beforeSeq != null) addQueryParameter("before_seq", beforeSeq.toString())
+                        }
+                        .build(),
+                )
+                .build(),
+            deserializer = TrajectoryHistoryDto.serializer(),
+        )
+
+    /**
      * 新建会话（`POST /api/agents/{agent_id}/threads`，201）。
      *
      * 服务端语义是 `ThreadRegistry.reset()`：**新建 thread + 把 dashboard 会话重绑到它**。
@@ -143,6 +168,52 @@ class OctopApi(
                 .post(EMPTY_BODY)
                 .build(),
             deserializer = CreateThreadResponse.serializer(),
+        )
+
+    /**
+     * 改名 / 置顶（`PATCH /api/agents/{agent_id}/threads/{thread_id}`，200）。
+     *
+     * 上游返回更新后的 thread 对象（`chat/history.py:546-560`），这里**不解析** —— 本地那份自己写，
+     * 下次列表刷新再和服务端对齐。`null` 字段不会进请求体（`Json.explicitNulls = false`），
+     * 所以「只改 pinned」的请求不会顺带把 `title` 置空（docs/protocol.md §5.2）。
+     */
+    suspend fun patchThread(
+        agentId: String,
+        threadId: String,
+        body: RenameThreadBody,
+    ): ApiResult<Unit> =
+        executeUnit(
+            Request.Builder()
+                .url(url(API, AGENTS, agentId, THREADS, threadId))
+                .patch(
+                    json.encodeToString(RenameThreadBody.serializer(), body)
+                        .toRequestBody(JSON_MEDIA_TYPE),
+                )
+                .build(),
+        )
+
+    /** 删除会话（`DELETE /api/agents/{agent_id}/threads/{thread_id}`，204）。 */
+    suspend fun deleteThread(agentId: String, threadId: String): ApiResult<Unit> =
+        executeUnit(
+            Request.Builder()
+                .url(url(API, AGENTS, agentId, THREADS, threadId))
+                .delete()
+                .build(),
+        )
+
+    /**
+     * 标记会话已读（`POST /api/agents/{agent_id}/threads/{thread_id}/read`，204）。
+     *
+     * 上游每个会话都有自己的 `unread_count`，但**只有 agent 级聚合**会随 `GET /api/agents` 返回，
+     * thread 列表里没有这个字段（docs/protocol.md §5.2）。所以客户端的未读是自己攒的，
+     * 这个接口只负责把服务端那一份一起清掉，免得下次刷新又翻出来。
+     */
+    suspend fun markThreadRead(agentId: String, threadId: String): ApiResult<Unit> =
+        executeUnit(
+            Request.Builder()
+                .url(url(API, AGENTS, agentId, THREADS, threadId, READ))
+                .post(EMPTY_BODY)
+                .build(),
         )
 
     /**
@@ -171,6 +242,38 @@ class OctopApi(
             // 上传可能包含图片，读超时放宽（默认 30s 对大图偏紧）
             readTimeoutSeconds = UPLOAD_TIMEOUT_SECONDS,
         )
+
+    /**
+     * 下载一个附件（docs/spec.md §13）。
+     *
+     * [absoluteUrl] **必须是绝对地址** —— 上游给的是相对引用（`workspace/download?path=…`），
+     * 归一化在 `data/attachments/AttachmentRefs` 里做。这些路由要求 `Authorization: Bearer`
+     * （`routers/workspace.py:339` 的 `Depends(current_user)`），而本客户端正是带鉴权的那一个。
+     */
+    suspend fun download(absoluteUrl: String): ApiResult<ByteArray> = withContext(Dispatchers.IO) {
+        try {
+            val request = Request.Builder().url(absoluteUrl.toHttpUrl()).build()
+            val call = client.newBuilder()
+                .readTimeout(DOWNLOAD_TIMEOUT_SECONDS, TimeUnit.SECONDS)
+                .build()
+                .newCall(request)
+            call.execute().use { response ->
+                if (!response.isSuccessful) {
+                    return@withContext ApiResult.Failure(
+                        parseError(response.code, response.body?.string().orEmpty()),
+                    )
+                }
+                val bytes = response.body?.bytes()
+                if (bytes == null || bytes.isEmpty()) {
+                    ApiResult.Failure(ApiError.Parse("empty attachment body"))
+                } else {
+                    ApiResult.Ok(bytes)
+                }
+            }
+        } catch (e: IOException) {
+            ApiResult.Failure(ApiError.Network(e.message ?: e.javaClass.simpleName))
+        }
+    }
 
     /**
      * HITL 人工确认续跑（`POST /api/agents/{agent_id}/chat/hitl/resume`，SSE）。
@@ -245,6 +348,26 @@ class OctopApi(
         }
     }
 
+    /**
+     * 只关心成功/失败、不需要响应体的一类请求（`logout` / `PATCH` / `DELETE` / `read`）。
+     *
+     * 这些路由有的返回 204 空体、有的返回 JSON —— [execute] 必须解码，对空体没法用；
+     * 而这里两个都当「成功」处理，需要的内容由调用方自己写本地。
+     */
+    private suspend fun executeUnit(request: Request): ApiResult<Unit> = withContext(Dispatchers.IO) {
+        try {
+            client.newCall(request).execute().use { response ->
+                if (response.isSuccessful) {
+                    ApiResult.Ok(Unit)
+                } else {
+                    ApiResult.Failure(parseError(response.code, response.body?.string().orEmpty()))
+                }
+            }
+        } catch (e: IOException) {
+            ApiResult.Failure(ApiError.Network(e.message ?: e.javaClass.simpleName))
+        }
+    }
+
     private fun parseError(status: Int, body: String): ApiError {
         val envelope = runCatching {
             json.decodeFromString(ApiErrorEnvelope.serializer(), body)
@@ -270,6 +393,8 @@ class OctopApi(
         private const val ME = "me"
         private const val THREADS = "threads"
         private const val HISTORY = "history"
+        private const val TRAJECTORY = "trajectory"
+        private const val READ = "read"
         private const val UPLOAD = "upload"
         private const val CHAT = "chat"
         private const val HITL = "hitl"
@@ -277,6 +402,9 @@ class OctopApi(
 
         /** 附件可能很大，读超时放宽到 2 分钟（默认 30s 传大图会断）。 */
         private const val UPLOAD_TIMEOUT_SECONDS = 120L
+
+        /** 下载同理，再宽一点：服务端可能要先从 workspace 读文件再回传（docs/spec.md §13）。 */
+        private const val DOWNLOAD_TIMEOUT_SECONDS = 240L
 
         /** SSE 的载荷前缀（`event: chunk\ndata: <JSON>\n\n`）。 */
         private const val SSE_DATA = "data:"

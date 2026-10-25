@@ -155,14 +155,31 @@ sealed interface ServerEvent {
         override val type: String get() = "user"
     }
 
-    /** `attachment` —— 内联附件，`data` 是 base64。 */
+    /**
+     * `attachment` —— 附件。
+     *
+     * 上游有**两个下发点，字段集不同**（`ws/ws_channel.py:376-391` 与
+     * `media/tool_media.py:747-774`）：
+     * - 内联形态：只有 [data]（base64 完整文件），没有 URL；
+     * - 引用形态：只有 [url] / [previewUrl] / [path]，文件在服务端或 workspace 里，要再发一次
+     *   带鉴权的下载请求（docs/spec.md §13）。
+     *
+     * 所以这些字段都建在同一个数据类上，由调用方按「有 data 就地落盘、否则按引用拉取」分流。
+     */
     data class Attachment(
         override val threadId: String?,
         val kind: String?,
         val mimeType: String?,
         val filename: String?,
         val altText: String?,
+        /** 内联 base64 完整文件；引用形态下为 null。 */
         val data: String?,
+        /** 相对或绝对下载地址（引用形态）。 */
+        val url: String?,
+        /** 预览图地址（引用形态，多为图片）。 */
+        val previewUrl: String?,
+        /** workspace 内相对路径（引用形态，`url` 缺失时的备选）。 */
+        val path: String?,
     ) : ServerEvent {
         override val type: String get() = "attachment"
     }
@@ -284,6 +301,9 @@ sealed interface ServerEvent {
                     filename = obj.stringOrNull("filename"),
                     altText = obj.stringOrNull("alt_text"),
                     data = obj.stringOrNull("data"),
+                    url = obj.stringOrNull("url"),
+                    previewUrl = obj.stringOrNull("preview_url"),
+                    path = obj.stringOrNull("path"),
                 )
 
                 "state_update" -> State(

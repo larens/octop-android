@@ -1,6 +1,7 @@
 package com.octopmobile.app.data
 
 import android.content.Context
+import com.octopmobile.app.data.attachments.AttachmentStore
 import com.octopmobile.app.data.db.OctopDatabase
 import com.octopmobile.app.data.prefs.SecurePrefs
 import com.octopmobile.app.data.remote.AuthInterceptor
@@ -46,6 +47,9 @@ class AppContainer(context: Context) {
 
     /** 令牌与实例归属（docs/spec.md §15）。 */
     val securePrefs: SecurePrefs = SecurePrefs(appContext)
+
+    /** 附件二进制的落盘与容量控制（docs/spec.md §13）。实例无关，全局一个即可。 */
+    val attachments: AttachmentStore by lazy { AttachmentStore(appContext, database.attachments()) }
 
     @Volatile
     private var cachedApi: OctopApi? = null
@@ -99,11 +103,15 @@ class AppContainer(context: Context) {
         ChatRepository(
             agentId = agentId,
             threadId = threadId,
+            baseUrl = baseUrl,
             api = api(baseUrl),
             socket = chatSocket(baseUrl, agentId),
             messageDao = database.messages(),
             threadDao = database.threads(),
             pendingOpDao = database.pendingOps(),
+            attachmentDao = database.attachments(),
+            attachmentStore = attachments,
+            compactMarkerDao = database.compactMarkers(),
             json = json,
         )
 }

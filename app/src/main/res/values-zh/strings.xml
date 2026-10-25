@@ -77,16 +77,34 @@
     <!-- Native client (docs/spec.md) -->
     <string name="threads_empty">还没有会话。</string>
     <string name="threads_pinned">置顶</string>
+    <string name="threads_pin">置顶</string>
+    <string name="threads_unpin">取消置顶</string>
+    <string name="threads_rename">重命名</string>
+    <string name="threads_rename_label">标题</string>
+    <string name="threads_delete">删除</string>
+    <string name="threads_delete_message">删除「%1$s」？该会话的消息也会从服务端移除。</string>
     <string name="err_webview_only">该实例与原生客户端不完全兼容，已切换到网页版。</string>
 
     <!-- Chat (docs/spec.md §18 M1) -->
     <string name="chat_turn_active">正在生成…</string>
-    <string name="chat_history_loading">正在整理历史…</string>
+    <string name="chat_back_to_bottom">回到最新</string>
     <string name="chat_no_messages">还没有消息。</string>
     <string name="chat_load_older">加载更早的消息</string>
     <string name="chat_reasoning">思考过程</string>
+    <string name="chat_compacted">上下文已压缩</string>
+    <string name="chat_interrupted">输出中断</string>
+    <string name="chat_refetch_turn">重新拉取该轮</string>
+    <string name="chat_text_expand">展开全文（共 %1$d 字）</string>
+    <string name="chat_text_collapse">收起</string>
     <string name="settings_web_fallback">打开网页版</string>
     <string name="settings_web_fallback_summary">当原生界面缺少某个功能时，回退到内置的浏览器视图。</string>
+
+    <!-- Attachment cache (docs/spec.md §13, §19) -->
+    <string name="settings_clear_cache">清理附件缓存</string>
+    <string name="settings_clear_cache_summary">已占用 %1$s。登录态与会话不受影响。</string>
+    <string name="settings_cache_measuring">正在统计…</string>
+    <string name="settings_cache_cleared">附件缓存已清理。</string>
+    <string name="chat_attachment_generic">附件</string>
 
     <!-- Chat composer (docs/spec.md §18 M2) -->
     <string name="threads_new">新建会话</string>

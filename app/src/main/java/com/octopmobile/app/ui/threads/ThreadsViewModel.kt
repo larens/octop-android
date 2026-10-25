@@ -15,6 +15,7 @@ import com.octopmobile.app.data.remote.ApiResult
 import com.octopmobile.app.data.remote.dto.AgentDto
 import com.octopmobile.app.data.remote.isUnauthorized
 import com.octopmobile.app.data.repo.InstanceRepository
+import com.octopmobile.app.data.repo.ThreadRepository
 import com.octopmobile.app.ui.appContainer
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -31,9 +32,18 @@ data class ThreadsUiState(
     val host: String? = null,
     val agents: List<AgentDto> = emptyList(),
     val selectedAgentId: String? = null,
-    /** 首次拉 agent 目录期间为 true；只用于「本地一条会话都没有」时的骨架屏。 */
-    val agentsLoading: Boolean = true,
+    /**
+     * 当前 agent 的会话列表是否已经拿到过服务端的答案。本地一条会话都没有时用它区分
+     * 「还没问到」（骨架屏）和「确实没有」（空态）—— 只看 `threads.isEmpty()` 的话，
+     * agent 目录拉完、会话列表还在路上这段会先闪一下「还没有会话」。
+     */
+    val threadsLoaded: Boolean = false,
     val syncing: Boolean = false,
+    /**
+     * 这次同步是用户下拉触发的。下拉用 `PullToRefreshBox` 自带的转圈做反馈，后台同步用
+     * 顶部细进度条（spec §12）—— 两个都亮就成了两个忙提示，所以在这里分一下。
+     */
+    val pulled: Boolean = false,
     val error: ApiError? = null,
     /** 令牌缺失或被服务端拒掉，UI 应回登录页。 */
     val needsLogin: Boolean = false,
@@ -43,6 +53,11 @@ data class ThreadsUiState(
     val creating: Boolean = false,
     /** 新建成功、待导航的会话 id；UI 消费后调 [ThreadsViewModel.consumeCreated]。 */
     val createdThreadId: String? = null,
+    /**
+     * 改名 / 置顶 / 删除失败的一次性提示。这三个动作都是在列表上就地发生的，
+     * 失败了如果只往 [error] 里塞，非空列表根本没人看 —— 所以单独给一个提示位。
+     */
+    val notice: ApiError? = null,
 )
 
 /**
@@ -50,7 +65,7 @@ data class ThreadsUiState(
  *
  * 关键约束：**列表由 Room 驱动**。`agent_id` 从 DataStore 直接读，所以冷启动时不需要等
  * `GET /api/agents` 返回就能出会话；网络请求只负责往库里回填。这也是「冷启动秒出列表」
- * 的实现方式 —— 页面里没有全屏 spinner，只有本地为空时的骨架屏。
+ * 的实现方式 —— 页面里没有全屏 spinner，只有本地为空且还没问到服务端时的骨架屏。
  */
 @OptIn(ExperimentalCoroutinesApi::class)
 class ThreadsViewModel(private val container: AppContainer) : ViewModel() {
@@ -77,14 +92,14 @@ class ThreadsViewModel(private val container: AppContainer) : ViewModel() {
             val baseUrl = container.prefs.currentHost()
             uiState = uiState.copy(host = baseUrl)
             if (baseUrl.isNullOrBlank()) {
-                uiState = uiState.copy(agentsLoading = false)
+                uiState = uiState.copy(threadsLoaded = true)
                 return@launch
             }
             host.value = baseUrl
 
             // `/api/agents` 必然带令牌，没有令牌就先去登录，不发这次注定 401 的请求。
             if (container.securePrefs.tokenFor(baseUrl) == null) {
-                uiState = uiState.copy(agentsLoading = false, needsLogin = true)
+                uiState = uiState.copy(threadsLoaded = true, needsLogin = true)
                 return@launch
             }
 
@@ -98,7 +113,7 @@ class ThreadsViewModel(private val container: AppContainer) : ViewModel() {
         val baseUrl = host.value ?: return
         if (agent.agentId == uiState.selectedAgentId) return
 
-        uiState = uiState.copy(selectedAgentId = agent.agentId, error = null)
+        uiState = uiState.copy(selectedAgentId = agent.agentId, error = null, threadsLoaded = false)
         agentId.value = agent.agentId
         viewModelScope.launch {
             container.prefs.setSelectedAgent(agent.agentId, agent.name)
@@ -106,10 +121,15 @@ class ThreadsViewModel(private val container: AppContainer) : ViewModel() {
         }
     }
 
+    /**
+     * 下拉刷新（spec §11）：走的是增量同步，不是重载页面。
+     *
+     * 标 [ThreadsUiState.pulled]，让下拉指示器在这个请求期间接管提示，顶部细进度条让位。
+     */
     fun refresh() {
         val baseUrl = host.value ?: return
         val id = agentId.value ?: return
-        viewModelScope.launch { refresh(baseUrl, id) }
+        viewModelScope.launch { refresh(baseUrl, id, pulled = true) }
     }
 
     fun retry() {
@@ -148,12 +168,44 @@ class ThreadsViewModel(private val container: AppContainer) : ViewModel() {
         uiState = uiState.copy(createdThreadId = null)
     }
 
+    // ------------------------------------------------------------ 长按菜单（spec §11）
+
+    /**
+     * 置顶 / 取消置顶、改名、删除。三者同构：**服务端成功才动本地**（见
+     * [ThreadRepository.setPinned]），写库即刷新界面。
+     *
+     * 不做乐观更新：置顶失败却已经跳到了「置顶」分组，用户会以为改成功了。
+     */
+    fun togglePin(thread: ThreadEntity) = mutate { it.setPinned(thread.threadId, !thread.pinned) }
+
+    fun rename(threadId: String, title: String) = mutate { it.rename(threadId, title) }
+
+    fun delete(threadId: String) = mutate { it.delete(threadId) }
+
+    fun consumeNotice() {
+        uiState = uiState.copy(notice = null)
+    }
+
+    private fun mutate(action: suspend (ThreadRepository) -> ApiResult<Unit>) {
+        val baseUrl = host.value ?: return
+        val id = agentId.value ?: return
+        viewModelScope.launch {
+            when (val result = action(container.threadRepository(baseUrl, id))) {
+                is ApiResult.Ok -> Unit
+                is ApiResult.Failure -> uiState = uiState.copy(
+                    notice = result.error,
+                    needsLogin = result.error.isUnauthorized,
+                )
+            }
+        }
+    }
+
     private suspend fun loadAgents(baseUrl: String) {
-        uiState = uiState.copy(agentsLoading = true, error = null)
+        uiState = uiState.copy(threadsLoaded = false, error = null)
 
         when (val result = container.instanceRepository(baseUrl).agents()) {
             is ApiResult.Failure -> uiState = uiState.copy(
-                agentsLoading = false,
+                threadsLoaded = true,
                 error = result.error,
                 needsLogin = result.error.isUnauthorized,
             )
@@ -162,7 +214,7 @@ class ThreadsViewModel(private val container: AppContainer) : ViewModel() {
                 val agents = result.value
                 if (agents.isEmpty()) {
                     // 探测项「有 agent」直接失败 —— 原生链路没有可落脚的会话空间（protocol.md §7）。
-                    uiState = uiState.copy(agentsLoading = false, webviewOnly = true)
+                    uiState = uiState.copy(threadsLoaded = true, webviewOnly = true)
                     container.instanceRepository(baseUrl).markWebviewOnly()
                     return
                 }
@@ -173,7 +225,6 @@ class ThreadsViewModel(private val container: AppContainer) : ViewModel() {
                 uiState = uiState.copy(
                     agents = agents,
                     selectedAgentId = selected.agentId,
-                    agentsLoading = false,
                     error = null,
                 )
                 agentId.value = selected.agentId
@@ -186,13 +237,22 @@ class ThreadsViewModel(private val container: AppContainer) : ViewModel() {
         }
     }
 
-    private suspend fun refresh(baseUrl: String, id: String) {
-        uiState = uiState.copy(syncing = true)
+    /** [pulled] 表示这次同步由用户下拉触发，UI 据此决定亮下拉指示器还是顶部细进度条。 */
+    private suspend fun refresh(baseUrl: String, id: String, pulled: Boolean = false) {
+        uiState = uiState.copy(syncing = true, pulled = pulled)
         val result = container.threadRepository(baseUrl, id).refresh()
         uiState = when (result) {
-            is ApiResult.Ok -> uiState.copy(syncing = false, error = null)
+            is ApiResult.Ok -> uiState.copy(
+                syncing = false,
+                pulled = false,
+                threadsLoaded = true,
+                error = null,
+            )
+
             is ApiResult.Failure -> uiState.copy(
                 syncing = false,
+                pulled = false,
+                threadsLoaded = true,
                 error = result.error,
                 needsLogin = result.error.isUnauthorized,
             )

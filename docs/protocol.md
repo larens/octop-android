@@ -203,6 +203,16 @@ turn_active, awaiting_user, + thread_artifacts_payload(...)
 
 **PATCH 可写字段**（`chat/models.py:194-201` `RenameThreadBody`）：`title`, `pinned`, `model_ref`, `reasoning_mode`, `reasoning_effort`, `conversation_mode`, `hitl_policy`。
 
+各写接口的状态码：`PATCH /threads/{thread_id}` 返回 **200 + 更新后的 thread 对象**（`chat/history.py:523-560`，不是 204）；`DELETE /threads/{thread_id}` 204；`POST /threads/{thread_id}/read` 204；`POST /threads/{thread_id}/fork` 201。
+
+> `title` / `pinned` 传 `null` 表示「不改这个字段」（`chat/history.py:541-545`）。客户端靠 `Json.explicitNulls = false` 保证 null 不进请求体，所以「只置顶」的请求不会顺手把标题清空。
+
+**⚠️ 列表项里没有 `unread_count`** —— 上游每个会话确实各自维护未读计数（`sessions.unread_count`，`infra/db/repos/sessions.py:240-250`：主动消息落进会话时 +1，`infra/gateway/gateway.py:423-427`），并且 `unread_counts_for_threads`（`infra/gateway/threads.py:504`）也实现了，但 **thread 列表路由不用它**，全仓没有任何 REST 路由按会话下发未读。只有 **agent 级聚合**会随 `GET /api/agents` 返回 `unread_count`（`routers/agents.py:90-96, 269, 284`）。清零点有两个：`POST /agents/{agent_id}/threads/{thread_id}/read`（单会话）与 `POST /agents/{agent_id}/read`（该 agent 全部会话）。
+
+> **客户端结论**：会话列表的未读角标只能自己攒 —— 判据是 `last_active` 比本地记录新（服务端只在「有消息落进这个会话」时才推 `last_active`，所以这是个可靠的变化信号）；打开会话时本地清零，并顺手调一次 `POST …/read` 把服务端那份一起清掉，否则下次刷新会把旧值翻出来。
+>
+> 已知近似：用户**正开着**某个会话时到达的消息，会被下一次列表刷新记成未读（客户端看不到「谁在读」），直到再打开一次该会话才消失。不做进一步区分 —— 为这个误差引入本地读游标不值当。
+
 **历史响应**（`chat/history.py:391-411`）：
 
 ```
@@ -245,6 +255,41 @@ turn_active, hitl_pending, conversation_mode, pending_plan_path, hitl_policy
 | `tool_use` | 由 `tool_calls` 生成（`serialize.py:966`） |
 | `tool_result` | `id`, `name`, `output`, `artifact`?, `error_code`? |
 | `image` / `image_url` / `file` | 附件相关，带 `workspace_path` 等 |
+
+### 5.4 上下文压缩标记（轨迹接口）
+
+**压缩没有任何 WS 事件** —— `src/octop/infra/gateway/ws/` 下不存在 `compacted` 帧。唯一来源是轨迹接口：
+
+```
+GET /api/agents/{agent_id}/threads/{thread_id}/trajectory
+    ?kinds=compacted&limit=<1..200，默认 100>&before_seq=<游标>
+Authorization: Bearer <jwt>
+```
+
+响应（`routers/chat/trajectory.py:60-64`）：
+
+```jsonc
+{
+  "thread_id": "...",
+  "events": [{
+    "event_id": "...", "thread_id": "...", "agent_id": "...",
+    "seq": 128,                 // 游标身份，页内递增
+    "ts": 1792900437.512,       // ⚠️ epoch 秒，带小数
+    "kind": "compacted",        // user|assistant|tool|context|compacted|system|unknown
+    "turn_id": "...", "request_seq": 4, "is_error": false,
+    "summary": "…",             // 列表视图已裁剪到 240 字符
+    "payload": {"summarized_count": 12, "preserved_count": 3, "removed_tokens": 8123, "summary": "…", "file_path"?}
+  }],
+  "next_before_seq": 128,       // 继续往前翻的游标；null 表示到头
+  "has_more": true
+}
+```
+
+**翻页语义有个坑**（`trajectory.py:267-283`）：服务端实际取 `limit + 1` 条，返回时**丢掉第一帧当游标**，`next_before_seq` 取 `page[0].seq`。也就是说每页返回 `limit` 条（而非 `limit + 1`），客户端只需照 `has_more` / `next_before_seq` 往前走。
+
+**列表视图会裁剪 payload**：`content` / `text` / `thinking` 被整个丢掉，`args` / `result` 截到 2000 字符，`summary` 截到 240 字符（`trajectory.py:37-43, 113-132`）。要完整载荷得走 `GET …/trajectory/events/{event_id}`。
+
+**客户端用法**：`ts * 1000` 得到毫秒，与消息 `sortOrder` 同一量纲（历史消息为 `created_at * 1000 + index`），因此可以直接按时间把分隔线插进消息流。失败一律静默 —— 老实例没有该路由时是 404，不该影响会话本身。
 
 ---
 
@@ -327,3 +372,5 @@ Content-Type: application/json
 9. **正常回合不会回显用户消息**：`user` 帧只在 steer 合并时下发（`steer.drained` → `_steer_user_frame`）。客户端必须自己先落一条本地用户行，否则发出去的消息在屏幕上会「消失」直到历史重拉。
 10. **HITL 续跑的流在 SSE 上**（§6.1），不在 WS。要看到确认后的输出，必须消费 `POST …/chat/hitl/resume` 的 `event: chunk` 流。
 11. `tool_call_chunk` 的 `name` 与 `args` 是片段，`index` 才是一条工具调用的身份；`display_name` 是给人看的名字，优先展示它。
+12. **`turn.ended` 里没有「被取消」这个字段**：实到字段只有 `turn_id` / `thread_id` / `failed?` / `hitl_paused?`（`infra/gateway/ws/ws_channel.py:337-342`）。所以「用户按了中止」这条信息只能客户端自己记 —— 收到它那一轮的 `turn.ended` 时据此把本地那一行标成中断，而不是 `done`（spec §19 第 11 条）。
+13. **`token` 帧不带任何消息身份**（只有 `content` / `node?`），一条流式行对应哪一轮完全靠客户端自己按回合建行。因此本地流式行的 id 必须与 `turn_id` 绑定（`local-<turn_id>`），断流重连后服务端若仍在跑同一轮，续到的 token 才会写回**同一行**而不是另起一条。

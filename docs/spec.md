@@ -126,7 +126,7 @@ octop-android/
 | `instances` | `base_url`(PK) / `display_name` / `capability`(native\|webview_only) / `last_connected_at` |
 | `threads` | `thread_id`(PK) / `agent_id` / `title` / `category` / `last_message` / `pinned_at` / `updated_at` / `unread_count` / `model_id` |
 | `messages` | `id`(PK) / `thread_id` / `turn_id` / `role` / `sort_order` / `parts_json` / `status` / `error_info` / `stream_interrupt_count` / `updated_at` |
-| `compact_markers` | `thread_id` / `created_at` / `summary` —— 标记上下文压缩点，UI 画分隔线 |
+| `compact_markers` | `thread_id` / `created_at` / `summary` —— 标记上下文压缩点，UI 画分隔线。**来源是轨迹接口**（`GET …/trajectory?kinds=compacted`，protocol.md §5.4），`created_at` = 事件的 `ts × 1000`，与 `messages.sort_order` 同量纲 |
 | `attachments` | `id` / `thread_id` / `message_id` / `remote_url` / `local_path` / `mime` / `size` / `state` |
 | `pending_ops` | `id` / `kind`(send\|cancel\|steer) / `thread_id` / `payload_json` / `retry_count` / `created_at` —— 断网时排队，恢复后重放 |
 
@@ -138,7 +138,7 @@ octop-android/
 | `turn_id` / `expected_turn_id` | `messages.turn_id`；客户端用 `client_pending_id` 关联本地占位消息 |
 | `usage` 事件 | **不存在**：上游只在服务端内部统计用量，WS 不发该事件（protocol.md §4.2） |
 | `reasoning` 事件 | `parts_json` 内的 `reasoning` part |
-| `compact` / 上下文压缩 | `compact_markers` |
+| `compacted` 轨迹事件 / 上下文压缩 | `compact_markers`（压缩**不推 WS**，只能走轨迹接口拉） |
 
 排序统一按 `pinned_at` 优先、其后 `updated_at DESC`。
 
@@ -236,14 +236,14 @@ schema 导出目录提交进仓库；每次改表必须附迁移 + 一条 JVM �
 
 | 议题 | 做法 |
 |------|------|
-| 加载态 | **彻底移除全屏 `ProgressBar`**。列表用骨架屏，会话用气泡占位，同步中用顶部 1px 不定进度条 |
+| 加载态 | **彻底移除全屏 `ProgressBar`**。列表用骨架屏（本地为空且还没问到服务端时），会话用气泡占位；后台同步用顶部细进度条（2dp，与会话页同规格），下拉刷新用下拉指示器自带转圈 |
 | 冷启动 | 先进 UI，立刻用 Room 数据渲染；网络同步在后台跑 |
 | 流式渲染 | token 到达后按 ~50ms 合帧；**只重新解析「最后一个仍在流式的块」**，历史块不重解析 |
 | 滚动跟随 | 仅当用户位于底部 32dp 死区内才自动跟随；用户一上滑即解除锁定并浮出「回到底部」按钮 |
-| 长内容保护 | 单条消息超阈值（如 20k 字符）默认折叠；代码块/表格横向滚动 |
+| 长内容保护 | 单条正文超 20k 字符默认折叠（可展开，流式中的那条不折）；含超长单行（>200 字符）的正文不折行、改横向滚动 —— 纯文本渲染下这是「代码块/表格横向滚动」的近似判据 |
 | 回弹 | 用 Compose 原生 overscroll（Android 12+ stretch），不再用 `SwipeRefreshLayout` |
 | 图片 | Coil 磁盘缓存 + 固定尺寸占位，避免流式重排导致列表跳动 |
-| 大字体 | 跟随系统字号但布局用自适应约束，不做 `setTextZoom(100)` 式硬锁 |
+| 大字体 | 跟随系统字号，不做 `setTextZoom(100)` 式硬锁；气泡宽度上限随字号放宽；无 `Scaffold` 的页面（连接 / 登录）用 `safeDrawingPadding` + 可滚动列，最大字号下不被系统栏或键盘裁切 |
 
 ## 13. 内容缓存与资源寻址
 
@@ -345,7 +345,7 @@ schema 导出目录提交进仓库；每次改表必须附迁移 + 一条 JVM �
 
 **手感与缓存**
 
-15. 全程不存在全屏转圈；同步时仅有顶部细进度条。
+15. 全程不存在全屏转圈；后台同步只由顶部细进度条提示，下拉刷新的转圈只在下拉期间出现。
 16. 用户上滑浏览历史时不被打断；回到底部按钮生效。
 17. 长消息（20k+ 字符）滚动不掉帧，可折叠。
 18. 附件二次打开命中本地缓存。

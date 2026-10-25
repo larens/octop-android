@@ -41,6 +41,10 @@ interface ThreadDao {
     @Query("SELECT * FROM threads WHERE threadId = :threadId LIMIT 1")
     fun observeOne(threadId: String): Flow<ThreadEntity?>
 
+    /** 一次性读全量，供列表刷新时和本地已有状态做合并（未读数与消息摘要不能被覆盖掉）。 */
+    @Query("SELECT * FROM threads WHERE agentId = :agentId")
+    suspend fun listByAgent(agentId: String): List<ThreadEntity>
+
     @Upsert
     suspend fun upsert(entity: ThreadEntity)
 
@@ -49,6 +53,9 @@ interface ThreadDao {
 
     @Query("UPDATE threads SET pinned = :pinned WHERE threadId = :threadId")
     suspend fun setPinned(threadId: String, pinned: Boolean)
+
+    @Query("UPDATE threads SET title = :title WHERE threadId = :threadId")
+    suspend fun setTitle(threadId: String, title: String?)
 
     @Query("UPDATE threads SET unreadCount = 0 WHERE threadId = :threadId")
     suspend fun markRead(threadId: String)
@@ -110,16 +117,53 @@ interface MessageDao {
         updatedAt: Long,
     )
 
+    /**
+     * 把一条消息标成「输出中断」，并记一次中断次数（spec §10）。
+     *
+     * `partsJson` 一起写，是为了让「落最后一段正文」与「标记中断」在**同一条语句**里完成：
+     * 合帧（[upsertStreaming] 的调用方）可能刚好吃掉最后一帧，分两步写就有机会留下一个
+     * 状态是 interrupted、内容却少一截的行。
+     */
     @Query(
         """
         UPDATE messages
         SET status = :status,
+            partsJson = :partsJson,
             streamInterruptCount = streamInterruptCount + 1,
             updatedAt = :updatedAt
         WHERE id = :id
         """,
     )
-    suspend fun markInterrupted(id: String, status: String, updatedAt: Long)
+    suspend fun markInterrupted(
+        id: String,
+        status: String,
+        partsJson: String,
+        updatedAt: Long,
+    )
+
+    /**
+     * 进程被杀导致的「僵尸流式行」自愈：重新进页面时把本地还没收尾的行标成中断。
+     *
+     * 这类行是上个进程留下的 `streaming` / `pending`，本进程的 `live` 为 null，永远不会
+     * 有人来收尾它 —— 界面上就会一直显示成正在输出。只扫本地行（[prefix]），
+     * 服务端 id 的行不受影响。
+     */
+    @Query(
+        """
+        UPDATE messages
+        SET status = :to,
+            streamInterruptCount = streamInterruptCount + 1,
+            updatedAt = :updatedAt
+        WHERE threadId = :threadId AND status IN (:from) AND id LIKE :prefix || '%'
+        """,
+    )
+    suspend fun markStaleInterrupted(
+        threadId: String,
+        from: List<String>,
+        to: String,
+        prefix: String,
+        updatedAt: Long,
+    )
 
     /**
      * 删除流式期间落下的本地占位行。
@@ -143,14 +187,19 @@ interface AttachmentDao {
     @Query("SELECT * FROM attachments WHERE threadId = :threadId")
     fun observeByThread(threadId: String): Flow<List<AttachmentEntity>>
 
+    @Query("SELECT * FROM attachments WHERE id = :id LIMIT 1")
+    suspend fun find(id: String): AttachmentEntity?
+
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsertAll(entities: List<AttachmentEntity>)
 
-    @Query("UPDATE attachments SET localPath = :localPath, state = :state WHERE id = :id")
-    suspend fun markCached(id: String, localPath: String, state: String)
+    /** 文件被容量控制淘汰后，索引要退回「只有远端还有」，否则 UI 会去找一个不存在的文件。 */
+    @Query("UPDATE attachments SET localPath = NULL, state = 'remote_only' WHERE id = :id")
+    suspend fun markEvicted(id: String)
 
-    @Query("SELECT * FROM attachments WHERE state = 'cached' ORDER BY size DESC")
-    suspend fun cachedBySizeDesc(): List<AttachmentEntity>
+    /** 下载失败。下次渲染时 UI 会再触发一次，所以这里是可恢复状态、不是终态。 */
+    @Query("UPDATE attachments SET state = 'failed' WHERE id = :id")
+    suspend fun markFailed(id: String)
 
     @Query("DELETE FROM attachments WHERE threadId = :threadId")
     suspend fun deleteByThread(threadId: String)
