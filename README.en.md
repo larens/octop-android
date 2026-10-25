@@ -38,7 +38,7 @@ The address and your session are remembered. Settings lets you change the addres
 Requires Node.js 18+ and JDK 17:
 
 ```bash
-git clone https://github.com/your-github-user/octop-android.git
+git clone https://github.com/larens/octop-android.git
 cd octop-android
 # edit twa/twa.config.json and set host to your domain
 ./twa/scripts/build-twa.sh

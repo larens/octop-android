@@ -38,7 +38,7 @@
 需要 Node.js 18+ 和 JDK 17：
 
 ```bash
-git clone https://github.com/your-github-user/octop-android.git
+git clone https://github.com/larens/octop-android.git
 cd octop-android
 # 编辑 twa/twa.config.json，把 host 改成你的域名
 ./twa/scripts/build-twa.sh
