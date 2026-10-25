@@ -61,7 +61,9 @@ server {
 **「手机上只能问、不能派活」的根因不是客户端，而是 agent 的 `conversation_mode`。**
 飞书渠道默认常被设为 `ask`（只读问答）；`craft` 才允许真实执行工具、写文件、跑命令。
 
-三种改法，任选其一：
+**它存在哪里**：不在独立的列上，而是 `agents.config_json` 这个 JSON 里的 `conversation_mode` 字段（另有按会话覆盖的 `threads.conversation_mode`，为空时回退到 agent 的配置）。
+
+两种改法，任选其一：
 
 **方式 A：dashboard（推荐）**
 
@@ -71,32 +73,50 @@ server {
 
 ```bash
 cd /opt/octop
-cp octop.db octop.db.bak            # 先备份
+systemctl stop octop
+cp octop.db "octop.db.bak.$(date +%Y%m%d%H%M%S)"
 
 /opt/octop/venv/bin/python - <<'PY'
-import sqlite3
-con = sqlite3.connect('/opt/octop/octop.db')
+import sqlite3, json
+
+con = sqlite3.connect("/opt/octop/octop.db")
 cur = con.cursor()
+
 # 先看清楚现状
-for row in cur.execute("SELECT id, name, conversation_mode FROM agents"):
-    print(row)
-# 改指定 agent（把 <agent_id> 换成上面列出的那个 id）
-cur.execute("UPDATE agents SET conversation_mode='craft' WHERE id=?", ("<agent_id>",))
+for agent_id, name, cfg in cur.execute("SELECT agent_id, name, config_json FROM agents"):
+    print(agent_id, name, json.loads(cfg or "{}").get("conversation_mode"))
+
+# 改全部 agent；只想改一个就加 WHERE agent_id = '你的agent_id'
+for agent_id, cfg in cur.execute("SELECT agent_id, config_json FROM agents"):
+    data = json.loads(cfg) if cfg else {}
+    data["conversation_mode"] = "craft"
+    cur.execute(
+        "UPDATE agents SET config_json = ? WHERE agent_id = ?",
+        (json.dumps(data, ensure_ascii=False), agent_id),
+    )
+
+# 顺手清掉按会话的旧覆盖值，避免它继续生效
+cur.execute("UPDATE threads SET conversation_mode = NULL WHERE conversation_mode = 'ask'")
+
 con.commit()
-print("affected:", cur.rowcount)
 con.close()
 PY
 
-systemctl restart octop      # 或你的服务名
+systemctl start octop
 ```
 
-**方式 C：SQL 一把梭（改全部 agent）**
+改完确认一下：
 
-```sql
-UPDATE agents SET conversation_mode = 'craft';
+```bash
+/opt/octop/venv/bin/python -c "
+import sqlite3, json
+con = sqlite3.connect('file:/opt/octop/octop.db?mode=ro', uri=True)
+for a, n, c in con.execute('SELECT agent_id, name, config_json FROM agents'):
+    print(a, n, json.loads(c)['conversation_mode'])
+"
 ```
 
-> 若你的 Octop 版本表名/字段名不同，先用 `.schema agents` 确认。
+> 不同 Octop 版本的 schema 可能有差异，改之前先用 `PRAGMA table_info(agents);` 确认字段确实存在。
 
 ## 4.（仅 TWA 用户）配置 assetlinks.json
 
