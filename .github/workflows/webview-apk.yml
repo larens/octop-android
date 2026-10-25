@@ -25,10 +25,21 @@ jobs:
 
       - name: Set up Android SDK
         run: |
-          # ubuntu-latest 已预装 Android SDK 与 cmdline-tools，这里只补需要的组件
-          echo "ANDROID_HOME=${ANDROID_HOME:-/usr/local/lib/android/sdk}" >> "$GITHUB_ENV"
-          yes | sdkmanager --licenses > /dev/null 2>&1 || true
-          sdkmanager "platform-tools" "platforms;android-35" "build-tools;35.0.0"
+          SDK_ROOT="${ANDROID_SDK_ROOT:-${ANDROID_HOME:-/usr/local/lib/android/sdk}}"
+          echo "ANDROID_HOME=$SDK_ROOT" >> "$GITHUB_ENV"
+          echo "ANDROID_SDK_ROOT=$SDK_ROOT" >> "$GITHUB_ENV"
+          echo "SDK_ROOT=$SDK_ROOT"
+          ls "$SDK_ROOT" 2>&1 || true
+
+          SDKMANAGER="$(command -v sdkmanager || find "$SDK_ROOT" -name sdkmanager -type f 2>/dev/null | head -1)"
+          echo "SDKMANAGER=$SDKMANAGER"
+          if [ -n "$SDKMANAGER" ]; then
+            yes | "$SDKMANAGER" --licenses > /dev/null 2>&1 || true
+            "$SDKMANAGER" "platform-tools" "platforms;android-35" "build-tools;35.0.0" || true
+          else
+            echo "未找到 sdkmanager，依赖 runner 预装的 SDK"
+          fi
+          ls "$SDK_ROOT/platforms" "$SDK_ROOT/build-tools" 2>&1 || true
 
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
