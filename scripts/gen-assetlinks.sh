@@ -47,7 +47,7 @@ if ! command -v keytool >/dev/null 2>&1; then
   exit 1
 fi
 
-echo "读取指纹（alias=$ALIAS, keystore=$KEYSTORE_FILE）..."
+echo "读取指纹（alias=${ALIAS}, keystore=${KEYSTORE_FILE}）..."
 FINGERPRINT="$(
   keytool -list -v \
     -keystore "$KEYSTORE_FILE" \

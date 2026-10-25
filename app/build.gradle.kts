@@ -16,12 +16,18 @@ fun secret(name: String): String? =
     keystoreProps.getProperty(name)?.takeIf { it.isNotBlank() }
         ?: System.getenv(name)?.takeIf { it.isNotBlank() }
 
-val keystoreFile = secret("KEYSTORE_FILE")
-val keystorePassword = secret("KEYSTORE_PASSWORD")
-val keyAlias = secret("KEY_ALIAS")
-val keyPassword = secret("KEY_PASSWORD")
-val hasSigningConfig = listOf(keystoreFile, keystorePassword, keyAlias, keyPassword)
-    .all { !it.isNullOrBlank() } && rootProject.file(keystoreFile!!).exists()
+// 变量名不能叫 keyAlias / keyPassword —— 在 signingConfigs {} 里会被 SigningConfig
+// 自身的同名属性遮蔽，赋值等于自赋值，Gradle 会报 missing required property。
+val signingStoreFile = secret("KEYSTORE_FILE")
+val signingStorePassword = secret("KEYSTORE_PASSWORD")
+val signingKeyAlias = secret("KEY_ALIAS")
+val signingKeyPassword = secret("KEY_PASSWORD")
+val hasSigningConfig = listOf(
+    signingStoreFile,
+    signingStorePassword,
+    signingKeyAlias,
+    signingKeyPassword,
+).all { !it.isNullOrBlank() } && rootProject.file(signingStoreFile!!).exists()
 
 android {
     namespace = "com.octopmobile.app"
@@ -40,10 +46,10 @@ android {
     if (hasSigningConfig) {
         signingConfigs {
             create("release") {
-                storeFile = rootProject.file(keystoreFile!!)
-                storePassword = keystorePassword
-                this.keyAlias = keyAlias
-                this.keyPassword = keyPassword
+                storeFile = rootProject.file(signingStoreFile!!)
+                storePassword = signingStorePassword
+                keyAlias = signingKeyAlias
+                keyPassword = signingKeyPassword
             }
         }
     }

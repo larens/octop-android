@@ -47,11 +47,11 @@ ICON_URL="$(json iconUrl)"
 MIN_SDK="$(json minSdkVersion)"
 
 if [[ -z "$HOST" || "$HOST" == "octop.example.com" ]]; then
-  echo "请先编辑 $CONFIG，把 host 改成的你的 Octop 域名。" >&2
+  echo "请先编辑 ${CONFIG}，把 host 改成的你的 Octop 域名。" >&2
   exit 1
 fi
 
-echo "==> 步骤 1/5：校验实例可达性（$HOST）"
+echo "==> 步骤 1/5：校验实例可达性（${HOST}）"
 PROBE_HOST="https://$HOST"
 HEALTH="$(curl -fsS --max-time 15 "$PROBE_HOST/api/health" || true)"
 if [[ "$HEALTH" != *'"ok":true'* ]]; then
