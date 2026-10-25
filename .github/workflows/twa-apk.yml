@@ -51,7 +51,11 @@ jobs:
 
       - name: Set up Android SDK
         if: steps.check.outputs.ready == 'true'
-        uses: android-actions/setup-android@v3
+        run: |
+          # ubuntu-latest 已预装 Android SDK 与 cmdline-tools，这里只补需要的组件
+          echo "ANDROID_HOME=${ANDROID_HOME:-/usr/local/lib/android/sdk}" >> "$GITHUB_ENV"
+          yes | sdkmanager --licenses > /dev/null 2>&1 || true
+          sdkmanager "platform-tools" "platforms;android-35" "build-tools;35.0.0"
 
       - name: Set up Node.js
         if: steps.check.outputs.ready == 'true'
