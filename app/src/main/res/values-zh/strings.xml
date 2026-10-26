@@ -88,6 +88,7 @@
     <string name="threads_edit_tags">编辑标签</string>
     <string name="threads_save_memory">存为记忆</string>
     <string name="threads_delete">删除</string>
+    <string name="threads_current">当前</string>
     <string name="threads_delete_message">删除「%1$s」？该会话的消息也会从服务端移除。</string>
     <string name="err_webview_only">该实例与原生客户端不完全兼容，已切换到网页版。</string>
 
@@ -144,6 +145,10 @@
     <string name="chat_hitl_reject">拒绝</string>
     <string name="chat_history_title">历史会话</string>
     <string name="chat_history_empty">还没有历史会话</string>
+    <string name="chat_history_manage">管理</string>
+    <string name="chat_history_manage_done">完成</string>
+    <string name="chat_delete_selected">删除所选（%1$d）</string>
+    <string name="chat_delete_selected_confirm">删除选中的 %1$d 个历史会话？其消息也会从服务端移除。</string>
     <string name="chat_hitl_reply">提交回答</string>
     <string name="chat_hitl_reason_hint">拒绝原因 / 回答（必填）</string>
 

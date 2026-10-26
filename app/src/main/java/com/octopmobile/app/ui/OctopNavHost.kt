@@ -21,11 +21,11 @@ import com.octopmobile.app.ui.workbench.routeValue
 import com.octopmobile.app.ui.workbench.workbenchTabOf
 
 /**
- * 全应用唯一的导航图。连接向导、登录、会话列表、会话、设置都是全屏 destination，
+ * 全应用唯一的导航图。连接向导、登录、工作台、会话、设置都是全屏 destination，
  * 因此不用嵌套导航；平板分栏（`material3.adaptive`）留到之后再考虑。
  *
- * 登录这一跳由 [ThreadsScreen] 通过 `onNeedsLogin` 触发，不做成连接向导的下一步 ——
- * 「有没有令牌」是会话列表自己必须校验的事（冷启动、令牌被服务端换密钥废掉都是同一条路径）。
+ * 登录这一跳由工作台会话栏通过 `onNeedsLogin` 触发，不做成连接向导的下一步 ——
+ * 「有没有令牌」是工作台自己必须校验的事（冷启动、令牌被服务端换密钥废掉都是同一条路径）。
  *
  * [pendingRoute] 用于深链（docs/spec.md §14）：由 [MainActivity] 解析好一条完整路由塞进来，
  * 导航图只负责跳过去，不关心链接长什么样。
@@ -73,8 +73,12 @@ fun OctopNavHost(
                 onOpenThread = { agentId, threadId ->
                     navController.navigate(Routes.chat(agentId, threadId))
                 },
-                onOpenSettings = { navController.navigate(Routes.SETTINGS) },
-                onOpenWeb = openWeb,
+                onOpenFreshThread = { agentId, threadId ->
+                    navController.navigate(Routes.chat(agentId, threadId)) {
+                        // 新会话是程序直达页面：清掉一路上的列表/工作台，返回键不再走历史页。
+                        popUpTo(0)
+                    }
+                },
                 initialTab = initialTab,
                 // 用 THREADS 换 LOGIN：栈里不该留着已经作废的列表页
                 onNeedsLogin = {
@@ -113,6 +117,7 @@ fun OctopNavHost(
                 agentId = entry.arguments?.getString(Routes.ARG_AGENT_ID).orEmpty(),
                 threadId = entry.arguments?.getString(Routes.ARG_THREAD_ID).orEmpty(),
                 onBack = { navController.popBackStack() },
+                onOpenSettings = { navController.navigate(Routes.SETTINGS) },
                 onOpenThread = { agentId, threadId ->
                     navController.navigate(Routes.chat(agentId, threadId)) {
                         launchSingleTop = true

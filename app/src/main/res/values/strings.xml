@@ -88,6 +88,7 @@
     <string name="threads_edit_tags">Edit tags</string>
     <string name="threads_save_memory">Save to memory</string>
     <string name="threads_delete">Delete</string>
+    <string name="threads_current">Current</string>
     <string name="threads_delete_message">Delete “%1$s”? Its messages will be removed from the server too.</string>
     <string name="err_webview_only">This instance is not fully compatible with the native client. Opening the web view.</string>
 
@@ -144,6 +145,10 @@
     <string name="chat_hitl_reject">Reject</string>
     <string name="chat_history_title">History</string>
     <string name="chat_history_empty">No conversation history yet</string>
+    <string name="chat_history_manage">Manage</string>
+    <string name="chat_history_manage_done">Done</string>
+    <string name="chat_delete_selected">Delete (%1$d)</string>
+    <string name="chat_delete_selected_confirm">Delete %1$d selected conversations? Their messages will also be removed from the server.</string>
     <string name="chat_hitl_reply">Send answer</string>
     <string name="chat_hitl_reason_hint">Reason / answer (required)</string>
 

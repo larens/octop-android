@@ -32,3 +32,6 @@ Thumbs.db
 
 # 日志
 *.log
+
+# 本地代码索引（codegraph 生成，不入库）
+.codegraph/

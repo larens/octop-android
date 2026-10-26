@@ -44,6 +44,7 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
@@ -64,8 +65,11 @@ import androidx.compose.material.icons.filled.Image
 import androidx.compose.material.icons.filled.KeyboardVoice
 import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.PhotoCamera
+import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Stop
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DrawerValue
 import androidx.compose.material3.DropdownMenu
@@ -105,11 +109,13 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.font.FontFamily
@@ -181,6 +187,7 @@ fun ChatScreen(
     onBack: () -> Unit,
     onOpenThread: (agentId: String, threadId: String) -> Unit,
     onOpenWorkbenchTab: (WorkbenchTab) -> Unit,
+    onOpenSettings: () -> Unit,
 ) {
     val context = LocalContext.current
     val focusManager = LocalFocusManager.current
@@ -188,6 +195,20 @@ fun ChatScreen(
     val container = remember(context) { (context.applicationContext as OctopApp).container }
     val viewModel: ChatViewModel = viewModel(factory = ChatViewModel.factory(agentId, threadId))
     val threadsViewModel: ThreadsViewModel = viewModel(factory = ThreadsViewModel.Factory)
+    val lifecycleOwner = LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) viewModel.reconnect()
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose {
+            lifecycleOwner.lifecycle.removeObserver(observer)
+            // 离开会话页就意味着连接要断（ViewModel 被清、socket 关掉），通知没有理由继续挂着。
+            TurnService.stop(context)
+            // onCleared 里 viewModelScope 已取消，空会话清理必须赶在它之前发出。
+            viewModel.deleteUntouchedAutoConversation()
+        }
+    }
 
     val state = viewModel.uiState
     val messages by viewModel.messages.collectAsStateWithLifecycle()
@@ -259,6 +280,7 @@ fun ChatScreen(
 
     // 输入框文本：`@专家名` 直接写在正文里（spec §23.5），发送时再解析成 `target_agent_ids`。
     var input by remember { mutableStateOf(TextFieldValue("")) }
+    var inputFocused by remember { mutableStateOf(false) }
 
     // `@专家` 的候选面板（spec §23.5）：内容全部由输入框的当前文本与光标位置推出来，
     // 不额外存一份「已选中」状态 —— 名字就写在正文里，删掉那几个字就等于取消。
@@ -312,19 +334,6 @@ fun ChatScreen(
 
     // 回到前台立刻重连一次（spec §10）：退避等待对「刚恢复网络」这种情况没有意义，
     // 而用户从后台切回来正是最可能刚刚恢复网络的时候。
-    val lifecycleOwner = LocalLifecycleOwner.current
-    DisposableEffect(lifecycleOwner) {
-        val observer = LifecycleEventObserver { _, event ->
-            if (event == Lifecycle.Event.ON_RESUME) viewModel.reconnect()
-        }
-        lifecycleOwner.lifecycle.addObserver(observer)
-        onDispose {
-            lifecycleOwner.lifecycle.removeObserver(observer)
-            // 离开会话页就意味着连接要断（ViewModel 被清、socket 关掉），通知没有理由继续挂着。
-            TurnService.stop(context)
-        }
-    }
-
     // 回合进行中挂一条前台通知，切到后台不会被系统顺手杀掉（spec §14、§19 第 20 条）。
     // 跟着 turnActive 起停，而不是自己判断存活 —— 服务本身不持有连接，只负责让进程活着。
     val turnTitle = thread?.title?.takeIf { it.isNotBlank() } ?: threadId
@@ -388,6 +397,8 @@ fun ChatScreen(
                     onNewConversation = {
                         if (!threadListState.creating) threadsViewModel.createThread()
                     },
+                    onOpenSettings = onOpenSettings,
+                    onDeleteThreads = { ids -> ids.forEach(threadsViewModel::delete) },
                     onSelectThread = { item ->
                         scope.launch {
                             drawerState.close()
@@ -484,10 +495,12 @@ fun ChatScreen(
                         onRecordVoiceNote = { launchVoiceNoteRecorder() },
                         input = input,
                         onInputChange = { input = it },
+                        inputFocused = inputFocused,
+                        onInputFocusChange = { inputFocused = it },
                         onRemove = viewModel::removeAttachment,
                         onResolve = viewModel::resolveHitl,
                     )
-                    if (shouldShowWorkbenchBar(imeVisible)) {
+                    if (shouldShowWorkbenchBar(imeVisible, inputFocused)) {
                         WorkbenchBottomBar(
                             current = WorkbenchTab.CHATS,
                             onSelect = { tab ->
@@ -501,7 +514,10 @@ fun ChatScreen(
             Box(
                 modifier = Modifier
                     .fillMaxSize()
-                    .padding(padding),
+                    .padding(padding)
+                    .pointerInput(Unit) {
+                        detectTapGestures { hideKeyboard() }
+                    },
             ) {
             when {
                 // 首屏没有本地内容时给气泡骨架屏，不是全屏转圈（spec §12、§19 第 15 条）。
@@ -538,6 +554,7 @@ fun ChatScreen(
                                 // 「重新拉取该轮」= 以服务端为准重取最新一页：本地那半截行会在
                                 // 历史占位清理里退场（见 ChatRepository.loadHistory）。
                                 onRefetch = viewModel::retry,
+                                onMessageTap = ::hideKeyboard,
                             )
 
                             is ChatRow.Compact -> CompactDivider()
@@ -609,8 +626,14 @@ private fun HistoryDrawerContent(
     syncing: Boolean,
     creating: Boolean,
     onNewConversation: () -> Unit,
+    onOpenSettings: () -> Unit,
+    onDeleteThreads: (Collection<String>) -> Unit,
     onSelectThread: (ThreadEntity) -> Unit,
 ) {
+    var editing by remember { mutableStateOf(false) }
+    var selected by remember { mutableStateOf(setOf<String>()) }
+    var confirmDelete by remember { mutableStateOf(false) }
+
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -639,12 +662,42 @@ private fun HistoryDrawerContent(
             Text(stringResource(R.string.threads_new))
         }
         Spacer(Modifier.height(16.dp))
-        Text(
-            text = stringResource(R.string.chat_history_title),
-            style = MaterialTheme.typography.labelLarge,
-            color = MaterialTheme.colorScheme.primary,
-            modifier = Modifier.padding(horizontal = 12.dp),
-        )
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            modifier = Modifier.padding(horizontal = 8.dp),
+        ) {
+            Text(
+                text = stringResource(R.string.chat_history_title),
+                style = MaterialTheme.typography.labelLarge,
+                color = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.weight(1f),
+            )
+            if (editing) {
+                if (selected.isNotEmpty()) {
+                    TextButton(onClick = { confirmDelete = true }) {
+                        Text(stringResource(R.string.chat_delete_selected, selected.size))
+                    }
+                }
+                TextButton(
+                    onClick = {
+                        editing = false
+                        selected = emptySet()
+                    },
+                ) {
+                    Text(stringResource(R.string.chat_history_manage_done))
+                }
+            } else {
+                TextButton(onClick = { editing = true }) {
+                    Text(stringResource(R.string.chat_history_manage))
+                }
+            }
+            IconButton(onClick = onOpenSettings) {
+                Icon(
+                    imageVector = Icons.Filled.Settings,
+                    contentDescription = stringResource(R.string.settings_title),
+                )
+            }
+        }
         Spacer(Modifier.height(8.dp))
         if (syncing) {
             LinearProgressIndicator(
@@ -668,56 +721,119 @@ private fun HistoryDrawerContent(
                 verticalArrangement = Arrangement.spacedBy(4.dp),
             ) {
                 items(threads, key = { it.threadId }) { item ->
+                    val isCurrent = item.threadId == currentThreadId
                     HistoryDrawerRow(
                         thread = item,
-                        selected = item.threadId == currentThreadId,
-                        onClick = { onSelectThread(item) },
+                        isCurrent = isCurrent,
+                        editing = editing,
+                        checked = selected.contains(item.threadId),
+                        onClick = {
+                            if (editing && !isCurrent) {
+                                selected = if (item.threadId in selected) {
+                                    selected - item.threadId
+                                } else {
+                                    selected + item.threadId
+                                }
+                            } else if (!editing) {
+                                onSelectThread(item)
+                            }
+                        },
                     )
                 }
             }
         }
+    }
+
+    if (confirmDelete) {
+        AlertDialog(
+            onDismissRequest = { confirmDelete = false },
+            title = { Text(stringResource(R.string.chat_history_title)) },
+            text = {
+                Text(stringResource(R.string.chat_delete_selected_confirm, selected.size))
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        confirmDelete = false
+                        onDeleteThreads(selected)
+                        selected = emptySet()
+                        editing = false
+                    },
+                ) {
+                    Text(stringResource(R.string.threads_delete))
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { confirmDelete = false }) {
+                    Text(stringResource(R.string.action_cancel))
+                }
+            },
+        )
     }
 }
 
 @Composable
 private fun HistoryDrawerRow(
     thread: ThreadEntity,
-    selected: Boolean,
+    isCurrent: Boolean,
+    editing: Boolean,
+    checked: Boolean,
     onClick: () -> Unit,
 ) {
     Surface(
         modifier = Modifier.fillMaxWidth(),
         shape = RoundedCornerShape(16.dp),
-        color = if (selected) {
+        color = if (checked || isCurrent) {
             MaterialTheme.colorScheme.secondaryContainer
         } else {
             Color.Transparent
         },
         onClick = onClick,
     ) {
-        Column(modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp)) {
-            Text(
-                text = thread.title?.takeIf { it.isNotBlank() } ?: stringResource(R.string.chat_new_title),
-                style = MaterialTheme.typography.bodyMedium,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-            )
-            thread.lastMessage?.takeIf { it.isNotBlank() }?.let { subtitle ->
-                Spacer(Modifier.height(4.dp))
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+        ) {
+            if (editing) {
+                Checkbox(
+                    checked = checked,
+                    onCheckedChange = { onClick() },
+                    enabled = !isCurrent,
+                )
+                Spacer(Modifier.width(6.dp))
+            }
+            Column(modifier = Modifier.weight(1f)) {
                 Text(
-                    text = subtitle,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    text = thread.title?.takeIf { it.isNotBlank() } ?: stringResource(R.string.chat_new_title),
+                    style = MaterialTheme.typography.bodyMedium,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                 )
+                thread.lastMessage?.takeIf { it.isNotBlank() }?.let { subtitle ->
+                    Spacer(Modifier.height(4.dp))
+                    Text(
+                        text = subtitle,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    text = DateUtils.getRelativeTimeSpanString(thread.lastActiveAt).toString(),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
             }
-            Spacer(Modifier.height(4.dp))
-            Text(
-                text = DateUtils.getRelativeTimeSpanString(thread.lastActiveAt).toString(),
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
+            if (editing && isCurrent) {
+                Spacer(Modifier.width(8.dp))
+                Text(
+                    text = stringResource(R.string.threads_current),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
         }
     }
 }
@@ -750,10 +866,12 @@ private fun ChatBottomBar(
     onRecordVoiceNote: () -> Unit,
     input: TextFieldValue,
     onInputChange: (TextFieldValue) -> Unit,
+    inputFocused: Boolean,
+    onInputFocusChange: (Boolean) -> Unit,
     onRemove: (UploadedAttachment) -> Unit,
     onResolve: (String, String?) -> Unit,
 ) {
-    Surface(tonalElevation = 3.dp) {
+    Surface(color = MaterialTheme.colorScheme.background) {
         Column(
             modifier = Modifier
                 .fillMaxWidth()
@@ -804,6 +922,7 @@ private fun ChatBottomBar(
                 onMention = { onInputChange(input.withMentionTrigger()) },
                 input = input,
                 onInputChange = onInputChange,
+                onInputFocusChange = onInputFocusChange,
             )
         }
     }
@@ -827,10 +946,12 @@ private fun InputRow(
     onMention: () -> Unit,
     input: TextFieldValue,
     onInputChange: (TextFieldValue) -> Unit,
+    onInputFocusChange: (Boolean) -> Unit,
 ) {
     val sendable = !blocked && (input.text.isNotBlank() || canSend)
     var menuExpanded by remember { mutableStateOf(false) }
     var modelExpanded by remember { mutableStateOf(false) }
+    var focused by remember { mutableStateOf(false) }
 
     fun submit() {
         if (!sendable) return
@@ -839,192 +960,34 @@ private fun InputRow(
         onSend(text)
     }
 
-    Surface(
-        shape = RoundedCornerShape(28.dp),
-        tonalElevation = 1.dp,
-        shadowElevation = 2.dp,
-    ) {
-        Column(
+    Box(modifier = Modifier.fillMaxWidth()) {
+        OutlinedTextField(
+            value = input,
+            onValueChange = onInputChange,
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 12.dp, vertical = 10.dp),
-        ) {
-            OutlinedTextField(
-                value = input,
-                onValueChange = onInputChange,
-                modifier = Modifier.fillMaxWidth(),
-                enabled = !blocked,
-                placeholder = { Text(stringResource(R.string.chat_input_hint_new)) },
-                maxLines = 6,
-                shape = RoundedCornerShape(20.dp),
-                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
-                keyboardActions = KeyboardActions(onSend = { submit() }),
-            )
-
-            Spacer(Modifier.height(8.dp))
-
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Box {
-                    FilledTonalIconButton(
-                        onClick = { menuExpanded = true },
-                        enabled = !blocked,
-                    ) {
-                        Icon(
-                            imageVector = Icons.Filled.Add,
-                            contentDescription = stringResource(R.string.chat_more_actions),
-                        )
-                    }
-                    DropdownMenu(
-                        expanded = menuExpanded,
-                        onDismissRequest = { menuExpanded = false },
-                    ) {
-                        DropdownMenuItem(
-                            text = { Text(stringResource(R.string.chat_upload_file)) },
-                            leadingIcon = {
-                                Icon(
-                                    imageVector = Icons.Filled.Description,
-                                    contentDescription = null,
-                                )
-                            },
-                            onClick = {
-                                menuExpanded = false
-                                onUploadFile()
-                            },
-                        )
-                        DropdownMenuItem(
-                            text = { Text(stringResource(R.string.chat_take_photo)) },
-                            leadingIcon = {
-                                Icon(
-                                    imageVector = Icons.Filled.PhotoCamera,
-                                    contentDescription = null,
-                                )
-                            },
-                            onClick = {
-                                menuExpanded = false
-                                onTakePhoto()
-                            },
-                        )
-                        DropdownMenuItem(
-                            text = { Text(stringResource(R.string.chat_upload_image)) },
-                            leadingIcon = {
-                                Icon(
-                                    imageVector = Icons.Filled.Image,
-                                    contentDescription = null,
-                                )
-                            },
-                            onClick = {
-                                menuExpanded = false
-                                onUploadImage()
-                            },
-                        )
-                        DropdownMenuItem(
-                            text = { Text(stringResource(R.string.chat_record_voice_note)) },
-                            leadingIcon = {
-                                Icon(
-                                    imageVector = Icons.Filled.KeyboardVoice,
-                                    contentDescription = null,
-                                )
-                            },
-                            onClick = {
-                                menuExpanded = false
-                                onRecordVoiceNote()
-                            },
-                        )
-                        if (canMention) {
-                            DropdownMenuItem(
-                                text = { Text(stringResource(R.string.chat_mention)) },
-                                leadingIcon = {
-                                    Icon(
-                                        imageVector = Icons.Filled.AlternateEmail,
-                                        contentDescription = null,
-                                    )
-                                },
-                                onClick = {
-                                    menuExpanded = false
-                                    onMention()
-                                },
-                            )
-                        }
-                    }
+                .onFocusChanged { state ->
+                    focused = state.isFocused
+                    if (!state.isFocused) modelExpanded = false
+                    onInputFocusChange(state.isFocused)
+                },
+            enabled = !blocked,
+            placeholder = { Text(stringResource(R.string.chat_input_hint_new)) },
+            leadingIcon = {
+                IconButton(
+                    onClick = { menuExpanded = true },
+                    enabled = !blocked,
+                    modifier = Modifier.size(36.dp),
+                ) {
+                    Icon(
+                        imageVector = Icons.Filled.Add,
+                        contentDescription = stringResource(R.string.chat_more_actions),
+                    )
                 }
-
-                Spacer(Modifier.width(8.dp))
-
-                Box(modifier = Modifier.weight(1f)) {
-                    Surface(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clip(RoundedCornerShape(18.dp))
-                            .clickable(enabled = modelOptions.isNotEmpty() && !blocked) {
-                                modelExpanded = true
-                            },
-                        color = MaterialTheme.colorScheme.secondaryContainer,
-                        shape = RoundedCornerShape(18.dp),
-                    ) {
-                        Row(
-                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                        ) {
-                            Text(
-                                text = when {
-                                    modelsLoading -> stringResource(R.string.chat_model_loading)
-                                    selectedModel != null -> selectedModel.label
-                                    else -> stringResource(R.string.chat_model_auto)
-                                },
-                                modifier = Modifier.weight(1f),
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis,
-                                style = MaterialTheme.typography.labelLarge,
-                            )
-                            Spacer(Modifier.width(6.dp))
-                            Icon(
-                                imageVector = Icons.Filled.KeyboardArrowDown,
-                                contentDescription = null,
-                                modifier = Modifier.size(18.dp),
-                            )
-                        }
-                    }
-                    DropdownMenu(
-                        expanded = modelExpanded,
-                        onDismissRequest = { modelExpanded = false },
-                    ) {
-                        if (selectedModel != null) {
-                            DropdownMenuItem(
-                                text = { Text(stringResource(R.string.chat_model_auto)) },
-                                onClick = {
-                                    modelExpanded = false
-                                    onSelectModel(null)
-                                },
-                            )
-                        }
-                        modelOptions.forEach { option ->
-                            DropdownMenuItem(
-                                text = {
-                                    Column {
-                                        Text(option.label, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                                        Text(
-                                            text = option.providerName,
-                                            style = MaterialTheme.typography.labelSmall,
-                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                        )
-                                    }
-                                },
-                                onClick = {
-                                    modelExpanded = false
-                                    onSelectModel(option.modelRef)
-                                },
-                            )
-                        }
-                    }
-                }
-
-                Spacer(Modifier.width(8.dp))
-
+            },
+            trailingIcon = {
                 if (blocked) {
-                    FilledTonalIconButton(onClick = onCancel) {
+                    IconButton(onClick = onCancel, modifier = Modifier.size(36.dp)) {
                         Icon(
                             imageVector = Icons.Filled.Stop,
                             contentDescription = stringResource(R.string.chat_stop),
@@ -1032,7 +995,11 @@ private fun InputRow(
                         )
                     }
                 } else {
-                    FilledTonalIconButton(onClick = { submit() }, enabled = sendable) {
+                    IconButton(
+                        onClick = { submit() },
+                        enabled = sendable,
+                        modifier = Modifier.size(36.dp),
+                    ) {
                         Icon(
                             imageVector = Icons.AutoMirrored.Filled.Send,
                             contentDescription = stringResource(R.string.chat_send),
@@ -1043,6 +1010,155 @@ private fun InputRow(
                             },
                         )
                     }
+                }
+            },
+            minLines = 1,
+            maxLines = 3,
+            shape = RoundedCornerShape(24.dp),
+            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
+            keyboardActions = KeyboardActions(onSend = { submit() }),
+        )
+
+        DropdownMenu(
+            expanded = menuExpanded,
+            onDismissRequest = { menuExpanded = false },
+        ) {
+            DropdownMenuItem(
+                text = { Text(stringResource(R.string.chat_upload_file)) },
+                leadingIcon = {
+                    Icon(
+                        imageVector = Icons.Filled.Description,
+                        contentDescription = null,
+                    )
+                },
+                onClick = {
+                    menuExpanded = false
+                    onUploadFile()
+                },
+            )
+            DropdownMenuItem(
+                text = { Text(stringResource(R.string.chat_take_photo)) },
+                leadingIcon = {
+                    Icon(
+                        imageVector = Icons.Filled.PhotoCamera,
+                        contentDescription = null,
+                    )
+                },
+                onClick = {
+                    menuExpanded = false
+                    onTakePhoto()
+                },
+            )
+            DropdownMenuItem(
+                text = { Text(stringResource(R.string.chat_upload_image)) },
+                leadingIcon = {
+                    Icon(
+                        imageVector = Icons.Filled.Image,
+                        contentDescription = null,
+                    )
+                },
+                onClick = {
+                    menuExpanded = false
+                    onUploadImage()
+                },
+            )
+            DropdownMenuItem(
+                text = { Text(stringResource(R.string.chat_record_voice_note)) },
+                leadingIcon = {
+                    Icon(
+                        imageVector = Icons.Filled.KeyboardVoice,
+                        contentDescription = null,
+                    )
+                },
+                onClick = {
+                    menuExpanded = false
+                    onRecordVoiceNote()
+                },
+            )
+            if (canMention) {
+                DropdownMenuItem(
+                    text = { Text(stringResource(R.string.chat_mention)) },
+                    leadingIcon = {
+                        Icon(
+                            imageVector = Icons.Filled.AlternateEmail,
+                            contentDescription = null,
+                        )
+                    },
+                    onClick = {
+                        menuExpanded = false
+                        onMention()
+                    },
+                )
+            }
+        }
+    }
+
+    if (shouldShowModelSelector(focused || modelExpanded)) {
+        Spacer(Modifier.height(6.dp))
+        Box(modifier = Modifier.fillMaxWidth()) {
+            Surface(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(16.dp))
+                    .clickable(enabled = modelOptions.isNotEmpty() && !blocked) {
+                        modelExpanded = true
+                    },
+                color = MaterialTheme.colorScheme.secondaryContainer,
+                shape = RoundedCornerShape(16.dp),
+            ) {
+                Row(
+                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        text = when {
+                            modelsLoading -> stringResource(R.string.chat_model_loading)
+                            selectedModel != null -> selectedModel.label
+                            else -> stringResource(R.string.chat_model_auto)
+                        },
+                        modifier = Modifier.weight(1f),
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        style = MaterialTheme.typography.labelLarge,
+                    )
+                    Spacer(Modifier.width(6.dp))
+                    Icon(
+                        imageVector = Icons.Filled.KeyboardArrowDown,
+                        contentDescription = null,
+                        modifier = Modifier.size(18.dp),
+                    )
+                }
+            }
+            DropdownMenu(
+                expanded = modelExpanded,
+                onDismissRequest = { modelExpanded = false },
+            ) {
+                if (selectedModel != null) {
+                    DropdownMenuItem(
+                        text = { Text(stringResource(R.string.chat_model_auto)) },
+                        onClick = {
+                            modelExpanded = false
+                            onSelectModel(null)
+                        },
+                    )
+                }
+                modelOptions.forEach { option ->
+                    DropdownMenuItem(
+                        text = {
+                            Column {
+                                Text(option.label, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                Text(
+                                    text = option.providerName,
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
+                        },
+                        onClick = {
+                            modelExpanded = false
+                            onSelectModel(option.modelRef)
+                        },
+                    )
                 }
             }
         }
@@ -1507,6 +1623,7 @@ private fun MessageBubble(
     cachedAttachments: Map<String, AttachmentEntity>,
     onEnsureAttachment: suspend (String?, String?) -> Unit,
     onRefetch: () -> Unit,
+    onMessageTap: () -> Unit,
 ) {
     // 一个气泡可能由多条本地行合成（见 [buildChatRows]）。按 partsJson 记忆化：流式期间每 ~50ms
     //（spec §12 的合帧间隔）只有最后一条消息的内容变化，其余历史块直接命中缓存，不重新解析。
@@ -1528,7 +1645,9 @@ private fun MessageBubble(
     val bubbleMaxWidth = BUBBLE_MAX_WIDTH * LocalDensity.current.fontScale.coerceAtLeast(1f)
 
     Row(
-        modifier = Modifier.fillMaxWidth(),
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onMessageTap),
         horizontalArrangement = if (isUser) Arrangement.End else Arrangement.Start,
     ) {
         Surface(
@@ -1641,6 +1760,8 @@ private fun MessageText(text: String, caret: Boolean, streaming: Boolean) {
         )
     }
 }
+
+internal fun shouldShowModelSelector(inputFocused: Boolean): Boolean = inputFocused
 
 /**
  * 正文的 Markdown 渲染（spec §7 选型 `multiplatform-markdown-renderer-m3`）。
@@ -2102,7 +2223,10 @@ private fun CompactDivider() {
     }
 }
 
-internal fun shouldShowWorkbenchBar(imeVisible: Boolean): Boolean = !imeVisible
+internal fun shouldShowWorkbenchBar(
+    imeVisible: Boolean,
+    inputFocused: Boolean,
+): Boolean = !imeVisible && !inputFocused
 
 internal fun shouldApplyChatBottomBarNavigationPadding(imeVisible: Boolean): Boolean = !imeVisible
 

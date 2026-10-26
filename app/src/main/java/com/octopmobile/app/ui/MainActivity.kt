@@ -32,7 +32,7 @@ import kotlinx.coroutines.flow.first
  *
  * 除了深链，这里还接住三样系统入口（docs/spec.md §14）：通知点击（深链）、
  * App Shortcuts、其他 App 的分享。后两者不直接导航 —— 它们的终点是一个还不存在的会话，
- * 得先在会话列表页建出来，所以统一放进 [PendingHandoff] 交给列表页处理。
+ * 所以统一放进 [PendingHandoff]，交给工作台「会话」栏建出会话后消费。
  */
 class MainActivity : ComponentActivity() {
 
@@ -67,7 +67,8 @@ class MainActivity : ComponentActivity() {
                 LaunchedEffect(Unit) {
                     val host = container.prefs.currentHost()
                     startDestination = when {
-                        // 没配地址 → 连接向导；配了但没令牌 → 登录；都有 → 直接进列表
+                        // 没配地址 → 连接向导；配了但没令牌 → 登录；都有 → 直接进工作台。
+                        // 「会话」栏会在首帧自己建新会话，不在这里先闪一次列表。
                         host.isNullOrBlank() -> Routes.CONNECT
                         container.securePrefs.tokenFor(host) == null -> Routes.LOGIN
                         else -> Routes.THREADS

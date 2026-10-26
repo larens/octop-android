@@ -2,6 +2,7 @@ package com.octopmobile.app.ui
 
 import android.net.Uri
 import android.os.SystemClock
+import java.util.concurrent.ConcurrentHashMap
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -63,7 +64,7 @@ private class OneShot(private val ttlMs: Long = 60_000L) {
     }
 }
 
-/** 会话列表这一级要消费的交接：Shortcuts 与分享都由它起始（[ThreadsScreen] 消费）。 */
+/** 工作台「会话」栏这一级要消费的交接：Shortcuts 与分享都由它起始（新会话页消费）。 */
 object PendingHandoff {
     private val slot = OneShot()
 
@@ -88,4 +89,23 @@ object PendingChatStart {
     fun arm(handoff: Handoff) = slot.arm(handoff)
 
     fun take(): Handoff? = slot.take()
+}
+
+/**
+ * 程序自动新建的会话。只要用户真的发过消息就永久保留；没有互动就随会话页退出自动删掉。
+ * 用进程级集合记而不是「最近一条」：会话页还可能再从抽屉里开出一条新会话，
+ * 先前那条空会话在离开时同样要能删掉（spec: 新会话无互动则销毁）。
+ */
+object AutoCreatedConversation {
+    private val created = ConcurrentHashMap.newKeySet<String>()
+
+    fun mark(value: String) {
+        created.add(value)
+    }
+
+    fun isTracked(value: String): Boolean = value in created
+
+    fun consume(value: String) {
+        created.remove(value)
+    }
 }

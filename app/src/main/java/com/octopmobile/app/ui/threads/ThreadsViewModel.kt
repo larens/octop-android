@@ -17,6 +17,7 @@ import com.octopmobile.app.data.remote.dto.AgentDto
 import com.octopmobile.app.data.remote.isUnauthorized
 import com.octopmobile.app.data.repo.InstanceRepository
 import com.octopmobile.app.data.repo.ThreadRepository
+import com.octopmobile.app.ui.AutoCreatedConversation
 import com.octopmobile.app.ui.appContainer
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.Flow
@@ -139,10 +140,14 @@ class ThreadsViewModel(private val container: AppContainer) : ViewModel() {
         uiState = uiState.copy(creating = true, error = null)
         viewModelScope.launch {
             when (val result = container.threadRepository(baseUrl, id).create()) {
-                is ApiResult.Ok -> uiState = uiState.copy(
-                    creating = false,
-                    createdThreadId = result.value,
-                )
+                is ApiResult.Ok -> {
+                    // 记下这是程序给用户开的新会话：没互动就随会话页退出删掉（ChatScreen 消费）。
+                    AutoCreatedConversation.mark(result.value)
+                    uiState = uiState.copy(
+                        creating = false,
+                        createdThreadId = result.value,
+                    )
+                }
 
                 is ApiResult.Failure -> uiState = uiState.copy(
                     creating = false,

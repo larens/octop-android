@@ -27,7 +27,10 @@ import com.octopmobile.app.data.repo.ChatRepository
 import com.octopmobile.app.data.repo.ThreadRepository
 import com.octopmobile.app.data.ws.ChatSocket
 import com.octopmobile.app.ui.appContainer
+import com.octopmobile.app.ui.AutoCreatedConversation
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -73,6 +76,8 @@ class ChatViewModel(
 
     private var repository: ChatRepository? = null
     private var threadRepository: ThreadRepository? = null
+    private var baseUrl: String? = null
+    private val cleanupScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
     /**
      * 仓库是否可用（[repository] 已赋值且首屏历史已处理完）。
@@ -143,18 +148,26 @@ class ChatViewModel(
 
     init {
         viewModelScope.launch {
-            val baseUrl = container.prefs.currentHost()
-            if (baseUrl.isNullOrBlank()) {
+            val instanceHost = container.prefs.currentHost()
+            if (instanceHost.isNullOrBlank()) {
                 uiState = uiState.copy(error = ApiError.Network("no host"))
                 return@launch
             }
 
-            val repo = container.chatRepository(baseUrl, agentId, threadId)
-            val threadRepo = container.threadRepository(baseUrl, agentId)
+            val repo = container.chatRepository(instanceHost, agentId, threadId)
+            val threadRepo = container.threadRepository(instanceHost, agentId)
+            baseUrl = instanceHost
             repository = repo
             threadRepository = threadRepo
 
-            launch { repo.observeMessages().collect { _messages.value = it } }
+            launch {
+                repo.observeMessages().collect {
+                    _messages.value = it
+                    // 第一条消息落地（本地回显，见 ChatRepository.sendTurn）= 这轮互动算数，
+                    // 自动新建的会话从此转为永久保留。
+                    if (it.isNotEmpty()) AutoCreatedConversation.consume(threadId)
+                }
+            }
             launch { repo.observeThread().collect { _thread.value = it } }
             launch { repo.connection.collect { _connection.value = it } }
             launch { repo.turnActive.collect { _turnActive.value = it } }
@@ -169,8 +182,8 @@ class ChatViewModel(
 
             // `@专家` 候选：一次只读请求，失败就当作「没有别的专家」—— 不打扰用户，
             // 输入栏也只是不出现那个入口（spec §23.5）。
-            launch { loadMentionable(baseUrl) }
-            launch { loadModels(baseUrl, threadRepo) }
+            launch { loadMentionable(instanceHost) }
+            launch { loadModels(instanceHost, threadRepo) }
 
             // 永不返回：连接 + 订阅 + 持续消费事件
             launch { repo.run() }
@@ -185,6 +198,25 @@ class ChatViewModel(
     override fun onCleared() {
         // 断开不会取消服务端正在跑的回合（protocol.md §4.2），但本地必须收掉 socket 与重连循环
         repository?.close()
+    }
+
+    /**
+     * 新开的会话只在真的产生交互后才有价值。用户离开时仍没有任何消息，
+     * 就把服务端和本地那份一起删掉，避免“新会话”堆成一串无意义空项。
+     */
+    fun deleteUntouchedAutoConversation() {
+        if (!shouldDeleteUntouchedConversation(
+                isNewConversation = AutoCreatedConversation.isTracked(threadId),
+                hasMessages = _messages.value.isNotEmpty(),
+            )
+        ) {
+            return
+        }
+        AutoCreatedConversation.consume(threadId)
+        val host = baseUrl ?: return
+        cleanupScope.launch {
+            container.threadRepository(host, agentId).delete(threadId)
+        }
     }
 
     fun loadOlder() {
@@ -430,6 +462,11 @@ private fun ResolvedModelDto.toChatOption(): ChatModelOption = ChatModelOption(
     providerName = providerName,
     reasoning = reasoning,
 )
+
+internal fun shouldDeleteUntouchedConversation(
+    isNewConversation: Boolean,
+    hasMessages: Boolean,
+): Boolean = isNewConversation && !hasMessages
 
 /**
  * 一次性提示。
