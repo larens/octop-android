@@ -17,12 +17,6 @@ class ChatScreenUiRulesTest {
     }
 
     @Test
-    fun `model selector follows input focus`() {
-        assertTrue(shouldShowModelSelector(inputFocused = true))
-        assertFalse(shouldShowModelSelector(inputFocused = false))
-    }
-
-    @Test
     fun `untouched new conversation is removed on exit`() {
         assertTrue(
             shouldDeleteUntouchedConversation(

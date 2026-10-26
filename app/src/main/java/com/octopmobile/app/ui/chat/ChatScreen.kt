@@ -17,6 +17,7 @@ import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.horizontalScroll
@@ -84,6 +85,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalDrawerSheet
 import androidx.compose.material3.ModalNavigationDrawer
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.rememberDrawerState
 import androidx.compose.material3.Scaffold
@@ -504,13 +506,15 @@ fun ChatScreen(
                         onRemove = viewModel::removeAttachment,
                         onResolve = viewModel::resolveHitl,
                     )
-                    // 底部导航常驻：输入法弹出时直接盖住它，不做显隐/位移动画，避免上下弹动。
-                    WorkbenchBottomBar(
-                        current = WorkbenchTab.CHATS,
-                        onSelect = { tab ->
-                            if (tab != WorkbenchTab.CHATS) onOpenWorkbenchTab(tab)
-                        },
-                    )
+                    // 激活输入态不保留底部导航高度，输入区才能贴着键盘；未激活时导航常驻不动。
+                    if (!imeVisible && !inputFocused) {
+                        WorkbenchBottomBar(
+                            current = WorkbenchTab.CHATS,
+                            onSelect = { tab ->
+                                if (tab != WorkbenchTab.CHATS) onOpenWorkbenchTab(tab)
+                            },
+                        )
+                    }
                 }
             },
         ) { padding ->
@@ -963,208 +967,309 @@ private fun InputRow(
         onSend(text)
     }
 
-    Box(modifier = Modifier.fillMaxWidth()) {
-        OutlinedTextField(
-            value = input,
-            onValueChange = onInputChange,
-            modifier = Modifier
-                .fillMaxWidth()
-                .onFocusChanged { state ->
-                    focused = state.isFocused
-                    if (!state.isFocused) modelExpanded = false
-                    onInputFocusChange(state.isFocused)
-                },
-            enabled = !blocked,
-            placeholder = { Text(stringResource(R.string.chat_input_hint_new)) },
-            leadingIcon = {
-                IconButton(
-                    onClick = { menuExpanded = true },
-                    enabled = !blocked,
-                    modifier = Modifier.size(36.dp),
-                ) {
-                    Icon(
-                        imageVector = Icons.Filled.Add,
-                        contentDescription = stringResource(R.string.chat_more_actions),
-                    )
-                }
-            },
-            trailingIcon = {
-                if (blocked) {
-                    IconButton(onClick = onCancel, modifier = Modifier.size(36.dp)) {
-                        Icon(
-                            imageVector = Icons.Filled.Stop,
-                            contentDescription = stringResource(R.string.chat_stop),
-                            tint = MaterialTheme.colorScheme.error,
-                        )
-                    }
-                } else {
-                    IconButton(
-                        onClick = { submit() },
-                        enabled = sendable,
-                        modifier = Modifier.size(36.dp),
-                    ) {
-                        Icon(
-                            imageVector = Icons.AutoMirrored.Filled.Send,
-                            contentDescription = stringResource(R.string.chat_send),
-                            tint = if (sendable) {
-                                MaterialTheme.colorScheme.primary
-                            } else {
-                                LocalContentColor.current
-                            },
-                        )
-                    }
-                }
-            },
-            minLines = 1,
-            maxLines = 3,
+    Column(modifier = Modifier.fillMaxWidth()) {
+        // 输入字段必须保持同一个组合节点：激活/收起只切换配置、不切结构，
+        // 否则字段被重建会丢焦点、输入法跟着缩回去。
+        Surface(
+            modifier = Modifier.fillMaxWidth(),
             shape = RoundedCornerShape(24.dp),
-            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
-            keyboardActions = KeyboardActions(onSend = { submit() }),
-        )
-
-        DropdownMenu(
-            expanded = menuExpanded,
-            onDismissRequest = { menuExpanded = false },
+            color = if (focused) {
+                MaterialTheme.colorScheme.surfaceContainerLow
+            } else {
+                Color.Transparent
+            },
+            border = if (focused) {
+                BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
+            } else {
+                null
+            },
         ) {
-            DropdownMenuItem(
-                text = { Text(stringResource(R.string.chat_upload_file)) },
-                leadingIcon = {
-                    Icon(
-                        imageVector = Icons.Filled.Description,
-                        contentDescription = null,
+            Column {
+                Box(modifier = Modifier.fillMaxWidth()) {
+                    OutlinedTextField(
+                        value = input,
+                        onValueChange = onInputChange,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .onFocusChanged { state ->
+                                focused = state.isFocused
+                                if (!state.isFocused) modelExpanded = false
+                                onInputFocusChange(state.isFocused)
+                            },
+                        enabled = !blocked,
+                        placeholder = { Text(stringResource(R.string.chat_input_hint_new)) },
+                        // 激活后「+」和发送都沉到第二行，输入行只留纯文字、可自适应增高。
+                        leadingIcon = if (focused) null else {
+                            {
+                                IconButton(
+                                    onClick = { menuExpanded = true },
+                                    enabled = !blocked,
+                                    modifier = Modifier.size(36.dp),
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Filled.Add,
+                                        contentDescription = stringResource(R.string.chat_more_actions),
+                                    )
+                                }
+                            }
+                        },
+                        trailingIcon = if (focused) null else {
+                            {
+                                if (blocked) {
+                                    IconButton(onClick = onCancel, modifier = Modifier.size(36.dp)) {
+                                        Icon(
+                                            imageVector = Icons.Filled.Stop,
+                                            contentDescription = stringResource(R.string.chat_stop),
+                                            tint = MaterialTheme.colorScheme.error,
+                                        )
+                                    }
+                                } else {
+                                    IconButton(
+                                        onClick = { submit() },
+                                        enabled = sendable,
+                                        modifier = Modifier.size(36.dp),
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.AutoMirrored.Filled.Send,
+                                            contentDescription = stringResource(R.string.chat_send),
+                                            tint = if (sendable) {
+                                                MaterialTheme.colorScheme.primary
+                                            } else {
+                                                LocalContentColor.current
+                                            },
+                                        )
+                                    }
+                                }
+                            }
+                        },
+                        minLines = 1,
+                        maxLines = 3,
+                        shape = RoundedCornerShape(24.dp),
+                        // 激活态的外框由外层 Surface 承担，字段自己透明、去边框。
+                        colors = if (focused) {
+                            OutlinedTextFieldDefaults.colors(
+                                focusedContainerColor = Color.Transparent,
+                                unfocusedContainerColor = Color.Transparent,
+                                focusedBorderColor = Color.Transparent,
+                                unfocusedBorderColor = Color.Transparent,
+                            )
+                        } else {
+                            OutlinedTextFieldDefaults.colors()
+                        },
+                        keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
+                        keyboardActions = KeyboardActions(onSend = { submit() }),
                     )
-                },
-                onClick = {
-                    menuExpanded = false
-                    onUploadFile()
-                },
-            )
-            DropdownMenuItem(
-                text = { Text(stringResource(R.string.chat_take_photo)) },
-                leadingIcon = {
-                    Icon(
-                        imageVector = Icons.Filled.PhotoCamera,
-                        contentDescription = null,
-                    )
-                },
-                onClick = {
-                    menuExpanded = false
-                    onTakePhoto()
-                },
-            )
-            DropdownMenuItem(
-                text = { Text(stringResource(R.string.chat_upload_image)) },
-                leadingIcon = {
-                    Icon(
-                        imageVector = Icons.Filled.Image,
-                        contentDescription = null,
-                    )
-                },
-                onClick = {
-                    menuExpanded = false
-                    onUploadImage()
-                },
-            )
-            DropdownMenuItem(
-                text = { Text(stringResource(R.string.chat_record_voice_note)) },
-                leadingIcon = {
-                    Icon(
-                        imageVector = Icons.Filled.KeyboardVoice,
-                        contentDescription = null,
-                    )
-                },
-                onClick = {
-                    menuExpanded = false
-                    onRecordVoiceNote()
-                },
-            )
-            if (canMention) {
-                DropdownMenuItem(
-                    text = { Text(stringResource(R.string.chat_mention)) },
-                    leadingIcon = {
-                        Icon(
-                            imageVector = Icons.Filled.AlternateEmail,
-                            contentDescription = null,
-                        )
-                    },
-                    onClick = {
-                        menuExpanded = false
-                        onMention()
-                    },
-                )
+
+                    if (!focused) {
+                        DropdownMenu(
+                            expanded = menuExpanded,
+                            onDismissRequest = { menuExpanded = false },
+                        ) {
+                            AttachmentMenuItems(
+                                canMention = canMention,
+                                onUploadFile = { menuExpanded = false; onUploadFile() },
+                                onUploadImage = { menuExpanded = false; onUploadImage() },
+                                onTakePhoto = { menuExpanded = false; onTakePhoto() },
+                                onRecordVoiceNote = { menuExpanded = false; onRecordVoiceNote() },
+                                onMention = { menuExpanded = false; onMention() },
+                            )
+                        }
+                    }
+                }
+
+                if (focused) {
+                    // 第二行：附件 + 模型 + 发送/停止，模型直接内置在输入框里。
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(start = 4.dp, end = 8.dp, bottom = 6.dp),
+                    ) {
+                        Box {
+                            IconButton(
+                                onClick = { menuExpanded = true },
+                                enabled = !blocked,
+                                modifier = Modifier.size(36.dp),
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Filled.Add,
+                                    contentDescription = stringResource(R.string.chat_more_actions),
+                                )
+                            }
+                            DropdownMenu(
+                                expanded = menuExpanded,
+                                onDismissRequest = { menuExpanded = false },
+                            ) {
+                                AttachmentMenuItems(
+                                    canMention = canMention,
+                                    onUploadFile = { menuExpanded = false; onUploadFile() },
+                                    onUploadImage = { menuExpanded = false; onUploadImage() },
+                                    onTakePhoto = { menuExpanded = false; onTakePhoto() },
+                                    onRecordVoiceNote = { menuExpanded = false; onRecordVoiceNote() },
+                                    onMention = { menuExpanded = false; onMention() },
+                                )
+                            }
+                        }
+                        Spacer(Modifier.width(4.dp))
+                        Box {
+                            Surface(
+                                shape = RoundedCornerShape(16.dp),
+                                color = MaterialTheme.colorScheme.secondaryContainer,
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(16.dp))
+                                    .clickable(enabled = modelOptions.isNotEmpty() && !blocked) {
+                                        modelExpanded = true
+                                    },
+                            ) {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                                ) {
+                                    Text(
+                                        text = when {
+                                            modelsLoading -> stringResource(R.string.chat_model_loading)
+                                            selectedModel != null -> selectedModel.label
+                                            else -> stringResource(R.string.chat_model_auto)
+                                        },
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
+                                        style = MaterialTheme.typography.labelLarge,
+                                    )
+                                    Spacer(Modifier.width(4.dp))
+                                    Icon(
+                                        imageVector = Icons.Filled.KeyboardArrowDown,
+                                        contentDescription = null,
+                                        modifier = Modifier.size(18.dp),
+                                    )
+                                }
+                            }
+                            DropdownMenu(
+                                expanded = modelExpanded,
+                                onDismissRequest = { modelExpanded = false },
+                            ) {
+                                if (selectedModel != null) {
+                                    DropdownMenuItem(
+                                        text = { Text(stringResource(R.string.chat_model_auto)) },
+                                        onClick = {
+                                            modelExpanded = false
+                                            onSelectModel(null)
+                                        },
+                                    )
+                                }
+                                modelOptions.forEach { option ->
+                                    DropdownMenuItem(
+                                        text = {
+                                            Column {
+                                                Text(option.label, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                                Text(
+                                                    text = option.providerName,
+                                                    style = MaterialTheme.typography.labelSmall,
+                                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                                )
+                                            }
+                                        },
+                                        onClick = {
+                                            modelExpanded = false
+                                            onSelectModel(option.modelRef)
+                                        },
+                                    )
+                                }
+                            }
+                        }
+                        Spacer(Modifier.weight(1f))
+                        if (blocked) {
+                            IconButton(onClick = onCancel, modifier = Modifier.size(36.dp)) {
+                                Icon(
+                                    imageVector = Icons.Filled.Stop,
+                                    contentDescription = stringResource(R.string.chat_stop),
+                                    tint = MaterialTheme.colorScheme.error,
+                                )
+                            }
+                        } else {
+                            IconButton(
+                                onClick = { submit() },
+                                enabled = sendable,
+                                modifier = Modifier.size(36.dp),
+                            ) {
+                                Icon(
+                                    imageVector = Icons.AutoMirrored.Filled.Send,
+                                    contentDescription = stringResource(R.string.chat_send),
+                                    tint = if (sendable) {
+                                        MaterialTheme.colorScheme.primary
+                                    } else {
+                                        LocalContentColor.current
+                                    },
+                                )
+                            }
+                        }
+                    }
+                }
             }
         }
     }
+}
 
-    if (shouldShowModelSelector(focused || modelExpanded)) {
-        Spacer(Modifier.height(6.dp))
-        Box(modifier = Modifier.fillMaxWidth()) {
-            Surface(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .clip(RoundedCornerShape(16.dp))
-                    .clickable(enabled = modelOptions.isNotEmpty() && !blocked) {
-                        modelExpanded = true
-                    },
-                color = MaterialTheme.colorScheme.secondaryContainer,
-                shape = RoundedCornerShape(16.dp),
-            ) {
-                Row(
-                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Text(
-                        text = when {
-                            modelsLoading -> stringResource(R.string.chat_model_loading)
-                            selectedModel != null -> selectedModel.label
-                            else -> stringResource(R.string.chat_model_auto)
-                        },
-                        modifier = Modifier.weight(1f),
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                        style = MaterialTheme.typography.labelLarge,
-                    )
-                    Spacer(Modifier.width(6.dp))
-                    Icon(
-                        imageVector = Icons.Filled.KeyboardArrowDown,
-                        contentDescription = null,
-                        modifier = Modifier.size(18.dp),
-                    )
-                }
-            }
-            DropdownMenu(
-                expanded = modelExpanded,
-                onDismissRequest = { modelExpanded = false },
-            ) {
-                if (selectedModel != null) {
-                    DropdownMenuItem(
-                        text = { Text(stringResource(R.string.chat_model_auto)) },
-                        onClick = {
-                            modelExpanded = false
-                            onSelectModel(null)
-                        },
-                    )
-                }
-                modelOptions.forEach { option ->
-                    DropdownMenuItem(
-                        text = {
-                            Column {
-                                Text(option.label, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                                Text(
-                                    text = option.providerName,
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                )
-                            }
-                        },
-                        onClick = {
-                            modelExpanded = false
-                            onSelectModel(option.modelRef)
-                        },
-                    )
-                }
-            }
-        }
+/** 附件菜单的五个固定项；激活/收起两个输入布局共用（菜单内容保持一致）。 */
+@Composable
+private fun AttachmentMenuItems(
+    canMention: Boolean,
+    onUploadFile: () -> Unit,
+    onUploadImage: () -> Unit,
+    onTakePhoto: () -> Unit,
+    onRecordVoiceNote: () -> Unit,
+    onMention: () -> Unit,
+) {
+    DropdownMenuItem(
+        text = { Text(stringResource(R.string.chat_upload_file)) },
+        leadingIcon = {
+            Icon(
+                imageVector = Icons.Filled.Description,
+                contentDescription = null,
+            )
+        },
+        onClick = onUploadFile,
+    )
+    DropdownMenuItem(
+        text = { Text(stringResource(R.string.chat_take_photo)) },
+        leadingIcon = {
+            Icon(
+                imageVector = Icons.Filled.PhotoCamera,
+                contentDescription = null,
+            )
+        },
+        onClick = onTakePhoto,
+    )
+    DropdownMenuItem(
+        text = { Text(stringResource(R.string.chat_upload_image)) },
+        leadingIcon = {
+            Icon(
+                imageVector = Icons.Filled.Image,
+                contentDescription = null,
+            )
+        },
+        onClick = onUploadImage,
+    )
+    DropdownMenuItem(
+        text = { Text(stringResource(R.string.chat_record_voice_note)) },
+        leadingIcon = {
+            Icon(
+                imageVector = Icons.Filled.KeyboardVoice,
+                contentDescription = null,
+            )
+        },
+        onClick = onRecordVoiceNote,
+    )
+    if (canMention) {
+        DropdownMenuItem(
+            text = { Text(stringResource(R.string.chat_mention)) },
+            leadingIcon = {
+                Icon(
+                    imageVector = Icons.Filled.AlternateEmail,
+                    contentDescription = null,
+                )
+            },
+            onClick = onMention,
+        )
     }
 }
 
@@ -1763,8 +1868,6 @@ private fun MessageText(text: String, caret: Boolean, streaming: Boolean) {
         )
     }
 }
-
-internal fun shouldShowModelSelector(inputFocused: Boolean): Boolean = inputFocused
 
 /**
  * 正文的 Markdown 渲染（spec §7 选型 `multiplatform-markdown-renderer-m3`）。
