@@ -39,14 +39,16 @@ class ThreadRepository(
         when (val result = api.threads(agentId, limit)) {
             is ApiResult.Ok -> {
                 val local = threadDao.listByAgent(agentId).associateBy { it.threadId }
-                val entities = result.value.map { it.toEntity(agentId, local[it.threadId]) }
+                // Cron/task sessions are implementation details, not user conversations.
+                val visible = result.value.filter(::isVisibleConversation)
+                val entities = visible.map { it.toEntity(agentId, local[it.threadId]) }
                 threadDao.upsertAll(entities)
                 // 只有「这一页没满」才能确定是全量；满页说明服务端可能还有更多，不能动手。
                 if (result.value.size < limit) {
                     // 本地草稿（draft-…）是「等首条消息才建的服务端会话」，不属于服务端已
                     // 不存在的孤儿 —— 收敛时必须留着，否则聊天页刚开的「新会话」会被整行删掉。
                     val drafts = local.values.filter { isDraftId(it.threadId) }.map { it.threadId }
-                    val keepIds = result.value.map { it.threadId } + drafts
+                    val keepIds = visible.map { it.threadId } + drafts
                     if (keepIds.isEmpty()) {
                         threadDao.deleteAllByAgent(agentId)
                     } else {
@@ -108,7 +110,6 @@ class ThreadRepository(
     companion object {
         /** 本地草稿会话的 id 前缀：这串 id 只存在于本机，服务端建好真实会话后被替换掉。 */
         const val DRAFT_PREFIX = "draft-"
-
         fun isDraftId(threadId: String): Boolean = threadId.startsWith(DRAFT_PREFIX)
     }
 
@@ -243,6 +244,10 @@ private fun ThreadDto.toEntity(agentId: String, local: ThreadEntity?): ThreadEnt
         awaitingUser = awaitingUser,
     )
 }
+
+internal fun isVisibleConversation(thread: ThreadDto): Boolean =
+    (thread.channelType == null || thread.channelType == "dashboard") &&
+        thread.sessionKey?.contains(":dashboard:android-task-") != true
 
 /** 角标显示上限，防止 `unreadCount` 无限累加（也避免徽标被撑成一条）。 */
 private const val UNREAD_CAP = 99

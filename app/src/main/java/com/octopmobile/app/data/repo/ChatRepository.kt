@@ -456,12 +456,33 @@ class ChatRepository(
                         messageDao.deletePlaceholders(threadId, MessageStatus.DONE, LOCAL_PREFIX)
                         messageDao.deletePlaceholders(threadId, MessageStatus.FAILED, LOCAL_PREFIX)
                         messageDao.deletePlaceholders(threadId, MessageStatus.INTERRUPTED, LOCAL_PREFIX)
+                        messageDao.deleteMissingServerMessagesSince(
+                            threadId = threadId,
+                            serverIds = entities.map { it.id },
+                            minSortOrder = entities.minOf { it.sortOrder },
+                            prefix = LOCAL_PREFIX,
+                        )
                     }
 
                     return ApiResult.Ok(
                         HistoryPage(count = entities.size, hasMore = page.hasMore, loading = false),
                     )
                 }
+            }
+        }
+    }
+
+    /** 服务端先删真实 checkpoint；成功后才移除本地行，避免只在界面上隐藏错误上下文。 */
+    suspend fun deleteConversationTurn(anchorMessageId: String, localMessageIds: List<String>): ApiResult<Unit> {
+        if (isDraft || anchorMessageId.startsWith(LOCAL_PREFIX) || localMessageIds.isEmpty()) {
+            return ApiResult.Failure(ApiError.Parse("conversation turn is not persisted yet"))
+        }
+        return when (val result = api.deleteConversationTurn(agentId, threadId, anchorMessageId)) {
+            is ApiResult.Failure -> result
+            is ApiResult.Ok -> {
+                attachmentDao.deleteByMessageIds(threadId, localMessageIds.distinct())
+                messageDao.deleteByIds(threadId, localMessageIds.distinct())
+                result
             }
         }
     }

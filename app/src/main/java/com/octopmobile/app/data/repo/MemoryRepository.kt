@@ -15,6 +15,7 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import java.util.UUID
 import java.time.Instant
+import java.time.ZoneId
 
 /**
  * 结构化记忆（docs/spec.md §23.3）。
@@ -145,15 +146,16 @@ class ServerMemoryRepository(private val api: OctopApi) {
         focus: JsonElement?,
         told: JsonElement?,
     ): MemoryPortrait {
-        val aboutTexts = extractTexts(about).filter(::looksLikeProfileText)
-        val toldTexts = extractTexts(told).filter(::looksLikeProfileText)
+        val aboutTexts = extractProfileTexts(about).filter(::looksLikeProfileText)
+        val toldTexts = extractProfileTexts(told, excludeScheduledTasks = true)
+            .filter(::looksLikeProfileText)
         val summary = aboutTexts
             .ifEmpty { toldTexts }
             .take(PORTRAIT_SUMMARY_MAX)
             .joinToString(separator = "\n\n")
             .let(::cleanProfileDisplayText)
             .trim()
-        val focusItems = extractTexts(focus)
+        val focusItems = extractProfileTexts(focus, excludeScheduledTasks = true)
             .ifEmpty { deriveHighlights(aboutTexts + toldTexts, onlyFocus = true) }
             .take(PORTRAIT_LIST_MAX)
         val truthItems = toldTexts
@@ -161,11 +163,109 @@ class ServerMemoryRepository(private val api: OctopApi) {
             .take(PORTRAIT_LIST_MAX)
 
         return MemoryPortrait(
+            preferredAddress = extractPreferredAddress(about, told),
             summary = summary,
             focus = focusItems,
             truths = truthItems,
         )
     }
+
+    private fun extractProfileTexts(
+        payload: JsonElement?,
+        excludeScheduledTasks: Boolean = false,
+    ): List<String> {
+        val texts = itemObjects(payload)
+            .filterNot { excludeScheduledTasks && isScheduledTask(it) }
+            .mapNotNull { item ->
+                firstText(
+                    item,
+                    "assertion",
+                    "summary",
+                    "text",
+                    "content",
+                    "description",
+                    "value",
+                    "fact",
+                    "claim",
+                    "story",
+                    "verbatim_quote",
+                )
+            }
+            .flatMap(::splitReadableText)
+            .distinct()
+        return texts.ifEmpty {
+            extractTexts(payload)
+                .filterNot { excludeScheduledTasks && looksLikeScheduledTaskText(it) }
+        }
+    }
+
+    private fun isScheduledTask(item: JsonObject): Boolean {
+        val text = listOf(
+            "assertion",
+            "summary",
+            "text",
+            "content",
+            "description",
+            "value",
+            "fact",
+            "claim",
+            "story",
+            "verbatim_quote",
+        ).mapNotNull { key -> firstText(item, key) }
+            .joinToString(" ")
+        return looksLikeScheduledTaskText(text)
+    }
+
+    private fun looksLikeScheduledTaskText(text: String): Boolean {
+        val value = text.lowercase()
+        return listOf(
+            "定时任务",
+            "触发规则",
+            "cron:",
+            "cron job",
+            "scheduled task",
+            "schedule rule",
+        ).any(value::contains)
+    }
+
+    private fun extractPreferredAddress(about: JsonElement, told: JsonElement?): String? {
+        val payloads = listOfNotNull(about, told)
+        val structuredKeys = listOf(
+            "preferred_address",
+            "preferred_name",
+            "address_me_as",
+            "call_me",
+            "salutation",
+            "nickname",
+            "称呼我",
+            "惯用称呼",
+        )
+        payloads.asSequence()
+            .flatMap { itemObjects(it).asSequence() }
+            .firstNotNullOfOrNull { item -> firstText(item, *structuredKeys.toTypedArray()) }
+            ?.let(::cleanAddress)
+            ?.let { return it }
+
+        val texts = payloads.flatMap { payload ->
+            itemObjects(payload)
+                .filterNot(::isScheduledTask)
+                .flatMap { item ->
+                    listOf("assertion", "summary", "text", "content", "verbatim_quote")
+                        .mapNotNull { key -> firstText(item, key) }
+                }
+        }
+        for (text in texts) {
+            ADDRESS_PATTERNS.firstNotNullOfOrNull { pattern ->
+                pattern.find(text)?.groupValues?.getOrNull(1)?.let(::cleanAddress)
+            }?.let { return it }
+        }
+        return null
+    }
+
+    private fun cleanAddress(value: String): String? = value
+        .trim()
+        .trim('「', '」', '“', '”', '"', '\'', '：', ':')
+        .takeIf { it.length in 1..24 && it.any(Char::isLetter) }
 
     private fun parseEpisodes(payload: JsonElement?): List<MemoryEpisode> {
         return itemObjects(payload)
@@ -173,15 +273,42 @@ class ServerMemoryRepository(private val api: OctopApi) {
                 val summary = firstText(item, "summary", "story", "content", "text", "description")
                     ?: return@mapNotNull null
                 MemoryEpisode(
+                    id = firstText(item, "id", "episode_id", "uuid")
+                        ?: stableEpisodeId(summary, item),
+                    title = firstText(item, "title", "headline", "subject", "name")
+                        ?.takeUnless { it == summary },
                     emotion = firstText(item, "emotion", "mood", "primary_emotion"),
                     summary = summary,
+                    insight = firstText(
+                        item,
+                        "insight",
+                        "reflection",
+                        "growth",
+                        "learning",
+                        "lesson",
+                        "memory",
+                    )?.takeUnless { it == summary },
                     intensity = firstInt(item, "intensity", "intensity_score", "score", "level"),
                     occurredAt = firstTimestamp(item, "occurred_at", "created_at", "updated_at", "timestamp"),
                 )
             }
-            .distinctBy { listOf(it.emotion.orEmpty(), it.summary, it.occurredAt).joinToString("|") }
+            .distinctBy { it.id }
+            .sortedWith(compareByDescending<MemoryEpisode> { it.occurredAt ?: Long.MIN_VALUE })
+            // Episode 接口在部分服务端版本会为一天产出多条候选；日记页按自然日只展示最终一篇。
+            .distinctBy { episode ->
+                episode.occurredAt?.let {
+                    Instant.ofEpochMilli(it).atZone(ZoneId.systemDefault()).toLocalDate().toString()
+                } ?: "undated-${episode.id}"
+            }
             .take(EPISODE_MAX)
     }
+
+    private fun stableEpisodeId(summary: String, item: JsonObject): String =
+        listOf(
+            summary,
+            firstText(item, "occurred_at", "created_at", "updated_at", "timestamp").orEmpty(),
+            firstText(item, "emotion", "mood", "primary_emotion").orEmpty(),
+        ).joinToString("|").hashCode().toUInt().toString(16)
 
     private fun buildArchives(
         entities: JsonElement?,
@@ -473,9 +600,15 @@ class ServerMemoryRepository(private val api: OctopApi) {
     }
 
     private companion object {
+        val ADDRESS_PATTERNS = listOf(
+            Regex("以[「“\\\"]([^」”\\\"]{1,24})[」”\\\"]称呼用户"),
+            Regex("称(?:呼)?用户为[「“\\\"]?([^」”\\\"，,。；;]{1,24})"),
+            Regex("(?:称呼我|叫我)(?:为|作|做|是|[：:])?[「“\\\"]?([^」”\\\"，,。；;\\s]{1,24})"),
+            Regex("(?:惯用称呼|用户称呼)(?:是|为|[：:])[「“\\\"]?([^」”\\\"，,。；;]{1,24})"),
+        )
         const val PORTRAIT_SUMMARY_MAX = 4
         const val PORTRAIT_LIST_MAX = 4
-        const val EPISODE_MAX = 6
+        const val EPISODE_MAX = 60
         const val ARCHIVE_MAX = 8
         const val RECURSIVE_VALUE_LIMIT = 24
         const val MAX_RECURSION_DEPTH = 4
@@ -489,14 +622,18 @@ data class ServerMemorySnapshot(
 )
 
 data class MemoryPortrait(
+    val preferredAddress: String?,
     val summary: String,
     val focus: List<String>,
     val truths: List<String>,
 )
 
 data class MemoryEpisode(
+    val id: String,
+    val title: String?,
     val emotion: String?,
     val summary: String,
+    val insight: String?,
     val intensity: Int?,
     val occurredAt: Long?,
 )

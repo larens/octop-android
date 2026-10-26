@@ -10,6 +10,7 @@ import com.octopmobile.app.data.repo.AutomationRepository
 import com.octopmobile.app.data.repo.ChatRepository
 import com.octopmobile.app.data.repo.InstanceRepository
 import com.octopmobile.app.data.repo.MemoryRepository
+import com.octopmobile.app.data.repo.NaturalLanguageTaskRepository
 import com.octopmobile.app.data.repo.ServerMemoryRepository
 import com.octopmobile.app.data.repo.TagRepository
 import com.octopmobile.app.data.repo.ThreadRepository
@@ -134,5 +135,18 @@ class AppContainer(context: Context) {
             agentId = agentId,
             api = api(baseUrl),
             dao = database.automationTasks(),
+        )
+
+    fun naturalLanguageTaskRepository(baseUrl: String, agentId: String): NaturalLanguageTaskRepository =
+        NaturalLanguageTaskRepository(
+            socketFactory = { chatSocket(baseUrl, agentId) },
+            temporarySessionKey = {
+                "$agentId:dashboard:android-task-${java.util.UUID.randomUUID()}:dm"
+            },
+            deleteThread = { threadId -> api(baseUrl).deleteThread(agentId, threadId) },
+            bindConnectors = { taskId, serverNames ->
+                automationRepository(baseUrl, agentId).bindConnectors(taskId, serverNames)
+            },
+            refreshTasks = { automationRepository(baseUrl, agentId).refresh() },
         )
 }

@@ -24,7 +24,9 @@ import com.octopmobile.app.data.remote.dto.AgentDto
 import com.octopmobile.app.data.remote.dto.HitlDecision
 import com.octopmobile.app.data.remote.dto.ResolvedModelDto
 import com.octopmobile.app.data.repo.ChatRepository
+import com.octopmobile.app.data.repo.ConversationTurn
 import com.octopmobile.app.data.repo.ThreadRepository
+import com.octopmobile.app.data.repo.conversationTurnFor
 import com.octopmobile.app.data.ws.ChatSocket
 import com.octopmobile.app.ui.appContainer
 import com.octopmobile.app.ui.AutoCreatedConversation
@@ -146,6 +148,9 @@ class ChatViewModel(
     /** 附件上传中。 */
     private val _busy = MutableStateFlow(false)
     val busy: StateFlow<Boolean> = _busy.asStateFlow()
+
+    private val _deletingTurnIds = MutableStateFlow<Set<String>>(emptySet())
+    val deletingTurnIds: StateFlow<Set<String>> = _deletingTurnIds.asStateFlow()
 
     /** 一次性提示（离线排队、上传失败等）。文案在 UI 侧解析 —— 这里拿不到 `stringResource`。 */
     private val _notice = MutableStateFlow<ChatNotice?>(null)
@@ -313,6 +318,26 @@ class ChatViewModel(
     fun cancel() {
         val repo = repository ?: return
         viewModelScope.launch { repo.cancel() }
+    }
+
+    fun conversationTurn(selectedMessageId: String): ConversationTurn? =
+        conversationTurnFor(_messages.value, selectedMessageId)
+
+    fun deleteConversationTurn(turn: ConversationTurn) {
+        val repo = repository ?: return
+        if (_turnActive.value || !turn.isPersisted || _deletingTurnIds.value.isNotEmpty()) return
+        _deletingTurnIds.value = turn.messageIds.toSet()
+        _notice.value = null
+        viewModelScope.launch {
+            when (val result = repo.deleteConversationTurn(turn.anchorMessageId, turn.messageIds)) {
+                is ApiResult.Ok -> {
+                    nextOffset = (nextOffset - turn.messageIds.size).coerceAtLeast(0)
+                    _notice.value = ChatNotice.TurnDeleted
+                }
+                is ApiResult.Failure -> _notice.value = ChatNotice.Failure(result.error)
+            }
+            _deletingTurnIds.value = emptySet()
+        }
     }
 
     /**
@@ -541,6 +566,8 @@ sealed interface ChatNotice {
 
     /** 文件读不出来（权限、URI 失效等）。 */
     data object AttachFailed : ChatNotice
+
+    data object TurnDeleted : ChatNotice
 
     /** 上传接口失败。 */
     data class Failure(val error: ApiError) : ChatNotice

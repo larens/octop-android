@@ -167,4 +167,5 @@ dependencies {
     implementation(libs.markdown.renderer.m3)
 
     testImplementation(libs.junit)
+    testImplementation(libs.mockwebserver)
 }

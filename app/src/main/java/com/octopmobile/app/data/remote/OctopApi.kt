@@ -7,6 +7,7 @@ import com.octopmobile.app.data.remote.dto.CreateThreadResponse
 import com.octopmobile.app.data.remote.dto.CronJobCreateBody
 import com.octopmobile.app.data.remote.dto.CronJobDto
 import com.octopmobile.app.data.remote.dto.CronJobPatchBody
+import com.octopmobile.app.data.remote.dto.ConnectorInstanceDto
 import com.octopmobile.app.data.remote.dto.HistoryResponse
 import com.octopmobile.app.data.remote.dto.HitlResumeBody
 import com.octopmobile.app.data.remote.dto.LoginRequest
@@ -102,6 +103,13 @@ class OctopApi(
         execute(
             request = Request.Builder().url(url(API, PROVIDERS, RESOLVED)).build(),
             deserializer = ListSerializer(ResolvedModelDto.serializer()),
+        )
+
+    /** 当前用户在服务端已经安装且可见的连接器实例。 */
+    suspend fun connectorInstances(): ApiResult<List<ConnectorInstanceDto>> =
+        execute(
+            request = Request.Builder().url(url(API, CONNECTOR_INSTANCES)).build(),
+            deserializer = ListSerializer(ConnectorInstanceDto.serializer()),
         )
 
     suspend fun threads(agentId: String, limit: Int = DEFAULT_PAGE_SIZE): ApiResult<List<ThreadDto>> =
@@ -215,6 +223,19 @@ class OctopApi(
                 .build(),
         )
 
+    /** 删除选中消息所属的整轮问答，并同步从服务端模型上下文中移除。 */
+    suspend fun deleteConversationTurn(
+        agentId: String,
+        threadId: String,
+        messageId: String,
+    ): ApiResult<Unit> =
+        executeUnit(
+            Request.Builder()
+                .url(url(API, AGENTS, agentId, THREADS, threadId, TURNS, messageId))
+                .delete()
+                .build(),
+        )
+
     /**
      * 标记会话已读（`POST /api/agents/{agent_id}/threads/{thread_id}/read`，204）。
      *
@@ -282,7 +303,7 @@ class OctopApi(
      * 与服务端保持最小协议：这里只带 `limit`，不替客户端预先加情绪或时间过滤，让记忆页先把
      * 最近沉淀出来的情绪片段完整呈现。
      */
-    suspend fun memoryEpisodes(agentId: String, limit: Int = DEFAULT_MEMORY_LIMIT): ApiResult<JsonElement> =
+    suspend fun memoryEpisodes(agentId: String, limit: Int = DEFAULT_DIARY_LIMIT): ApiResult<JsonElement> =
         execute(
             request = Request.Builder()
                 .url(url(API, AGENTS, agentId, MEMORY, EPISODES, LIST))
@@ -554,12 +575,14 @@ class OctopApi(
         private const val AUTH = "auth"
         private const val AGENTS = "agents"
         private const val PROVIDERS = "providers"
+        private const val CONNECTOR_INSTANCES = "connector-instances"
         private const val RESOLVED = "resolved"
 
         private const val LOGIN = "login"
         private const val LOGOUT = "logout"
         private const val ME = "me"
         private const val THREADS = "threads"
+        private const val TURNS = "turns"
         private const val HISTORY = "history"
         private const val TRAJECTORY = "trajectory"
         private const val READ = "read"
@@ -582,8 +605,9 @@ class OctopApi(
         /** 附件可能很大，读超时放宽到 2 分钟（默认 30s 传大图会断）。 */
         private const val UPLOAD_TIMEOUT_SECONDS = 120L
 
-        /** 记忆页只拉摘要，默认 6 条足够撑起首页，不把移动端直接变成后台检索页。 */
+        /** 画像与档案只需要首页摘要；日记列表多取一些，支持移动端直接翻阅。 */
         private const val DEFAULT_MEMORY_LIMIT = 6
+        private const val DEFAULT_DIARY_LIMIT = 60
 
         /** 下载同理，再宽一点：服务端可能要先从 workspace 读文件再回传（docs/spec.md §13）。 */
         private const val DOWNLOAD_TIMEOUT_SECONDS = 240L

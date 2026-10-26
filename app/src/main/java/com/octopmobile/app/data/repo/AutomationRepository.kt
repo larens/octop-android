@@ -67,6 +67,7 @@ class AutomationRepository(
         prompt: String,
         scheduleRule: String,
         scopeRef: String? = null,
+        mcpServers: List<String>? = null,
     ): ApiResult<Unit> =
         when (
             val result = api.createCronJob(
@@ -77,6 +78,7 @@ class AutomationRepository(
                     prompt = prompt.trim(),
                     sessionKey = scopeRef?.trim()?.takeIf { it.isNotEmpty() },
                     enabled = true,
+                    mcpServers = mcpServers,
                 ),
             )
         ) {
@@ -111,6 +113,16 @@ class AutomationRepository(
                 ApiResult.Ok(Unit)
             }
 
+            is ApiResult.Failure -> result
+        }
+
+    /** Natural-language recommendations create first, then bind the matched connector tools here. */
+    suspend fun bindConnectors(id: String, mcpServers: List<String>): ApiResult<Unit> =
+        when (val result = api.patchCronJob(agentId, id, CronJobPatchBody(mcpServers = mcpServers))) {
+            is ApiResult.Ok -> {
+                cache(result.value)
+                ApiResult.Ok(Unit)
+            }
             is ApiResult.Failure -> result
         }
 

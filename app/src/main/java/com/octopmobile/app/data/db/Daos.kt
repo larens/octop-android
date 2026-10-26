@@ -202,6 +202,9 @@ interface MessageDao {
     @Upsert
     suspend fun upsertAll(entities: List<MessageEntity>)
 
+    @Query("DELETE FROM messages WHERE threadId = :threadId AND id IN (:ids)")
+    suspend fun deleteByIds(threadId: String, ids: List<String>)
+
     @Query(
         """
         INSERT INTO messages
@@ -284,6 +287,18 @@ interface MessageDao {
     @Query("DELETE FROM messages WHERE threadId = :threadId AND status = :status AND id LIKE :prefix || '%'")
     suspend fun deletePlaceholders(threadId: String, status: String, prefix: String)
 
+    /** Latest server page is authoritative within its timestamp window. */
+    @Query(
+        "DELETE FROM messages WHERE threadId = :threadId " +
+            "AND sortOrder >= :minSortOrder AND id NOT LIKE :prefix || '%' AND id NOT IN (:serverIds)",
+    )
+    suspend fun deleteMissingServerMessagesSince(
+        threadId: String,
+        serverIds: List<String>,
+        minSortOrder: Long,
+        prefix: String,
+    )
+
     @Query("DELETE FROM messages WHERE threadId = :threadId")
     suspend fun deleteByThread(threadId: String)
 
@@ -316,6 +331,9 @@ interface AttachmentDao {
 
     @Query("DELETE FROM attachments WHERE threadId = :threadId")
     suspend fun deleteByThread(threadId: String)
+
+    @Query("DELETE FROM attachments WHERE threadId = :threadId AND messageId IN (:messageIds)")
+    suspend fun deleteByMessageIds(threadId: String, messageIds: List<String>)
 
     @Query("UPDATE attachments SET threadId = :newId WHERE threadId = :oldId")
     suspend fun moveThread(oldId: String, newId: String)

@@ -12,8 +12,9 @@ import com.octopmobile.app.data.AppContainer
 import com.octopmobile.app.data.db.AutomationTaskEntity
 import com.octopmobile.app.data.remote.ApiError
 import com.octopmobile.app.data.remote.ApiResult
+import com.octopmobile.app.data.remote.dto.ConnectorInstanceDto
+import com.octopmobile.app.data.remote.dto.isReadyForAutomation
 import com.octopmobile.app.data.remote.isUnauthorized
-import com.octopmobile.app.data.repo.AutomationRepository
 import com.octopmobile.app.ui.appContainer
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -33,13 +34,15 @@ data class TasksUiState(
     val loaded: Boolean = false,
     val syncing: Boolean = false,
     val error: ApiError? = null,
-    /** 一次性提示（写操作失败 / 已触发执行）。 */
+    /** 一次性提示（同步或后台写操作失败）。 */
     val notice: ApiError? = null,
-    /** 刚在服务端触发了一次「立即执行」，UI 该弹一次提示。 */
-    val runTriggered: Boolean = false,
-    /** 正在等这次写操作返回的任务 id；非 null 时所有写按钮都应禁用。 */
-    val busyId: String? = null,
+    val naturalTaskCompleted: Boolean = false,
+    val naturalTaskError: ApiError? = null,
+    val processingNaturalTask: Boolean = false,
     val needsLogin: Boolean = false,
+    /** 服务端已安装、已授权且当前用户可用的连接器。 */
+    val connectors: List<ConnectorInstanceDto> = emptyList(),
+    val connectorsLoaded: Boolean = false,
 )
 
 /**
@@ -105,76 +108,86 @@ class TasksViewModel(private val container: AppContainer) : ViewModel() {
         viewModelScope.launch {
             uiState = uiState.copy(syncing = true)
             uiState = when (val result = container.automationRepository(baseUrl, id).refresh()) {
-                is ApiResult.Ok -> uiState.copy(syncing = false, loaded = true, error = null)
+                is ApiResult.Ok -> uiState.copy(loaded = true, error = null)
 
                 is ApiResult.Failure -> uiState.copy(
-                    syncing = false,
                     loaded = true,
                     error = result.error,
                     needsLogin = result.error.isUnauthorized,
                 )
             }
+            loadConnectors(baseUrl)
+            uiState = uiState.copy(syncing = false)
         }
     }
 
-    // ------------------------------------------------------------ 增删改
-
-    fun create(title: String, prompt: String, scheduleRule: String) =
-        write { it.create(title, prompt, scheduleRule) }
-
-    fun update(id: String, title: String, prompt: String, scheduleRule: String) =
-        write(id) { it.update(id, title, prompt, scheduleRule) }
-
-    fun setEnabled(id: String, enabled: Boolean) = write(id) { it.setEnabled(id, enabled) }
-
-    fun delete(id: String) = write(id) { it.delete(id) }
-
-    /** 立即执行一次。与其它写操作一样等 204 回来才提示，但**不改本地排期**。 */
-    fun runNow(id: String) {
+    fun createFromNaturalLanguage(description: String, mcpServers: List<String> = emptyList()) {
         val baseUrl = host.value ?: return
-        val id2 = agentId.value ?: return
-        if (uiState.busyId != null) return
+        val id = agentId.value ?: return
+        if (uiState.processingNaturalTask || description.isBlank()) return
         viewModelScope.launch {
-            uiState = uiState.copy(busyId = id)
-            uiState = when (val result = container.automationRepository(baseUrl, id2).runNow(id)) {
-                is ApiResult.Ok -> uiState.copy(busyId = null, runTriggered = true)
-
+            uiState = uiState.copy(processingNaturalTask = true, naturalTaskError = null)
+            uiState = when (
+                val result = container.naturalLanguageTaskRepository(baseUrl, id).create(description, mcpServers)
+            ) {
+                is ApiResult.Ok -> uiState.copy(
+                    processingNaturalTask = false,
+                    naturalTaskCompleted = true,
+                    loaded = true,
+                )
                 is ApiResult.Failure -> uiState.copy(
-                    busyId = null,
-                    notice = result.error,
+                    processingNaturalTask = false,
+                    naturalTaskError = result.error,
                     needsLogin = result.error.isUnauthorized,
                 )
             }
         }
+    }
+
+    fun modifyFromNaturalLanguage(task: AutomationTaskEntity, description: String) {
+        val baseUrl = host.value ?: return
+        val id = agentId.value ?: return
+        if (uiState.processingNaturalTask || description.isBlank()) return
+        viewModelScope.launch {
+            uiState = uiState.copy(processingNaturalTask = true, naturalTaskError = null)
+            uiState = when (
+                val result = container.naturalLanguageTaskRepository(baseUrl, id).modify(task, description)
+            ) {
+                is ApiResult.Ok -> uiState.copy(
+                    processingNaturalTask = false,
+                    naturalTaskCompleted = true,
+                    loaded = true,
+                )
+                is ApiResult.Failure -> uiState.copy(
+                    processingNaturalTask = false,
+                    naturalTaskError = result.error,
+                    needsLogin = result.error.isUnauthorized,
+                )
+            }
+        }
+    }
+
+    fun dismissNaturalTask() {
+        uiState = uiState.copy(naturalTaskError = null)
     }
 
     fun consumeNotice() {
-        uiState = uiState.copy(notice = null, runTriggered = false)
+        uiState = uiState.copy(
+            notice = null,
+            naturalTaskCompleted = false,
+        )
     }
 
-    /**
-     * 写操作的统一出口：先是服务端，成功了仓储自己会把返回的对象写进镜像。
-     *
-     * [busyId] 传具体任务 id 时，UI 可以只对这一行做忙态；不传则是「新建」这种没有行的操作。
-     */
-    private fun write(
-        busyId: String? = null,
-        action: suspend (AutomationRepository) -> ApiResult<Unit>,
-    ) {
-        val baseUrl = host.value ?: return
-        val id = agentId.value ?: return
-        if (uiState.busyId != null) return
-        viewModelScope.launch {
-            uiState = uiState.copy(busyId = busyId)
-            uiState = when (val result = action(container.automationRepository(baseUrl, id))) {
-                is ApiResult.Ok -> uiState.copy(busyId = null)
-
-                is ApiResult.Failure -> uiState.copy(
-                    busyId = null,
-                    notice = result.error,
-                    needsLogin = result.error.isUnauthorized,
-                )
-            }
+    private suspend fun loadConnectors(baseUrl: String) {
+        uiState = when (val result = container.api(baseUrl).connectorInstances()) {
+            is ApiResult.Ok -> uiState.copy(
+                connectors = result.value.filter(ConnectorInstanceDto::isReadyForAutomation),
+                connectorsLoaded = true,
+            )
+            is ApiResult.Failure -> uiState.copy(
+                connectorsLoaded = true,
+                needsLogin = uiState.needsLogin || result.error.isUnauthorized,
+            )
         }
     }
 

@@ -20,6 +20,8 @@ import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
@@ -166,6 +168,7 @@ import com.octopmobile.app.data.model.PartsCodec
 import com.octopmobile.app.data.model.UploadedAttachment
 import com.octopmobile.app.data.remote.dto.AgentDto
 import com.octopmobile.app.data.remote.dto.HitlDecision
+import com.octopmobile.app.data.repo.ConversationTurn
 import com.octopmobile.app.data.ws.ChatSocket
 import com.octopmobile.app.service.TurnService
 import com.octopmobile.app.ui.AppActions
@@ -189,7 +192,7 @@ import java.io.File
  * 消息正文存在 Room 里，这里只负责把 `parts_json` 解析成气泡；解析结果按 `partsJson`
  * 记忆化，所以流式期间只有最后一条消息在重新解析（spec §12）。
  */
-@OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class, ExperimentalFoundationApi::class)
 @Composable
 fun ChatScreen(
     agentId: String,
@@ -227,6 +230,7 @@ fun ChatScreen(
     val pending by viewModel.hitl.collectAsStateWithLifecycle()
     val attachments by viewModel.attachments.collectAsStateWithLifecycle()
     val busy by viewModel.busy.collectAsStateWithLifecycle()
+    val deletingTurnIds by viewModel.deletingTurnIds.collectAsStateWithLifecycle()
     val notice by viewModel.notice.collectAsStateWithLifecycle()
     val cachedAttachments by viewModel.cachedAttachments.collectAsStateWithLifecycle()
     val compactMarkers by viewModel.compactMarkers.collectAsStateWithLifecycle()
@@ -247,6 +251,7 @@ fun ChatScreen(
 
     // 消息与压缩标记合成一条渲染序列，标记插在「第一条晚于它的消息」之前（spec §8.2）。
     val rows = remember(messages, compactMarkers) { buildChatRows(messages, compactMarkers) }
+    var deleteTarget by remember { mutableStateOf<ConversationTurn?>(null) }
 
     // 挂起期间服务端会拒绝新回合（`SteerRejectReason.HITL_PAUSED`），所以和「回合中」一样禁用输入。
     val blocked = turnActive || pending != null
@@ -583,6 +588,10 @@ fun ChatScreen(
                                 // 历史占位清理里退场（见 ChatRepository.loadHistory）。
                                 onRefetch = viewModel::retry,
                                 onMessageTap = ::hideKeyboard,
+                                deleting = row.entities.any { it.id in deletingTurnIds },
+                                onMessageLongPress = {
+                                    if (!blocked) deleteTarget = viewModel.conversationTurn(row.entities.first().id)
+                                },
                             )
 
                             is ChatRow.Compact -> CompactDivider()
@@ -622,6 +631,7 @@ fun ChatScreen(
                 null -> null
                 ChatNotice.Queued -> stringResource(R.string.chat_queued)
                 ChatNotice.AttachFailed -> stringResource(R.string.chat_attach_failed)
+                ChatNotice.TurnDeleted -> stringResource(R.string.chat_turn_deleted)
                 is ChatNotice.Failure -> current.error.asText()
             }
             if (noticeText != null) {
@@ -642,6 +652,27 @@ fun ChatScreen(
             }
         }
         }
+    }
+
+    deleteTarget?.let { turn ->
+        AlertDialog(
+            onDismissRequest = { deleteTarget = null },
+            title = { Text(stringResource(R.string.chat_delete_turn_title)) },
+            text = { Text(stringResource(R.string.chat_delete_turn_message)) },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        deleteTarget = null
+                        viewModel.deleteConversationTurn(turn)
+                    },
+                ) { Text(stringResource(R.string.action_delete)) }
+            },
+            dismissButton = {
+                TextButton(onClick = { deleteTarget = null }) {
+                    Text(stringResource(R.string.action_cancel))
+                }
+            },
+        )
     }
 }
 
@@ -1818,6 +1849,8 @@ private fun MessageBubble(
     onEnsureAttachment: suspend (String?, String?) -> Unit,
     onRefetch: () -> Unit,
     onMessageTap: () -> Unit,
+    deleting: Boolean,
+    onMessageLongPress: () -> Unit,
 ) {
     // 一个气泡可能由多条本地行合成（见 [buildChatRows]）。按 partsJson 记忆化：流式期间每 ~50ms
     //（spec §12 的合帧间隔）只有最后一条消息的内容变化，其余历史块直接命中缓存，不重新解析。
@@ -1841,7 +1874,12 @@ private fun MessageBubble(
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .clickable(onClick = onMessageTap),
+            .alpha(if (deleting) 0.45f else 1f)
+            .combinedClickable(
+                enabled = !deleting && !streaming,
+                onClick = onMessageTap,
+                onLongClick = onMessageLongPress,
+            ),
         horizontalArrangement = if (isUser) Arrangement.End else Arrangement.Start,
     ) {
         Surface(

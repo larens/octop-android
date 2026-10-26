@@ -254,7 +254,8 @@ sealed interface ServerEvent {
 
                 "tool_result" -> ToolResult(
                     threadId = threadId,
-                    name = obj.stringOrNull("name"),
+                    name = obj.stringOrNull("name")?.takeIf(String::isNotBlank)
+                        ?: obj.firstToolMessageString("name"),
                     displayName = obj.stringOrNull("display_name"),
                     raw = raw(),
                 )
@@ -375,3 +376,7 @@ private fun JsonObject.stringOrNull(key: String): String? =
 
 private fun JsonObject.longOrNull(key: String): Long? =
     this[key]?.jsonPrimitive?.contentOrNullSafe()?.toLongOrNull()
+
+private fun JsonObject.firstToolMessageString(key: String): String? =
+    (this["messages"] as? JsonArray)
+        ?.firstNotNullOfOrNull { (it as? JsonObject)?.stringOrNull(key) }

@@ -66,14 +66,23 @@ fun WorkbenchScreen(
 ) {
     // 记住选中的那一栏：从会话页返回时应该回到离开前的那一栏，而不是弹回会话列表
     var tab by rememberSaveable { mutableStateOf(initialTab) }
+    var memorySubpageOpen by rememberSaveable { mutableStateOf(false) }
+    var taskComposerOpen by rememberSaveable { mutableStateOf(false) }
 
     LaunchedEffect(initialTab) {
         tab = initialTab
     }
 
+    LaunchedEffect(tab) {
+        if (tab != WorkbenchTab.MEMORY) memorySubpageOpen = false
+        if (tab != WorkbenchTab.TASKS) taskComposerOpen = false
+    }
+
     Scaffold(
         bottomBar = {
-            WorkbenchBottomBar(current = tab, onSelect = { tab = it })
+            if (!memorySubpageOpen && !taskComposerOpen) {
+                WorkbenchBottomBar(current = tab, onSelect = { tab = it })
+            }
         },
     ) { padding ->
         Box(
@@ -94,9 +103,15 @@ fun WorkbenchScreen(
                     onNeedsLogin = onNeedsLogin,
                 )
 
-                WorkbenchTab.TASKS -> TasksPane(onNeedsLogin = onNeedsLogin)
+                WorkbenchTab.TASKS -> TasksPane(
+                    onNeedsLogin = onNeedsLogin,
+                    onComposerChanged = { taskComposerOpen = it },
+                )
 
-                WorkbenchTab.MEMORY -> MemoryPane(onNeedsLogin = onNeedsLogin)
+                WorkbenchTab.MEMORY -> MemoryPane(
+                    onNeedsLogin = onNeedsLogin,
+                    onSubpageChanged = { memorySubpageOpen = it },
+                )
             }
         }
     }

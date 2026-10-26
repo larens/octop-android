@@ -13,6 +13,7 @@ lifecycle = "2.8.7"
 swiperefreshlayout = "1.1.0"
 coroutines = "1.9.0"
 junit = "4.13.2"
+mockwebserver = "4.12.0"
 
 # 原生客户端新增
 composeBom = "2025.09.00"
@@ -40,6 +41,7 @@ androidx-lifecycle-viewmodel-compose = { group = "androidx.lifecycle", name = "l
 androidx-swiperefreshlayout = { group = "androidx.swiperefreshlayout", name = "swiperefreshlayout", version.ref = "swiperefreshlayout" }
 kotlinx-coroutines-android = { group = "org.jetbrains.kotlinx", name = "kotlinx-coroutines-android", version.ref = "coroutines" }
 junit = { group = "junit", name = "junit", version.ref = "junit" }
+mockwebserver = { group = "com.squareup.okhttp3", name = "mockwebserver", version.ref = "mockwebserver" }
 
 # Compose
 compose-bom = { group = "androidx.compose", name = "compose-bom", version.ref = "composeBom" }

@@ -49,6 +49,8 @@ data class CronJobCreateBody(
     val enabled: Boolean? = null,
     val model: String? = null,
     @SerialName("task_type") val taskType: String? = null,
+    /** 推荐任务显式绑定匹配的已安装连接器；手工任务为 null，继续沿用服务端默认。 */
+    @SerialName("mcp_servers") val mcpServers: List<String>? = null,
 )
 
 /**
@@ -63,4 +65,5 @@ data class CronJobPatchBody(
     val trigger: String? = null,
     val prompt: String? = null,
     val enabled: Boolean? = null,
+    @SerialName("mcp_servers") val mcpServers: List<String>? = null,
 )
