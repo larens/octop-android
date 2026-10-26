@@ -49,7 +49,9 @@ import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
@@ -69,7 +71,7 @@ import java.util.UUID
  */
 class ChatRepository(
     private val agentId: String,
-    private val threadId: String,
+    threadId: String,
     /** 当前实例地址。落库的附件引用是相对的（不含主机名），发请求时用它补全（spec §13）。 */
     private val baseUrl: String,
     private val api: OctopApi,
@@ -82,6 +84,17 @@ class ChatRepository(
     private val compactMarkerDao: CompactMarkerDao,
     private val json: Json,
 ) {
+
+    /**
+     * 当前绑定的会话 id。新会话先用 `draft-…` 占位（不碰服务端），第一条消息发出前由
+     * [bindServerThread] 换成服务端返回的真实 id —— 这样不发消息的「新会话」永远不会在
+     * 服务端留下空记录（策略见 [ThreadRepository.createLocalDraft]）。
+     */
+    private val _threadId = MutableStateFlow(threadId)
+    private val threadId: String get() = _threadId.value
+
+    /** 本地草稿（还没有服务端身份）。UI 层据此决定先建服务端会话再发首条消息。 */
+    val isDraft: Boolean get() = ThreadRepository.isDraftId(threadId)
 
     /**
      * 后台作用域：附件下载与轨迹同步。
@@ -109,13 +122,19 @@ class ChatRepository(
     private val _hitl = MutableStateFlow<HitlPending?>(null)
     val hitl: StateFlow<HitlPending?> = _hitl.asStateFlow()
 
-    fun observeMessages(): Flow<List<MessageEntity>> = messageDao.observeByThread(threadId)
+    @OptIn(ExperimentalCoroutinesApi::class)
+    fun observeMessages(): Flow<List<MessageEntity>> =
+        _threadId.flatMapLatest { messageDao.observeByThread(it) }
 
     /** 会话元数据（标题、模式、是否在跑）。由列表页回填过，这里只读不改。 */
-    fun observeThread(): Flow<ThreadEntity?> = threadDao.observeOne(threadId)
+    @OptIn(ExperimentalCoroutinesApi::class)
+    fun observeThread(): Flow<ThreadEntity?> =
+        _threadId.flatMapLatest { threadDao.observeOne(it) }
 
     /** 本地附件缓存索引，UI 据此判断某个附件能不能直接内联渲染（spec §13）。 */
-    fun observeAttachments(): Flow<List<AttachmentEntity>> = attachmentDao.observeByThread(threadId)
+    @OptIn(ExperimentalCoroutinesApi::class)
+    fun observeAttachments(): Flow<List<AttachmentEntity>> =
+        _threadId.flatMapLatest { attachmentDao.observeByThread(it) }
 
     /**
      * 打开会话即已读（spec §11）：本地清零 + 服务端 `POST …/threads/{id}/read` 清 0。
@@ -126,12 +145,34 @@ class ChatRepository(
      */
     suspend fun markRead() {
         threadDao.markRead(threadId)
-        api.markThreadRead(agentId, threadId)
+        // 草稿在服务端还不存在，别拿假 id 去请求。
+        if (!isDraft) api.markThreadRead(agentId, threadId)
     }
 
     /** 上下文压缩点，按时间正序，UI 据此在消息流里插分隔线（spec §8.2）。 */
+    @OptIn(ExperimentalCoroutinesApi::class)
     fun observeCompactMarkers(): Flow<List<CompactMarkerEntity>> =
-        compactMarkerDao.observeByThread(threadId)
+        _threadId.flatMapLatest { compactMarkerDao.observeByThread(it) }
+
+    /**
+     * 把草稿会话绑到服务端建好的真实会话上（首条消息发送前调用）。
+     *
+     * 换 id 时把本地各表里挂着草稿 id 的行一起迁过去 —— 这样聊天页的 Room 流不用重建，
+     * 列表抽屉里的这条会话也保持同一条记录。草稿期因为还没发过消息，这些表通常是空的，
+     * 统一迁移只是兜住边界情况（比如断网时已经排队的帧）。
+     */
+    suspend fun bindServerThread(serverThreadId: String) {
+        val draft = _threadId.value
+        if (draft == serverThreadId) return
+        messageDao.moveThread(draft, serverThreadId)
+        attachmentDao.moveThread(draft, serverThreadId)
+        pendingOpDao.moveThread(draft, serverThreadId)
+        compactMarkerDao.moveThread(draft, serverThreadId)
+        threadDao.moveThread(draft, serverThreadId)
+        _threadId.value = serverThreadId
+        socket.unsubscribe(draft)
+        socket.subscribe(serverThreadId)
+    }
 
     /**
      * 连接并持续消费事件，**永不返回** —— 由调用方的 scope 决定生命周期。
@@ -141,7 +182,9 @@ class ChatRepository(
      */
     suspend fun run() {
         socket.connect()
-        socket.subscribe(threadId)
+        // 草稿在服务端还不存在，订阅会收到一条 thread-not-found 错误帧；等
+        // bindServerThread 拿到真实 id 后再订阅（重连所需的订阅集合由 ChatSocket 维护）。
+        if (!isDraft) socket.subscribe(threadId)
         coroutineScope {
             // 每次连上补发断网期间排队的帧（首次连上时通常为空，docs/spec.md §10）。
             launch {

@@ -129,8 +129,11 @@ class ThreadsViewModel(private val container: AppContainer) : ViewModel() {
     }
 
     /**
-     * 新建会话并直接进会话页 —— 与网页版 `/new` 一致：点「+」立刻 `POST /threads`，
-     * 不做「先开空页面、发第一条消息才建」。代价是列表会立刻多一条空会话。
+     * 新建会话并直接进会话页：只建一条**本地草稿**（`draft-…`），不上服务端。
+     *
+     * 服务端会话推迟到用户发出第一条消息时才创建（`ChatViewModel.send` 先
+     * `createServerThread` 拿 id、再绑定草稿），所以「打开新会话又不说话」不会在服务端
+     * 留下任何空会话。草稿会话没互动就随会话页退出被删（[AutoCreatedConversation]）。
      */
     fun createThread() {
         val baseUrl = host.value ?: return
@@ -139,22 +142,13 @@ class ThreadsViewModel(private val container: AppContainer) : ViewModel() {
 
         uiState = uiState.copy(creating = true, error = null)
         viewModelScope.launch {
-            when (val result = container.threadRepository(baseUrl, id).create()) {
-                is ApiResult.Ok -> {
-                    // 记下这是程序给用户开的新会话：没互动就随会话页退出删掉（ChatScreen 消费）。
-                    AutoCreatedConversation.mark(result.value)
-                    uiState = uiState.copy(
-                        creating = false,
-                        createdThreadId = result.value,
-                    )
-                }
-
-                is ApiResult.Failure -> uiState = uiState.copy(
-                    creating = false,
-                    error = result.error,
-                    needsLogin = result.error.isUnauthorized,
-                )
-            }
+            val draftId = container.threadRepository(baseUrl, id).createLocalDraft()
+            // 记下这是程序给用户开的新会话：没互动就随会话页退出删掉（ChatScreen 消费）。
+            AutoCreatedConversation.mark(draftId)
+            uiState = uiState.copy(
+                creating = false,
+                createdThreadId = draftId,
+            )
         }
     }
 

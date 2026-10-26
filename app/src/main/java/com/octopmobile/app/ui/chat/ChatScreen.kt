@@ -400,7 +400,8 @@ fun ChatScreen(
             ModalDrawerSheet {
                 HistoryDrawerContent(
                     threads = historyThreads,
-                    currentThreadId = threadId,
+                    // 新会话是草稿：首条消息后服务端 id 才定，当前标记要跟绑定后的真实 id 走。
+                    currentThreadId = thread?.threadId ?: threadId,
                     syncing = threadListState.syncing,
                     creating = threadListState.creating,
                     onNewConversation = {

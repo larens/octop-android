@@ -54,6 +54,10 @@ interface ThreadDao {
     @Query("DELETE FROM threads WHERE agentId = :agentId")
     suspend fun deleteAllByAgent(agentId: String)
 
+    /** 清掉该 agent 下所有的本地草稿会话（id 带 [prefix]）。 */
+    @Query("DELETE FROM threads WHERE agentId = :agentId AND threadId LIKE :prefix || '%'")
+    suspend fun deleteDrafts(agentId: String, prefix: String)
+
     /**
      * 删掉服务端已不存在的本地行（全量同步后的收敛，见
      * [com.octopmobile.app.data.repo.ThreadRepository.refresh]）。
@@ -76,6 +80,14 @@ interface ThreadDao {
 
     @Query("DELETE FROM threads WHERE threadId = :threadId")
     suspend fun delete(threadId: String)
+
+    /**
+     * 草稿会话绑上服务端 id 时整行改名（见
+     * [com.octopmobile.app.data.repo.ChatRepository.bindServerThread]）。主键可以直接
+     * UPDATE：本地表之间没有外键约束，`threadId` 只是按值关联的一列。
+     */
+    @Query("UPDATE threads SET threadId = :newId WHERE threadId = :oldId")
+    suspend fun moveThread(oldId: String, newId: String)
 
     @Query("DELETE FROM threads WHERE agentId = :agentId")
     suspend fun deleteByAgent(agentId: String)
@@ -275,6 +287,9 @@ interface MessageDao {
     @Query("DELETE FROM messages WHERE threadId = :threadId")
     suspend fun deleteByThread(threadId: String)
 
+    @Query("UPDATE messages SET threadId = :newId WHERE threadId = :oldId")
+    suspend fun moveThread(oldId: String, newId: String)
+
     @Query("DELETE FROM messages")
     suspend fun clear()
 }
@@ -302,6 +317,9 @@ interface AttachmentDao {
     @Query("DELETE FROM attachments WHERE threadId = :threadId")
     suspend fun deleteByThread(threadId: String)
 
+    @Query("UPDATE attachments SET threadId = :newId WHERE threadId = :oldId")
+    suspend fun moveThread(oldId: String, newId: String)
+
     @Query("DELETE FROM attachments")
     suspend fun clear()
 }
@@ -314,6 +332,9 @@ interface CompactMarkerDao {
 
     @Upsert
     suspend fun upsert(entity: CompactMarkerEntity)
+
+    @Query("UPDATE compact_markers SET threadId = :newId WHERE threadId = :oldId")
+    suspend fun moveThread(oldId: String, newId: String)
 
     @Query("DELETE FROM compact_markers")
     suspend fun clear()
@@ -336,6 +357,9 @@ interface PendingOpDao {
 
     @Query("DELETE FROM pending_ops WHERE id = :id")
     suspend fun delete(id: String)
+
+    @Query("UPDATE pending_ops SET threadId = :newId WHERE threadId = :oldId")
+    suspend fun moveThread(oldId: String, newId: String)
 
     @Query("DELETE FROM pending_ops")
     suspend fun clear()

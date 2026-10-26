@@ -9,6 +9,7 @@ import com.octopmobile.app.data.remote.dto.ResolvedModelDto
 import com.octopmobile.app.data.remote.dto.RenameThreadBody
 import com.octopmobile.app.data.remote.dto.ThreadDto
 import kotlinx.coroutines.flow.Flow
+import java.util.UUID
 
 /**
  * 会话列表（docs/spec.md §6 `data/repo`）。
@@ -42,10 +43,14 @@ class ThreadRepository(
                 threadDao.upsertAll(entities)
                 // 只有「这一页没满」才能确定是全量；满页说明服务端可能还有更多，不能动手。
                 if (result.value.size < limit) {
-                    if (result.value.isEmpty()) {
+                    // 本地草稿（draft-…）是「等首条消息才建的服务端会话」，不属于服务端已
+                    // 不存在的孤儿 —— 收敛时必须留着，否则聊天页刚开的「新会话」会被整行删掉。
+                    val drafts = local.values.filter { isDraftId(it.threadId) }.map { it.threadId }
+                    val keepIds = result.value.map { it.threadId } + drafts
+                    if (keepIds.isEmpty()) {
                         threadDao.deleteAllByAgent(agentId)
                     } else {
-                        threadDao.deleteMissing(agentId, result.value.map { it.threadId })
+                        threadDao.deleteMissing(agentId, keepIds)
                     }
                 }
                 ApiResult.Ok(entities.size)
@@ -55,37 +60,57 @@ class ThreadRepository(
         }
 
     /**
-     * 新建会话，成功返回新的 `thread_id`。
+     * 新建**本地草稿**会话，直接返回草稿 id（不碰服务端）。
      *
-     * 服务端语义是 `ThreadRegistry.reset()`：新建一条 thread 并**把 dashboard 会话重绑过去**，
-     * 旧会话仍在列表里（docs/protocol.md §5.2）。所以本地先插一条空会话顶上 —— 点完「+」
-     * 立刻能在列表里看到它，不必等下一次刷新。
+     * 策略是「等第一条消息真正发出去时才在服务端建会话」（见 [createServerThread]）：
+     * 冷启动 / 点「+」只是打开一个本地占位的「新会话」，用户不发消息就不会在服务端
+     * 留下空的会话记录。草稿 id 带 [DRAFT_PREFIX]，聊天页据此知道要先绑定服务端 id。
      */
-    suspend fun create(): ApiResult<String> =
-        when (val result = api.createThread(agentId)) {
-            is ApiResult.Ok -> {
-                val now = System.currentTimeMillis()
-                threadDao.upsert(
-                    ThreadEntity(
-                        threadId = result.value.threadId,
-                        agentId = agentId,
-                        title = null,
-                        lastMessage = null,
-                        pinned = false,
-                        lastActiveAt = now,
-                        createdAt = now,
-                        unreadCount = 0,
-                        modelRef = null,
-                        conversationMode = ConversationMode.CRAFT,
-                        turnActive = false,
-                        awaitingUser = false,
-                    ),
-                )
-                ApiResult.Ok(result.value.threadId)
-            }
+    suspend fun createLocalDraft(): String {
+        // 同一时间只保留一条「新会话」草稿：进程被系统杀掉时 ChatScreen 的退出清理不会跑，
+        // 旧草稿会一直留在本地；再开新会话时顺手清掉，抽屉里就不会堆一串无意义的「新会话」。
+        threadDao.deleteDrafts(agentId, DRAFT_PREFIX)
+        val id = DRAFT_PREFIX + UUID.randomUUID()
+        val now = System.currentTimeMillis()
+        threadDao.upsert(
+            ThreadEntity(
+                threadId = id,
+                agentId = agentId,
+                title = null,
+                lastMessage = null,
+                pinned = false,
+                lastActiveAt = now,
+                createdAt = now,
+                unreadCount = 0,
+                modelRef = null,
+                conversationMode = ConversationMode.CRAFT,
+                turnActive = false,
+                awaitingUser = false,
+            ),
+        )
+        return id
+    }
 
+    /**
+     * 在服务端创建真实会话并返回 `thread_id`（`ThreadRegistry.reset()`：新建一条 thread
+     * 并把 dashboard 会话重绑过去，见 docs/protocol.md §5.2）。
+     *
+     * 只在**用户第一次发送消息**时调用（`ChatViewModel.send`）：拿到回复里的 id 后，
+     * 聊天仓库把本地草稿整行迁移过去再发这一轮。这里不写本地库 —— 草稿行的身份迁移
+     * 由 [com.octopmobile.app.data.repo.ChatRepository.bindServerThread] 负责。
+     */
+    suspend fun createServerThread(): ApiResult<String> =
+        when (val result = api.createThread(agentId)) {
+            is ApiResult.Ok -> ApiResult.Ok(result.value.threadId)
             is ApiResult.Failure -> result
         }
+
+    companion object {
+        /** 本地草稿会话的 id 前缀：这串 id 只存在于本机，服务端建好真实会话后被替换掉。 */
+        const val DRAFT_PREFIX = "draft-"
+
+        fun isDraftId(threadId: String): Boolean = threadId.startsWith(DRAFT_PREFIX)
+    }
 
     /**
      * 置顶 / 取消置顶（`PATCH pinned`，docs/protocol.md §5.2）。
@@ -94,51 +119,76 @@ class ThreadRepository(
      * 不需要在 UI 上另存一份「正在置顶」的状态；失败时界面保持原样，只提示。
      */
     suspend fun setPinned(threadId: String, pinned: Boolean): ApiResult<Unit> =
-        when (val result = api.patchThread(agentId, threadId, RenameThreadBody(pinned = pinned))) {
-            is ApiResult.Ok -> {
-                threadDao.setPinned(threadId, pinned)
-                result
-            }
+        if (isDraftId(threadId)) {
+            // 草稿还没有服务端身份，先记在本地（服务端那份等发首条消息建好后自然会同步）。
+            threadDao.setPinned(threadId, pinned)
+            ApiResult.Ok(Unit)
+        } else {
+            when (val result = api.patchThread(agentId, threadId, RenameThreadBody(pinned = pinned))) {
+                is ApiResult.Ok -> {
+                    threadDao.setPinned(threadId, pinned)
+                    result
+                }
 
-            is ApiResult.Failure -> result
+                is ApiResult.Failure -> result
+            }
         }
 
     /** 改名（`PATCH title`）。UI 在标题空白时就禁用确认，所以这里收到的一定是非空串。 */
     suspend fun rename(threadId: String, title: String): ApiResult<Unit> {
         val trimmed = title.trim()
-        return when (val result = api.patchThread(agentId, threadId, RenameThreadBody(title = trimmed))) {
-            is ApiResult.Ok -> {
-                threadDao.setTitle(threadId, trimmed)
-                result
-            }
+        return if (isDraftId(threadId)) {
+            // 同 setPinned：只写本地，服务端会话还不存在。
+            threadDao.setTitle(threadId, trimmed)
+            ApiResult.Ok(Unit)
+        } else {
+            when (val result = api.patchThread(agentId, threadId, RenameThreadBody(title = trimmed))) {
+                is ApiResult.Ok -> {
+                    threadDao.setTitle(threadId, trimmed)
+                    result
+                }
 
-            is ApiResult.Failure -> result
+                is ApiResult.Failure -> result
+            }
         }
     }
 
     /** 改当前会话模型（`PATCH model_ref`）。 */
     suspend fun setModel(threadId: String, modelRef: String?): ApiResult<Unit> =
-        when (val result = api.patchThread(agentId, threadId, RenameThreadBody(modelRef = modelRef))) {
-            is ApiResult.Ok -> {
-                threadDao.setModelRef(threadId, modelRef)
-                result
-            }
+        if (isDraftId(threadId)) {
+            threadDao.setModelRef(threadId, modelRef)
+            ApiResult.Ok(Unit)
+        } else {
+            when (val result = api.patchThread(agentId, threadId, RenameThreadBody(modelRef = modelRef))) {
+                is ApiResult.Ok -> {
+                    threadDao.setModelRef(threadId, modelRef)
+                    result
+                }
 
-            is ApiResult.Failure -> result
+                is ApiResult.Failure -> result
+            }
         }
 
     /** 拉当前账号可见的模型列表，供移动端输入区选择。 */
     suspend fun resolvedModels(): ApiResult<List<ResolvedModelDto>> = api.resolvedModels()
 
-    /** 删除会话（`DELETE`，204）。服务端删成功后本地一并删掉 —— 列表里就不该再有它。 */
+    /**
+     * 删除会话（`DELETE`，204）。服务端删成功后本地一并删掉 —— 列表里就不该再有它。
+     * 草稿在服务端根本不存在，直接删本地行即可，不需要（也不会成功）发 DELETE。
+     */
     suspend fun delete(threadId: String): ApiResult<Unit> =
-        when (val result = api.deleteThread(agentId, threadId)) {
-            is ApiResult.Ok -> {
-                threadDao.delete(threadId)
-                result
-            }
+        if (isDraftId(threadId)) {
+            threadDao.delete(threadId)
+            ApiResult.Ok(Unit)
+        } else {
+            when (val result = api.deleteThread(agentId, threadId)) {
+                is ApiResult.Ok -> {
+                    threadDao.delete(threadId)
+                    result
+                }
 
-            is ApiResult.Failure -> result
+                is ApiResult.Failure -> result
+            }
         }
 
     /**
@@ -196,3 +246,4 @@ private fun ThreadDto.toEntity(agentId: String, local: ThreadEntity?): ThreadEnt
 
 /** 角标显示上限，防止 `unreadCount` 无限累加（也避免徽标被撑成一条）。 */
 private const val UNREAD_CAP = 99
+

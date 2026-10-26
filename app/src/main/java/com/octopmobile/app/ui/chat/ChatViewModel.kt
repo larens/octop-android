@@ -35,6 +35,8 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 
 data class ChatUiState(
@@ -78,6 +80,9 @@ class ChatViewModel(
     private var threadRepository: ThreadRepository? = null
     private var baseUrl: String? = null
     private val cleanupScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+
+    /** 草稿 → 服务端会话只建一次：并发点发送/分享时排队等，第二路直接复用已绑定的 id。 */
+    private val draftBindMutex = Mutex()
 
     /**
      * 仓库是否可用（[repository] 已赋值且首屏历史已处理完）。
@@ -270,6 +275,21 @@ class ChatViewModel(
         if (text.isBlank() && files.isEmpty()) return
 
         val targets = mentionTargets(text)
+
+        // 草稿：先 `POST /threads` 拿服务端 id（这就是用户说的「请求有回复后再拉会话 ID」），
+        // 把草稿绑定上去，才真正发这一轮。建失败就留着输入和附件，只提示错误。
+        if (repo.isDraft) {
+            viewModelScope.launch {
+                if (!bindDraftIfNeeded(repo)) return@launch
+                _attachments.value = emptyList()
+                _notice.value = null
+                val queued = !repo.sendTurn(text, files, targets)
+                loadFirstPage()
+                if (queued) _notice.value = ChatNotice.Queued
+            }
+            return
+        }
+
         _attachments.value = emptyList()
         _notice.value = null
         viewModelScope.launch {
@@ -358,7 +378,38 @@ class ChatViewModel(
 
             val body = text?.trim().orEmpty()
             if (body.isEmpty() && uploaded.isEmpty()) return@launch
+            // 分享也是「首条消息」，同样要先建服务端会话（拿 id 绑定）再发。
+            if (!bindDraftIfNeeded(repo)) return@launch
             if (!repo.sendTurn(body, uploaded)) _notice.value = ChatNotice.Queued
+        }
+    }
+
+    /**
+     * 草稿的首条消息发送前：在服务端建真实会话，把本地草稿行与仓库绑定过去。
+     *
+     * 返回 false 表示还没建出来（离线/服务端拒绝），调用方应保留输入内容、只提示错误。
+     * 绑定成功后如果用户已在草稿期选过模型，补一次服务端 PATCH，让第一个回复就按所选跑。
+     */
+    private suspend fun bindDraftIfNeeded(repo: ChatRepository): Boolean = draftBindMutex.withLock {
+        if (!repo.isDraft) return true
+        val holder = threadRepository ?: return false
+        when (val result = holder.createServerThread()) {
+            is ApiResult.Ok -> {
+                repo.bindServerThread(result.value)
+                val wanted = uiState.selectedModelRef
+                if (wanted != null) {
+                    when (val modelResult = holder.setModel(result.value, wanted)) {
+                        is ApiResult.Ok -> Unit
+                        is ApiResult.Failure -> _notice.value = ChatNotice.Failure(modelResult.error)
+                    }
+                }
+                true
+            }
+
+            is ApiResult.Failure -> {
+                _notice.value = ChatNotice.Failure(result.error)
+                false
+            }
         }
     }
 
@@ -383,6 +434,11 @@ class ChatViewModel(
         val normalized = modelRef?.takeIf { it.isNotBlank() }
         if (uiState.selectedModelRef == normalized) return
         viewModelScope.launch {
+            // 草稿在服务端还不存在：选择先记在本地，绑定真实会话后再补 PATCH（见 send）。
+            if (repository?.isDraft == true) {
+                uiState = uiState.copy(selectedModelRef = normalized)
+                return@launch
+            }
             when (val result = repo.setModel(threadId, normalized)) {
                 is ApiResult.Ok -> {
                     uiState = uiState.copy(selectedModelRef = normalized)
@@ -420,6 +476,11 @@ class ChatViewModel(
 
     private suspend fun loadFirstPage() {
         val repo = repository ?: return
+        // 草稿没有服务端历史，也还没有可清的服务端未读；等绑定真实会话后再拉（见 [send]）。
+        if (repo.isDraft) {
+            uiState = uiState.copy(historyLoading = false, hasMore = false)
+            return
+        }
         uiState = uiState.copy(historyLoading = true, error = null)
 
         // 打开会话即已读（spec §11）。单独挂一个协程：它是一次多余的往返，
