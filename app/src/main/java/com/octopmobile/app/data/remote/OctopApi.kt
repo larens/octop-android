@@ -11,6 +11,7 @@ import com.octopmobile.app.data.remote.dto.HistoryResponse
 import com.octopmobile.app.data.remote.dto.HitlResumeBody
 import com.octopmobile.app.data.remote.dto.LoginRequest
 import com.octopmobile.app.data.remote.dto.LoginResponse
+import com.octopmobile.app.data.remote.dto.ResolvedModelDto
 import com.octopmobile.app.data.remote.dto.RenameThreadBody
 import com.octopmobile.app.data.remote.dto.ThreadDto
 import com.octopmobile.app.data.remote.dto.TrajectoryHistoryDto
@@ -27,6 +28,8 @@ import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.put
 import okhttp3.HttpUrl
 import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.MediaType.Companion.toMediaType
@@ -92,6 +95,13 @@ class OctopApi(
         execute(
             request = Request.Builder().url(url(API, AGENTS)).build(),
             deserializer = ListSerializer(AgentDto.serializer()),
+        )
+
+    /** 当前用户可见的可选模型（`GET /api/providers/resolved`）。 */
+    suspend fun resolvedModels(): ApiResult<List<ResolvedModelDto>> =
+        execute(
+            request = Request.Builder().url(url(API, PROVIDERS, RESOLVED)).build(),
+            deserializer = ListSerializer(ResolvedModelDto.serializer()),
         )
 
     suspend fun threads(agentId: String, limit: Int = DEFAULT_PAGE_SIZE): ApiResult<List<ThreadDto>> =
@@ -218,6 +228,92 @@ class OctopApi(
                 .url(url(API, AGENTS, agentId, THREADS, threadId, READ))
                 .post(EMPTY_BODY)
                 .build(),
+        )
+
+    /**
+     * 记忆页顶部「用户画像」：服务端已经整理好的终端视图（`GET .../memory/terminal/about_me`）。
+     *
+     * 这类 endpoint 直接把 JSON-RPC 的结果原样透出来，结构可能随 `octop-memory` 版本演进；
+     * 因此这里先收成 [JsonElement]，由上层按需宽松解析，而不是在网络层强绑一套易碎 DTO。
+     */
+    suspend fun memoryTerminalAboutMe(agentId: String, limit: Int = DEFAULT_MEMORY_LIMIT): ApiResult<JsonElement> =
+        execute(
+            request = Request.Builder()
+                .url(
+                    url(API, AGENTS, agentId, MEMORY, TERMINAL, ABOUT_ME)
+                        .newBuilder()
+                        .addQueryParameter("limit", limit.toString())
+                        .build(),
+                )
+                .build(),
+            deserializer = JsonElement.serializer(),
+        )
+
+    /** 终端视图：当前关注。 */
+    suspend fun memoryTerminalCurrentFocus(agentId: String): ApiResult<JsonElement> =
+        execute(
+            request = Request.Builder()
+                .url(url(API, AGENTS, agentId, MEMORY, TERMINAL, CURRENT_FOCUS))
+                .build(),
+            deserializer = JsonElement.serializer(),
+        )
+
+    /** 终端视图：你告诉过我的事。 */
+    suspend fun memoryTerminalThingsYouToldMe(agentId: String): ApiResult<JsonElement> =
+        execute(
+            request = Request.Builder()
+                .url(url(API, AGENTS, agentId, MEMORY, TERMINAL, THINGS_YOU_TOLD_ME))
+                .build(),
+            deserializer = JsonElement.serializer(),
+        )
+
+    /** 终端视图：实体概览。 */
+    suspend fun memoryTerminalEntities(agentId: String): ApiResult<JsonElement> =
+        execute(
+            request = Request.Builder()
+                .url(url(API, AGENTS, agentId, MEMORY, TERMINAL, ENTITIES))
+                .build(),
+            deserializer = JsonElement.serializer(),
+        )
+
+    /**
+     * 情绪日记 / Episode 列表（`POST .../memory/episodes/list`）。
+     *
+     * 与服务端保持最小协议：这里只带 `limit`，不替客户端预先加情绪或时间过滤，让记忆页先把
+     * 最近沉淀出来的情绪片段完整呈现。
+     */
+    suspend fun memoryEpisodes(agentId: String, limit: Int = DEFAULT_MEMORY_LIMIT): ApiResult<JsonElement> =
+        execute(
+            request = Request.Builder()
+                .url(url(API, AGENTS, agentId, MEMORY, EPISODES, LIST))
+                .post(
+                    buildJsonObject {
+                        put("limit", limit)
+                    }.toString().toRequestBody(JSON_MEDIA_TYPE),
+                )
+                .build(),
+            deserializer = JsonElement.serializer(),
+        )
+
+    /**
+     * 结构化原子记忆（事实 / 偏好 / 决策等）列表，用来填「记忆沉淀」。
+     *
+     * 取最近更新的少量条目即可；完整检索留给后续做独立详情页。
+     */
+    suspend fun memoryAtoms(agentId: String, limit: Int = DEFAULT_MEMORY_LIMIT): ApiResult<JsonElement> =
+        execute(
+            request = Request.Builder()
+                .url(url(API, AGENTS, agentId, MEMORY, ATOMS, LIST))
+                .post(
+                    buildJsonObject {
+                        put("limit", limit)
+                        put("order_by", "created_at")
+                        put("order", "desc")
+                        put("include_deprecated", false)
+                    }.toString().toRequestBody(JSON_MEDIA_TYPE),
+                )
+                .build(),
+            deserializer = JsonElement.serializer(),
         )
 
     // ------------------------------------------------------------ 定时任务（cron）
@@ -450,6 +546,8 @@ class OctopApi(
         private const val API = "api"
         private const val AUTH = "auth"
         private const val AGENTS = "agents"
+        private const val PROVIDERS = "providers"
+        private const val RESOLVED = "resolved"
 
         private const val LOGIN = "login"
         private const val LOGOUT = "logout"
@@ -458,6 +556,15 @@ class OctopApi(
         private const val HISTORY = "history"
         private const val TRAJECTORY = "trajectory"
         private const val READ = "read"
+        private const val MEMORY = "memory"
+        private const val TERMINAL = "terminal"
+        private const val ABOUT_ME = "about_me"
+        private const val CURRENT_FOCUS = "current_focus"
+        private const val THINGS_YOU_TOLD_ME = "things_you_told_me"
+        private const val ENTITIES = "entities"
+        private const val EPISODES = "episodes"
+        private const val ATOMS = "atoms"
+        private const val LIST = "list"
         private const val UPLOAD = "upload"
         private const val CRON = "cron"
         private const val RUN_NOW = "run-now"
@@ -467,6 +574,9 @@ class OctopApi(
 
         /** 附件可能很大，读超时放宽到 2 分钟（默认 30s 传大图会断）。 */
         private const val UPLOAD_TIMEOUT_SECONDS = 120L
+
+        /** 记忆页只拉摘要，默认 6 条足够撑起首页，不把移动端直接变成后台检索页。 */
+        private const val DEFAULT_MEMORY_LIMIT = 6
 
         /** 下载同理，再宽一点：服务端可能要先从 workspace 读文件再回传（docs/spec.md §13）。 */
         private const val DOWNLOAD_TIMEOUT_SECONDS = 240L

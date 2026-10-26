@@ -5,11 +5,8 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.Uri
-import android.os.Bundle
 import android.provider.MediaStore
-import android.speech.RecognitionListener
-import android.speech.RecognizerIntent
-import android.speech.SpeechRecognizer
+import android.text.format.DateUtils
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
@@ -25,6 +22,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -36,8 +34,10 @@ import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.layout.isImeVisible
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
@@ -49,24 +49,25 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.ArrowDownward
 import androidx.compose.material.icons.filled.AttachFile
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.AlternateEmail
 import androidx.compose.material.icons.filled.Build
-import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Description
 import androidx.compose.material.icons.filled.ExpandLess
 import androidx.compose.material.icons.filled.ExpandMore
+import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.Image
 import androidx.compose.material.icons.filled.KeyboardVoice
-import androidx.compose.material.icons.filled.Mic
+import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.PhotoCamera
 import androidx.compose.material.icons.filled.Stop
-import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DrawerValue
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -77,8 +78,11 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.LocalContentColor
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ModalDrawerSheet
+import androidx.compose.material3.ModalNavigationDrawer
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.rememberDrawerState
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -100,14 +104,14 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.focus.FocusRequester
-import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
@@ -115,6 +119,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import androidx.core.content.FileProvider
@@ -137,6 +142,7 @@ import com.octopmobile.app.data.db.AttachmentEntity
 import com.octopmobile.app.data.db.CompactMarkerEntity
 import com.octopmobile.app.data.db.MessageEntity
 import com.octopmobile.app.data.db.MessageStatus
+import com.octopmobile.app.data.db.ThreadEntity
 import com.octopmobile.app.data.model.HitlPending
 import com.octopmobile.app.data.model.Part
 import com.octopmobile.app.data.model.PartType
@@ -149,10 +155,12 @@ import com.octopmobile.app.service.TurnService
 import com.octopmobile.app.ui.AppActions
 import com.octopmobile.app.ui.PendingChatStart
 import com.octopmobile.app.ui.asText
+import com.octopmobile.app.ui.threads.ThreadsViewModel
+import com.octopmobile.app.ui.workbench.WorkbenchBottomBar
+import com.octopmobile.app.ui.workbench.WorkbenchTab
 import kotlinx.coroutines.launch
 import kotlinx.serialization.json.Json
 import java.io.File
-import java.util.Locale
 
 /**
  * 单会话页（docs/spec.md §18 M1–M3）。
@@ -165,16 +173,21 @@ import java.util.Locale
  * 消息正文存在 Room 里，这里只负责把 `parts_json` 解析成气泡；解析结果按 `partsJson`
  * 记忆化，所以流式期间只有最后一条消息在重新解析（spec §12）。
  */
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
 @Composable
 fun ChatScreen(
     agentId: String,
     threadId: String,
     onBack: () -> Unit,
+    onOpenThread: (agentId: String, threadId: String) -> Unit,
+    onOpenWorkbenchTab: (WorkbenchTab) -> Unit,
 ) {
     val context = LocalContext.current
+    val focusManager = LocalFocusManager.current
+    val keyboardController = LocalSoftwareKeyboardController.current
     val container = remember(context) { (context.applicationContext as OctopApp).container }
     val viewModel: ChatViewModel = viewModel(factory = ChatViewModel.factory(agentId, threadId))
+    val threadsViewModel: ThreadsViewModel = viewModel(factory = ThreadsViewModel.Factory)
 
     val state = viewModel.uiState
     val messages by viewModel.messages.collectAsStateWithLifecycle()
@@ -188,7 +201,8 @@ fun ChatScreen(
     val cachedAttachments by viewModel.cachedAttachments.collectAsStateWithLifecycle()
     val compactMarkers by viewModel.compactMarkers.collectAsStateWithLifecycle()
     val mentionable by viewModel.mentionable.collectAsStateWithLifecycle()
-    val mentions by viewModel.mentions.collectAsStateWithLifecycle()
+    val threadListState = threadsViewModel.uiState
+    val historyThreads by threadsViewModel.threads.collectAsStateWithLifecycle()
     // 系统入口（快捷方式 / 分享）带进来的动作，见下面的 LaunchedEffect（spec §14）。
     val chatStart by PendingChatStart.pending.collectAsStateWithLifecycle()
 
@@ -210,10 +224,6 @@ fun ChatScreen(
         val uri = result.data?.data ?: return@rememberLauncherForActivityResult
         viewModel.attach(context, uri)
     }
-
-    // 语音输入与语音快捷方式都落回同一个输入框；焦点用于识别不可用时的输入法兜底。
-    val inputFocus = remember { FocusRequester() }
-    val keyboard = LocalSoftwareKeyboardController.current
 
     // 拍照快捷方式：`ACTION_IMAGE_CAPTURE` 需要一个可写的 content:// 目标，落在 cacheDir 里。
     var cameraUri by remember { mutableStateOf<Uri?>(null) }
@@ -247,103 +257,18 @@ fun ChatScreen(
         ActivityResultContracts.RequestPermission(),
     ) { granted -> if (granted) launchCamera() }
 
-    // 语音输入（spec §14）：用系统识别服务把说的话转成文字填进输入框，用户过目后再发。
-    // 输入框文本提在这里持有，就是为了让识别结果和手打文字落在同一个地方。
-    // 识别器一直挂在组合里（不是按下才建），省掉每次点击的初始化延迟。
-    var input by remember { mutableStateOf("") }
-    var listening by remember { mutableStateOf(false) }
-    // 开口前已有的文字。识别过程中返回的是「整句话的重写」，所以在它后面整体覆盖，
-    // 而不是把每个中间结果往输入框尾巴上追加 —— 那会拼出一串重复的前缀。
-    var voiceBase by remember { mutableStateOf("") }
+    // 输入框文本：`@专家名` 直接写在正文里（spec §23.5），发送时再解析成 `target_agent_ids`。
+    var input by remember { mutableStateOf(TextFieldValue("")) }
 
-    val recognizer = remember {
-        runCatching {
-            if (SpeechRecognizer.isRecognitionAvailable(context)) {
-                SpeechRecognizer.createSpeechRecognizer(context)
-            } else {
-                null
-            }
-        }.getOrNull()
-    }
-    val speechIntent = remember {
-        Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH)
-            .putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
-            .putExtra(RecognizerIntent.EXTRA_LANGUAGE, Locale.getDefault().toLanguageTag())
-            .putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
-    }
-    DisposableEffect(recognizer) {
-        recognizer?.setRecognitionListener(object : RecognitionListener {
-            override fun onReadyForSpeech(params: Bundle?) {}
-            override fun onBeginningOfSpeech() {}
-            override fun onRmsChanged(rmsdB: Float) {}
-            override fun onBufferReceived(buffer: ByteArray?) {}
-            override fun onEndOfSpeech() { listening = false }
-
-            override fun onError(error: Int) {
-                listening = false
-                // ERROR_NO_MATCH / ERROR_SPEECH_TIMEOUT 只是「没听清」，不是故障，不打扰用户。
-                if (error != SpeechRecognizer.ERROR_NO_MATCH &&
-                    error != SpeechRecognizer.ERROR_SPEECH_TIMEOUT
-                ) {
-                    Toast.makeText(context, R.string.err_voice_failed, Toast.LENGTH_SHORT).show()
-                }
-            }
-
-            override fun onResults(results: Bundle?) {
-                listening = false
-                val text = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
-                    ?.firstOrNull()
-                if (!text.isNullOrBlank()) input = withVoicePrefix(voiceBase, text)
-            }
-
-            override fun onPartialResults(partialResults: Bundle?) {
-                val text = partialResults?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
-                    ?.firstOrNull()
-                if (!text.isNullOrBlank()) input = withVoicePrefix(voiceBase, text)
-            }
-
-            override fun onEvent(eventType: Int, params: Bundle?) {}
-        })
-        onDispose { recognizer?.destroy() }
+    // `@专家` 的候选面板（spec §23.5）：内容全部由输入框的当前文本与光标位置推出来，
+    // 不额外存一份「已选中」状态 —— 名字就写在正文里，删掉那几个字就等于取消。
+    val mentionCandidates = remember(input, mentionable) {
+        mentionSuggestions(input, mentionable)
     }
 
-    fun startVoice() {
-        if (recognizer == null) {
-            // 设备上没有识别服务（少见）：退回「聚焦输入框 + 唤起输入法」，键盘上也带语音键。
-            runCatching { inputFocus.requestFocus() }
-            keyboard?.show()
-            return
-        }
-        if (listening) {
-            recognizer.stopListening()
-            return
-        }
-        voiceBase = input
-        val started = runCatching { recognizer.startListening(speechIntent) }.isSuccess
-        if (started) {
-            listening = true
-        } else {
-            Toast.makeText(context, R.string.err_voice_failed, Toast.LENGTH_SHORT).show()
-        }
-    }
-
-    // 录音的是识别服务，但要拿 RECORD_AUDIO —— 没授权时 startListening 只会回
-    // ERROR_INSUFFICIENT_PERMISSIONS，所以先要权限再开口。
-    val audioPermission = rememberLauncherForActivityResult(
-        ActivityResultContracts.RequestPermission(),
-    ) { granted -> if (granted) startVoice() }
-
-    fun requestVoice() {
-        if (hasPermission(context, Manifest.permission.RECORD_AUDIO)) {
-            startVoice()
-        } else {
-            audioPermission.launch(Manifest.permission.RECORD_AUDIO)
-        }
-    }
-
-    // 回合开始或被 HITL 挂起时输入区会禁用，识别也该停下来，免得录进来的话没人接。
-    LaunchedEffect(blocked) {
-        if (blocked && listening) recognizer?.stopListening()
+    // 选中一个候选：把光标前那个没写完的 `@查询词` 换成 `@专家名 `，光标落在空格之后。
+    fun pickMention(agent: AgentDto) {
+        input = insertMention(input, agent)
     }
 
     // 快捷方式 / 分享的最后一跳：会话已由列表页建好，这里把动作补上（spec §14）。
@@ -354,8 +279,6 @@ fun ChatScreen(
         val start = PendingChatStart.take() ?: return@LaunchedEffect
         when (start.action) {
             AppActions.SHARE -> viewModel.share(context, start.text, start.uris)
-
-            AppActions.VOICE -> requestVoice()
 
             AppActions.CAMERA -> if (hasPermission(context, Manifest.permission.CAMERA)) {
                 launchCamera()
@@ -370,9 +293,22 @@ fun ChatScreen(
 
     val listState = rememberLazyListState()
     val scope = rememberCoroutineScope()
+    val drawerState = rememberDrawerState(initialValue = DrawerValue.Closed)
+    val imeVisible = WindowInsets.isImeVisible
+    val showBackAction = shouldShowChatBackAction(messages, thread)
 
-    // `@专家` 选择弹窗（spec §23.5）。候选为空时输入栏不会出现这个入口。
-    var mentionPicker by remember { mutableStateOf(false) }
+    fun hideKeyboard() {
+        focusManager.clearFocus(force = true)
+        keyboardController?.hide()
+    }
+
+    LaunchedEffect(threadListState.createdThreadId) {
+        val created = threadListState.createdThreadId ?: return@LaunchedEffect
+        val selectedAgentId = threadListState.selectedAgentId ?: return@LaunchedEffect
+        threadsViewModel.consumeCreated()
+        drawerState.close()
+        onOpenThread(selectedAgentId, created)
+    }
 
     // 回到前台立刻重连一次（spec §10）：退避等待对「刚恢复网络」这种情况没有意义，
     // 而用户从后台切回来正是最可能刚刚恢复网络的时候。
@@ -435,88 +371,138 @@ fun ChatScreen(
             }
     }
 
-    Scaffold(
-        topBar = {
-            TopAppBar(
-                title = {
-                    Column {
-                        Text(
-                            text = thread?.title?.takeIf { it.isNotBlank() } ?: threadId,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                            style = MaterialTheme.typography.titleMedium,
-                        )
-                        if (turnActive) {
+    val currentModelRef = state.selectedModelRef ?: thread?.modelRef
+    val selectedModel = remember(state.modelOptions, currentModelRef) {
+        state.modelOptions.firstOrNull { it.modelRef == currentModelRef }
+    }
+
+    ModalNavigationDrawer(
+        drawerState = drawerState,
+        drawerContent = {
+            ModalDrawerSheet {
+                HistoryDrawerContent(
+                    threads = historyThreads,
+                    currentThreadId = threadId,
+                    syncing = threadListState.syncing,
+                    creating = threadListState.creating,
+                    onNewConversation = {
+                        if (!threadListState.creating) threadsViewModel.createThread()
+                    },
+                    onSelectThread = { item ->
+                        scope.launch {
+                            drawerState.close()
+                            onOpenThread(item.agentId, item.threadId)
+                        }
+                    },
+                )
+            }
+        },
+    ) {
+        Scaffold(
+            topBar = {
+                TopAppBar(
+                    title = {
+                        Column {
                             Text(
-                                text = stringResource(R.string.chat_turn_active),
-                                style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.primary,
+                                text = thread?.title?.takeIf { it.isNotBlank() }
+                                    ?: stringResource(R.string.chat_new_title),
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                style = MaterialTheme.typography.titleMedium,
+                            )
+                            if (turnActive) {
+                                Text(
+                                    text = stringResource(R.string.chat_turn_active),
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.primary,
+                                )
+                            }
+                        }
+                    },
+                    navigationIcon = {
+                        IconButton(onClick = {
+                            hideKeyboard()
+                            scope.launch { drawerState.open() }
+                        }) {
+                            Icon(
+                                imageVector = Icons.Filled.Menu,
+                                contentDescription = stringResource(R.string.chat_more_actions),
                             )
                         }
-                    }
-                },
-                navigationIcon = {
-                    IconButton(onClick = onBack) {
-                        Icon(
-                            imageVector = Icons.AutoMirrored.Filled.ArrowBack,
-                            contentDescription = stringResource(R.string.action_cancel),
+                    },
+                    actions = {
+                        if (showBackAction) {
+                            IconButton(onClick = onBack) {
+                                Icon(
+                                    imageVector = Icons.AutoMirrored.Filled.ArrowBack,
+                                    contentDescription = stringResource(R.string.action_cancel),
+                                )
+                            }
+                        }
+                        Box(
+                            modifier = Modifier
+                                .padding(end = 16.dp)
+                                .size(8.dp)
+                                .clip(CircleShape)
+                                .background(connectionColor(connection)),
+                        )
+                    },
+                )
+            },
+            bottomBar = {
+                Column {
+                    ChatBottomBar(
+                        imeVisible = imeVisible,
+                        blocked = blocked,
+                        pending = pending,
+                        attachments = attachments,
+                        busy = busy,
+                        mentionSuggestions = mentionCandidates,
+                        onPickMention = { agent -> pickMention(agent) },
+                        canMention = mentionable.isNotEmpty(),
+                        modelOptions = state.modelOptions,
+                        selectedModel = selectedModel,
+                        modelsLoading = state.modelsLoading,
+                        onSelectModel = viewModel::selectModel,
+                        onSend = viewModel::send,
+                        onCancel = viewModel::cancel,
+                        onUploadFile = { filePicker.launch(arrayOf("*/*")) },
+                        onUploadImage = {
+                            imagePicker.launch(
+                                PickVisualMediaRequest(
+                                    ActivityResultContracts.PickVisualMedia.ImageOnly,
+                                ),
+                            )
+                        },
+                        onTakePhoto = {
+                            if (hasPermission(context, Manifest.permission.CAMERA)) {
+                                launchCamera()
+                            } else {
+                                cameraPermission.launch(Manifest.permission.CAMERA)
+                            }
+                        },
+                        onRecordVoiceNote = { launchVoiceNoteRecorder() },
+                        input = input,
+                        onInputChange = { input = it },
+                        onRemove = viewModel::removeAttachment,
+                        onResolve = viewModel::resolveHitl,
+                    )
+                    if (shouldShowWorkbenchBar(imeVisible)) {
+                        WorkbenchBottomBar(
+                            current = WorkbenchTab.CHATS,
+                            onSelect = { tab ->
+                                if (tab != WorkbenchTab.CHATS) onOpenWorkbenchTab(tab)
+                            },
                         )
                     }
-                },
-                actions = {
-                    Box(
-                        modifier = Modifier
-                            .padding(end = 16.dp)
-                            .size(8.dp)
-                            .clip(CircleShape)
-                            .background(connectionColor(connection)),
-                    )
-                },
-            )
-        },
-        bottomBar = {
-            ChatBottomBar(
-                blocked = blocked,
-                pending = pending,
-                attachments = attachments,
-                busy = busy,
-                mentions = mentions,
-                onRemoveMention = viewModel::removeMention,
-                onOpenMentionPicker = { mentionPicker = true },
-                canMention = mentionable.isNotEmpty(),
-                onSend = viewModel::send,
-                onCancel = viewModel::cancel,
-                onUploadFile = { filePicker.launch(arrayOf("*/*")) },
-                onUploadImage = {
-                    imagePicker.launch(
-                        PickVisualMediaRequest(
-                            ActivityResultContracts.PickVisualMedia.ImageOnly,
-                        ),
-                    )
-                },
-                onTakePhoto = {
-                    if (hasPermission(context, Manifest.permission.CAMERA)) {
-                        launchCamera()
-                    } else {
-                        cameraPermission.launch(Manifest.permission.CAMERA)
-                    }
-                },
-                onRecordVoiceNote = { launchVoiceNoteRecorder() },
-                onVoiceInput = { requestVoice() },
-                input = input,
-                onInputChange = { input = it },
-                listening = listening,
-                onRemove = viewModel::removeAttachment,
-                onResolve = viewModel::resolveHitl,
-                inputModifier = Modifier.focusRequester(inputFocus),
-            )
-        },
-    ) { padding ->
-        Box(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(padding),
-        ) {
+                }
+            },
+        ) { padding ->
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(padding),
+            ) {
             when {
                 // 首屏没有本地内容时给气泡骨架屏，不是全屏转圈（spec §12、§19 第 15 条）。
                 messages.isEmpty() && state.historyLoading -> ChatSkeleton()
@@ -544,7 +530,7 @@ fun ChatScreen(
                     items(rows, key = { it.key }) { row ->
                         when (row) {
                             is ChatRow.Message -> MessageBubble(
-                                entity = row.entity,
+                                entities = row.entities,
                                 json = container.json,
                                 threadId = threadId,
                                 cachedAttachments = cachedAttachments,
@@ -610,58 +596,175 @@ fun ChatScreen(
                 )
             }
         }
-    }
-
-    if (mentionPicker) {
-        MentionPickerDialog(
-            agents = mentionable,
-            selected = mentions,
-            onPick = viewModel::addMention,
-            onDismiss = { mentionPicker = false },
-        )
+        }
     }
 }
 
 // ------------------------------------------------------------------ 输入区
+
+@Composable
+private fun HistoryDrawerContent(
+    threads: List<ThreadEntity>,
+    currentThreadId: String,
+    syncing: Boolean,
+    creating: Boolean,
+    onNewConversation: () -> Unit,
+    onSelectThread: (ThreadEntity) -> Unit,
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .widthIn(max = 360.dp)
+            .padding(horizontal = 12.dp, vertical = 16.dp),
+    ) {
+        Text(
+            text = stringResource(R.string.app_name),
+            style = MaterialTheme.typography.headlineSmall,
+            modifier = Modifier.padding(horizontal = 12.dp),
+        )
+        Spacer(Modifier.height(12.dp))
+        OutlinedButton(
+            onClick = onNewConversation,
+            enabled = !creating,
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 8.dp),
+        ) {
+            Icon(
+                imageVector = Icons.Filled.Add,
+                contentDescription = null,
+                modifier = Modifier.size(18.dp),
+            )
+            Spacer(Modifier.width(8.dp))
+            Text(stringResource(R.string.threads_new))
+        }
+        Spacer(Modifier.height(16.dp))
+        Text(
+            text = stringResource(R.string.chat_history_title),
+            style = MaterialTheme.typography.labelLarge,
+            color = MaterialTheme.colorScheme.primary,
+            modifier = Modifier.padding(horizontal = 12.dp),
+        )
+        Spacer(Modifier.height(8.dp))
+        if (syncing) {
+            LinearProgressIndicator(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 12.dp),
+                trackColor = Color.Transparent,
+            )
+            Spacer(Modifier.height(8.dp))
+        }
+        if (threads.isEmpty()) {
+            Text(
+                text = stringResource(R.string.chat_history_empty),
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+            )
+        } else {
+            LazyColumn(
+                modifier = Modifier.fillMaxSize(),
+                verticalArrangement = Arrangement.spacedBy(4.dp),
+            ) {
+                items(threads, key = { it.threadId }) { item ->
+                    HistoryDrawerRow(
+                        thread = item,
+                        selected = item.threadId == currentThreadId,
+                        onClick = { onSelectThread(item) },
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun HistoryDrawerRow(
+    thread: ThreadEntity,
+    selected: Boolean,
+    onClick: () -> Unit,
+) {
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(16.dp),
+        color = if (selected) {
+            MaterialTheme.colorScheme.secondaryContainer
+        } else {
+            Color.Transparent
+        },
+        onClick = onClick,
+    ) {
+        Column(modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp)) {
+            Text(
+                text = thread.title?.takeIf { it.isNotBlank() } ?: stringResource(R.string.chat_new_title),
+                style = MaterialTheme.typography.bodyMedium,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+            thread.lastMessage?.takeIf { it.isNotBlank() }?.let { subtitle ->
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    text = subtitle,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+            Spacer(Modifier.height(4.dp))
+            Text(
+                text = DateUtils.getRelativeTimeSpanString(thread.lastActiveAt).toString(),
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+    }
+}
 
 /**
  * 底部输入栏。
  *
  * [blocked]（回合进行中或 HITL 挂起）时输入框与附件按钮置灰、发送键换成中止
  * —— M2 不做 steer，等 `turn.ended` 后才允许再发（docs/spec.md §18.1）。
- *
- * [inputModifier] 单独留给输入框：语音输入快捷方式要靠它把焦点送进去（spec §14）。
  */
 @Composable
 private fun ChatBottomBar(
+    imeVisible: Boolean,
     blocked: Boolean,
     pending: HitlPending?,
     attachments: List<UploadedAttachment>,
     busy: Boolean,
-    mentions: List<AgentDto>,
-    onRemoveMention: (AgentDto) -> Unit,
-    onOpenMentionPicker: () -> Unit,
+    mentionSuggestions: List<AgentDto>,
+    onPickMention: (AgentDto) -> Unit,
     canMention: Boolean,
+    modelOptions: List<ChatModelOption>,
+    selectedModel: ChatModelOption?,
+    modelsLoading: Boolean,
+    onSelectModel: (String?) -> Unit,
     onSend: (String) -> Unit,
     onCancel: () -> Unit,
     onUploadFile: () -> Unit,
     onUploadImage: () -> Unit,
     onTakePhoto: () -> Unit,
     onRecordVoiceNote: () -> Unit,
-    onVoiceInput: () -> Unit,
-    input: String,
-    onInputChange: (String) -> Unit,
-    listening: Boolean,
+    input: TextFieldValue,
+    onInputChange: (TextFieldValue) -> Unit,
     onRemove: (UploadedAttachment) -> Unit,
     onResolve: (String, String?) -> Unit,
-    inputModifier: Modifier = Modifier,
 ) {
     Surface(tonalElevation = 3.dp) {
         Column(
             modifier = Modifier
                 .fillMaxWidth()
                 .imePadding()
-                .navigationBarsPadding()
+                .then(
+                    if (shouldApplyChatBottomBarNavigationPadding(imeVisible)) {
+                        Modifier.navigationBarsPadding()
+                    } else {
+                        Modifier
+                    },
+                )
                 .padding(horizontal = 8.dp, vertical = 6.dp),
         ) {
             if (pending != null) {
@@ -669,8 +772,9 @@ private fun ChatBottomBar(
                 Spacer(Modifier.height(6.dp))
             }
 
-            if (mentions.isNotEmpty()) {
-                MentionRow(mentions = mentions, onRemove = onRemoveMention)
+            // 候选面板紧贴输入框上方：它认的是「正在打的那个 `@`」，弹窗会把它和输入框隔开一屏。
+            if (mentionSuggestions.isNotEmpty()) {
+                MentionSuggestions(agents = mentionSuggestions, onPick = onPickMention)
                 Spacer(Modifier.height(6.dp))
             }
 
@@ -687,18 +791,19 @@ private fun ChatBottomBar(
                 blocked = blocked,
                 canSend = attachments.isNotEmpty(),
                 canMention = canMention,
+                modelOptions = modelOptions,
+                selectedModel = selectedModel,
+                modelsLoading = modelsLoading,
+                onSelectModel = onSelectModel,
                 onSend = onSend,
                 onCancel = onCancel,
                 onUploadFile = onUploadFile,
                 onUploadImage = onUploadImage,
                 onTakePhoto = onTakePhoto,
                 onRecordVoiceNote = onRecordVoiceNote,
-                onVoiceInput = onVoiceInput,
-                onOpenMentionPicker = onOpenMentionPicker,
+                onMention = { onInputChange(input.withMentionTrigger()) },
                 input = input,
                 onInputChange = onInputChange,
-                listening = listening,
-                modifier = inputModifier,
             )
         }
     }
@@ -709,159 +814,236 @@ private fun InputRow(
     blocked: Boolean,
     canSend: Boolean,
     canMention: Boolean,
+    modelOptions: List<ChatModelOption>,
+    selectedModel: ChatModelOption?,
+    modelsLoading: Boolean,
+    onSelectModel: (String?) -> Unit,
     onSend: (String) -> Unit,
     onCancel: () -> Unit,
     onUploadFile: () -> Unit,
     onUploadImage: () -> Unit,
     onTakePhoto: () -> Unit,
     onRecordVoiceNote: () -> Unit,
-    onVoiceInput: () -> Unit,
-    onOpenMentionPicker: () -> Unit,
-    input: String,
-    onInputChange: (String) -> Unit,
-    listening: Boolean,
-    modifier: Modifier = Modifier,
+    onMention: () -> Unit,
+    input: TextFieldValue,
+    onInputChange: (TextFieldValue) -> Unit,
 ) {
-    val sendable = !blocked && (input.isNotBlank() || canSend)
+    val sendable = !blocked && (input.text.isNotBlank() || canSend)
     var menuExpanded by remember { mutableStateOf(false) }
+    var modelExpanded by remember { mutableStateOf(false) }
 
     fun submit() {
         if (!sendable) return
-        val text = input
-        onInputChange("")
+        val text = input.text
+        onInputChange(TextFieldValue(""))
         onSend(text)
     }
 
-    Row(verticalAlignment = Alignment.Bottom) {
-        Box {
-            IconButton(
-                onClick = { menuExpanded = true },
-                enabled = !blocked,
-            ) {
-                Icon(
-                    imageVector = Icons.Filled.Add,
-                    contentDescription = stringResource(R.string.chat_more_actions),
-                )
-            }
-            DropdownMenu(
-                expanded = menuExpanded,
-                onDismissRequest = { menuExpanded = false },
-            ) {
-                DropdownMenuItem(
-                    text = { Text(stringResource(R.string.chat_upload_file)) },
-                    leadingIcon = {
-                        Icon(
-                            imageVector = Icons.Filled.Description,
-                            contentDescription = null,
-                        )
-                    },
-                    onClick = {
-                        menuExpanded = false
-                        onUploadFile()
-                    },
-                )
-                DropdownMenuItem(
-                    text = { Text(stringResource(R.string.chat_take_photo)) },
-                    leadingIcon = {
-                        Icon(
-                            imageVector = Icons.Filled.PhotoCamera,
-                            contentDescription = null,
-                        )
-                    },
-                    onClick = {
-                        menuExpanded = false
-                        onTakePhoto()
-                    },
-                )
-                DropdownMenuItem(
-                    text = { Text(stringResource(R.string.chat_upload_image)) },
-                    leadingIcon = {
-                        Icon(
-                            imageVector = Icons.Filled.Image,
-                            contentDescription = null,
-                        )
-                    },
-                    onClick = {
-                        menuExpanded = false
-                        onUploadImage()
-                    },
-                )
-                DropdownMenuItem(
-                    text = { Text(stringResource(R.string.chat_record_voice_note)) },
-                    leadingIcon = {
-                        Icon(
-                            imageVector = Icons.Filled.KeyboardVoice,
-                            contentDescription = null,
-                        )
-                    },
-                    onClick = {
-                        menuExpanded = false
-                        onRecordVoiceNote()
-                    },
-                )
-                // `@专家`（spec §23.5）：候选为空时不出现 —— 单 agent 实例上这个入口没有意义。
-                if (canMention) {
-                    DropdownMenuItem(
-                        text = { Text(stringResource(R.string.chat_mention)) },
-                        leadingIcon = {
-                            Icon(
-                                imageVector = Icons.Filled.AlternateEmail,
-                                contentDescription = null,
-                            )
-                        },
-                        onClick = {
-                            menuExpanded = false
-                            onOpenMentionPicker()
-                        },
-                    )
-                }
-            }
-        }
-
-        OutlinedTextField(
-            value = input,
-            onValueChange = onInputChange,
+    Surface(
+        shape = RoundedCornerShape(28.dp),
+        tonalElevation = 1.dp,
+        shadowElevation = 2.dp,
+    ) {
+        Column(
             modifier = Modifier
-                .weight(1f)
-                .then(modifier),
-            enabled = !blocked,
-            placeholder = {
-                Text(
-                    stringResource(
-                        if (listening) R.string.chat_voice_listening else R.string.chat_input_hint,
-                    ),
-                )
-            },
-            // 自增高到 6 行，再多就内部滚动（spec §12：输入区不做全屏展开）。
-            maxLines = 6,
-            shape = RoundedCornerShape(20.dp),
-            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
-            keyboardActions = KeyboardActions(onSend = { submit() }),
-        )
+                .fillMaxWidth()
+                .padding(horizontal = 12.dp, vertical = 10.dp),
+        ) {
+            OutlinedTextField(
+                value = input,
+                onValueChange = onInputChange,
+                modifier = Modifier.fillMaxWidth(),
+                enabled = !blocked,
+                placeholder = { Text(stringResource(R.string.chat_input_hint_new)) },
+                maxLines = 6,
+                shape = RoundedCornerShape(20.dp),
+                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
+                keyboardActions = KeyboardActions(onSend = { submit() }),
+            )
 
-        if (blocked) {
-            IconButton(onClick = onCancel) {
-                Icon(
-                    imageVector = Icons.Filled.Stop,
-                    contentDescription = stringResource(R.string.chat_stop),
-                    tint = MaterialTheme.colorScheme.error,
-                )
-            }
-        } else {
-            IconButton(onClick = onVoiceInput) {
-                Icon(
-                    imageVector = Icons.Filled.Mic,
-                    contentDescription = stringResource(
-                        if (listening) R.string.chat_voice_listening else R.string.chat_voice_input,
-                    ),
-                    tint = if (listening) {
-                        MaterialTheme.colorScheme.error
-                    } else if (sendable) {
-                        MaterialTheme.colorScheme.primary
-                    } else {
-                        LocalContentColor.current
-                    },
-                )
+            Spacer(Modifier.height(8.dp))
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Box {
+                    FilledTonalIconButton(
+                        onClick = { menuExpanded = true },
+                        enabled = !blocked,
+                    ) {
+                        Icon(
+                            imageVector = Icons.Filled.Add,
+                            contentDescription = stringResource(R.string.chat_more_actions),
+                        )
+                    }
+                    DropdownMenu(
+                        expanded = menuExpanded,
+                        onDismissRequest = { menuExpanded = false },
+                    ) {
+                        DropdownMenuItem(
+                            text = { Text(stringResource(R.string.chat_upload_file)) },
+                            leadingIcon = {
+                                Icon(
+                                    imageVector = Icons.Filled.Description,
+                                    contentDescription = null,
+                                )
+                            },
+                            onClick = {
+                                menuExpanded = false
+                                onUploadFile()
+                            },
+                        )
+                        DropdownMenuItem(
+                            text = { Text(stringResource(R.string.chat_take_photo)) },
+                            leadingIcon = {
+                                Icon(
+                                    imageVector = Icons.Filled.PhotoCamera,
+                                    contentDescription = null,
+                                )
+                            },
+                            onClick = {
+                                menuExpanded = false
+                                onTakePhoto()
+                            },
+                        )
+                        DropdownMenuItem(
+                            text = { Text(stringResource(R.string.chat_upload_image)) },
+                            leadingIcon = {
+                                Icon(
+                                    imageVector = Icons.Filled.Image,
+                                    contentDescription = null,
+                                )
+                            },
+                            onClick = {
+                                menuExpanded = false
+                                onUploadImage()
+                            },
+                        )
+                        DropdownMenuItem(
+                            text = { Text(stringResource(R.string.chat_record_voice_note)) },
+                            leadingIcon = {
+                                Icon(
+                                    imageVector = Icons.Filled.KeyboardVoice,
+                                    contentDescription = null,
+                                )
+                            },
+                            onClick = {
+                                menuExpanded = false
+                                onRecordVoiceNote()
+                            },
+                        )
+                        if (canMention) {
+                            DropdownMenuItem(
+                                text = { Text(stringResource(R.string.chat_mention)) },
+                                leadingIcon = {
+                                    Icon(
+                                        imageVector = Icons.Filled.AlternateEmail,
+                                        contentDescription = null,
+                                    )
+                                },
+                                onClick = {
+                                    menuExpanded = false
+                                    onMention()
+                                },
+                            )
+                        }
+                    }
+                }
+
+                Spacer(Modifier.width(8.dp))
+
+                Box(modifier = Modifier.weight(1f)) {
+                    Surface(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(18.dp))
+                            .clickable(enabled = modelOptions.isNotEmpty() && !blocked) {
+                                modelExpanded = true
+                            },
+                        color = MaterialTheme.colorScheme.secondaryContainer,
+                        shape = RoundedCornerShape(18.dp),
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Text(
+                                text = when {
+                                    modelsLoading -> stringResource(R.string.chat_model_loading)
+                                    selectedModel != null -> selectedModel.label
+                                    else -> stringResource(R.string.chat_model_auto)
+                                },
+                                modifier = Modifier.weight(1f),
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                style = MaterialTheme.typography.labelLarge,
+                            )
+                            Spacer(Modifier.width(6.dp))
+                            Icon(
+                                imageVector = Icons.Filled.KeyboardArrowDown,
+                                contentDescription = null,
+                                modifier = Modifier.size(18.dp),
+                            )
+                        }
+                    }
+                    DropdownMenu(
+                        expanded = modelExpanded,
+                        onDismissRequest = { modelExpanded = false },
+                    ) {
+                        if (selectedModel != null) {
+                            DropdownMenuItem(
+                                text = { Text(stringResource(R.string.chat_model_auto)) },
+                                onClick = {
+                                    modelExpanded = false
+                                    onSelectModel(null)
+                                },
+                            )
+                        }
+                        modelOptions.forEach { option ->
+                            DropdownMenuItem(
+                                text = {
+                                    Column {
+                                        Text(option.label, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                        Text(
+                                            text = option.providerName,
+                                            style = MaterialTheme.typography.labelSmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        )
+                                    }
+                                },
+                                onClick = {
+                                    modelExpanded = false
+                                    onSelectModel(option.modelRef)
+                                },
+                            )
+                        }
+                    }
+                }
+
+                Spacer(Modifier.width(8.dp))
+
+                if (blocked) {
+                    FilledTonalIconButton(onClick = onCancel) {
+                        Icon(
+                            imageVector = Icons.Filled.Stop,
+                            contentDescription = stringResource(R.string.chat_stop),
+                            tint = MaterialTheme.colorScheme.error,
+                        )
+                    }
+                } else {
+                    FilledTonalIconButton(onClick = { submit() }, enabled = sendable) {
+                        Icon(
+                            imageVector = Icons.AutoMirrored.Filled.Send,
+                            contentDescription = stringResource(R.string.chat_send),
+                            tint = if (sendable) {
+                                MaterialTheme.colorScheme.primary
+                            } else {
+                                LocalContentColor.current
+                            },
+                        )
+                    }
+                }
             }
         }
     }
@@ -933,119 +1115,108 @@ private fun AttachmentChip(filename: String, onRemove: (() -> Unit)?) {
 }
 
 /**
- * 已选中的 `@专家`（spec §23.5）。
+ * `@专家` 候选列表（spec §23.5）。
  *
- * 与附件同样做成「待发 chip」而不是往正文里插 `@名字` 文本：上游收的是 `target_agent_ids`
- * 这个独立字段（`UserTurn.targetAgentIds`），正文里写不写 `@` 都不影响它。
+ * 摆在输入框正上方而不是弹一个对话框：面板跟着「正在打的那个 `@`」走，弹窗会把它和输入框
+ * 隔开一屏，选完还得再关一次。选中后名字落进正文（`@名字`），提交时由 ViewModel 按正文
+ * 还原 `target_agent_ids` —— 所以这里不做勾选态，删掉正文里的那几个字就等于取消。
  */
 @Composable
-private fun MentionRow(mentions: List<AgentDto>, onRemove: (AgentDto) -> Unit) {
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .horizontalScroll(rememberScrollState()),
-        horizontalArrangement = Arrangement.spacedBy(6.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        mentions.forEach { agent ->
-            MentionChip(name = agent.displayName(), onRemove = { onRemove(agent) })
-        }
-    }
-}
-
-@Composable
-private fun MentionChip(name: String, onRemove: () -> Unit) {
+private fun MentionSuggestions(agents: List<AgentDto>, onPick: (AgentDto) -> Unit) {
     Surface(
-        color = MaterialTheme.colorScheme.primaryContainer,
-        shape = RoundedCornerShape(8.dp),
+        color = MaterialTheme.colorScheme.secondaryContainer,
+        shape = RoundedCornerShape(12.dp),
     ) {
-        Row(
-            verticalAlignment = Alignment.CenterVertically,
-            modifier = Modifier.padding(start = 8.dp, top = 3.dp, bottom = 3.dp),
+        LazyColumn(
+            modifier = Modifier
+                .fillMaxWidth()
+                .heightIn(max = 200.dp),
         ) {
-            Icon(
-                imageVector = Icons.Filled.AlternateEmail,
-                contentDescription = null,
-                modifier = Modifier.size(12.dp),
-            )
-            Spacer(Modifier.width(2.dp))
-            Text(
-                text = name,
-                style = MaterialTheme.typography.labelSmall,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.widthIn(max = 160.dp),
-            )
-            IconButton(onClick = onRemove, modifier = Modifier.size(24.dp)) {
-                Icon(
-                    imageVector = Icons.Filled.Close,
-                    contentDescription = stringResource(R.string.chat_mention_remove),
-                    modifier = Modifier.size(14.dp),
-                )
-            }
-        }
-    }
-}
-
-/** `@专家` 选择器：列出同用户名下**除当前会话这个之外**的 agent（spec §23.5）。 */
-@Composable
-private fun MentionPickerDialog(
-    agents: List<AgentDto>,
-    selected: List<AgentDto>,
-    onPick: (AgentDto) -> Unit,
-    onDismiss: () -> Unit,
-) {
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text(stringResource(R.string.chat_mention_title)) },
-        text = {
-            LazyColumn(modifier = Modifier.heightIn(max = 320.dp)) {
-                items(agents, key = { it.agentId }) { agent ->
-                    val picked = selected.any { it.agentId == agent.agentId }
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clickable(!picked) { onPick(agent) }
-                            .padding(vertical = 10.dp, horizontal = 4.dp),
-                    ) {
-                        Column(modifier = Modifier.weight(1f)) {
+            items(agents, key = { it.agentId }) { agent ->
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable { onPick(agent) }
+                        .padding(horizontal = 10.dp, vertical = 8.dp),
+                ) {
+                    Icon(
+                        imageVector = Icons.Filled.AlternateEmail,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.size(14.dp),
+                    )
+                    Spacer(Modifier.width(8.dp))
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = agent.displayName(),
+                            style = MaterialTheme.typography.bodyMedium,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                        val subtitle = agent.description?.takeIf { it.isNotBlank() }
+                        if (subtitle != null) {
                             Text(
-                                text = agent.displayName(),
-                                style = MaterialTheme.typography.bodyMedium,
+                                text = subtitle,
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 maxLines = 1,
                                 overflow = TextOverflow.Ellipsis,
-                            )
-                            val subtitle = agent.description?.takeIf { it.isNotBlank() }
-                            if (subtitle != null) {
-                                Text(
-                                    text = subtitle,
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    maxLines = 2,
-                                    overflow = TextOverflow.Ellipsis,
-                                )
-                            }
-                        }
-                        if (picked) {
-                            Icon(
-                                imageVector = Icons.Filled.Check,
-                                contentDescription = null,
-                                tint = MaterialTheme.colorScheme.primary,
                             )
                         }
                     }
                 }
             }
-        },
-        confirmButton = {
-            TextButton(onClick = onDismiss) { Text(stringResource(R.string.action_done)) }
-        },
-    )
+        }
+    }
 }
 
-/** 专家名缺失时退回 `agent_id` —— 气泡与 chip 上总得有东西可显示。 */
-private fun AgentDto.displayName(): String = name?.takeIf { it.isNotBlank() } ?: agentId
+/**
+ * 光标前是否正处在一次 `@` 提及里 —— 是的话返回查询词（`@` 之后、光标之前的文本）。
+ *
+ * 只在 `@` 位于词首、且它之后没敲过空白时才成立：敲了空格就说明这句提及已经写完，面板
+ * 该收起来，而不是继续拿后面的正文去匹配。有选区时不猜（`@` 与光标的关系不唯一）。
+ */
+private fun mentionQuery(value: TextFieldValue, candidates: List<AgentDto>): String? {
+    if (candidates.isEmpty() || !value.selection.collapsed) return null
+    val before = value.text.substring(0, value.selection.end)
+    val at = before.lastIndexOf(MENTION_PREFIX)
+    if (at < 0) return null
+    if (at > 0 && !before[at - 1].isWhitespace()) return null
+    val query = before.substring(at + 1)
+    return query.takeIf { q -> q.none { it.isWhitespace() } }
+}
+
+/** [mentionQuery] 有结果时按名字过滤出的候选，最多 [MAX_MENTION_SUGGESTIONS] 个。 */
+private fun mentionSuggestions(
+    value: TextFieldValue,
+    candidates: List<AgentDto>,
+): List<AgentDto> {
+    val query = mentionQuery(value, candidates) ?: return emptyList()
+    return candidates
+        .filter { it.displayName().contains(query, ignoreCase = true) }
+        .take(MAX_MENTION_SUGGESTIONS)
+}
+
+/** 把光标（或选区）前那个没写完的 `@查询词` 换成 `@专家名 `，光标落在空格之后。 */
+private fun insertMention(value: TextFieldValue, agent: AgentDto): TextFieldValue {
+    val at = value.text.substring(0, value.selection.min).lastIndexOf(MENTION_PREFIX)
+    if (at < 0) return value
+    val token = MENTION_PREFIX + agent.displayName() + " "
+    val text = value.text.substring(0, at) + token + value.text.substring(value.selection.max)
+    return TextFieldValue(text = text, selection = TextRange(at + token.length))
+}
+
+/** 在光标（或选区）处打一个 `@` —— `+` 菜单里那个入口就是用它把面板唤出来的。 */
+private fun TextFieldValue.withMentionTrigger(): TextFieldValue {
+    val start = selection.min
+    val end = selection.max
+    val text = this.text.substring(0, start) + MENTION_PREFIX + this.text.substring(end)
+    return TextFieldValue(text = text, selection = TextRange(start + MENTION_PREFIX.length))
+}
+
+/** 候选面板最多列这么多条 —— 超出部分靠继续打字收窄，不做滚动大战。 */
+private const val MAX_MENTION_SUGGESTIONS = 6
 
 /**
  * 消息里的附件（spec §13）。
@@ -1330,18 +1501,27 @@ private fun OverlayNotice(
 
 @Composable
 private fun MessageBubble(
-    entity: MessageEntity,
+    entities: List<MessageEntity>,
     json: Json,
     threadId: String,
     cachedAttachments: Map<String, AttachmentEntity>,
     onEnsureAttachment: suspend (String?, String?) -> Unit,
     onRefetch: () -> Unit,
 ) {
-    // 按 partsJson 记忆化：流式期间每 ~50ms（spec §12 的合帧间隔）只有最后一条消息的内容变化，
-    // 其余历史块直接命中缓存，不重新解析。
-    val parts = remember(entity.partsJson) { PartsCodec.decode(json, entity.partsJson) }
-    val isUser = entity.role == ROLE_USER
-    val streaming = entity.status == MessageStatus.STREAMING
+    // 一个气泡可能由多条本地行合成（见 [buildChatRows]）。按 partsJson 记忆化：流式期间每 ~50ms
+    //（spec §12 的合帧间隔）只有最后一条消息的内容变化，其余历史块直接命中缓存，不重新解析。
+    val parts = remember(entities) {
+        entities.flatMap { PartsCodec.decode(json, it.partsJson) }
+    }
+    val isUser = entities.first().role == ROLE_USER
+    val streaming = entities.any { it.status == MessageStatus.STREAMING }
+    // 失败 / 中断按「组里有没有」判断 —— 这一轮被拆成多条行，状态可能落在其中任意一条上。
+    val failed = entities.firstOrNull { it.status == MessageStatus.FAILED }
+    val interrupted = entities.any { it.status == MessageStatus.INTERRUPTED }
+    // parts → 渲染块：把 reasoning 与工具调用并进同一个「思考过程」（见 [toBlocks]）。
+    val blocks = remember(parts, streaming) { parts.toBlocks(streaming) }
+    // 这一轮「思考 + 工具」的耗时：见 [thinkingDurationMs]。
+    val thinkingDuration = remember(entities) { entities.thinkingDurationMs() }
 
     // 气泡宽度上限跟着系统字号走（spec §12「大字体」、§19 第 22 条）：默认字号下仍是 340dp，
     // 字号放大后要是不放宽，一条正文会被挤成又窄又高的一列。最终宽度仍受所在行的屏宽约束。
@@ -1366,56 +1546,36 @@ private fun MessageBubble(
                     Text(text = "…", style = MaterialTheme.typography.bodyMedium)
                 }
 
-                parts.forEachIndexed { index, part ->
-                    val isTail = streaming && index == parts.lastIndex
-                    when (part.type) {
-                        PartType.TEXT -> MessageText(
-                            text = part.text.orEmpty(),
-                            caret = isTail,
+                blocks.forEach { block ->
+                    when (block) {
+                        is MessageBlock.Thinking -> ThinkingBlock(block.parts, thinkingDuration)
+
+                        is MessageBlock.Text -> MessageText(
+                            text = block.text,
+                            caret = block.isTail,
                             streaming = streaming,
                         )
 
-                        PartType.REASONING -> ReasoningBlock(part.text.orEmpty())
-
-                        PartType.TOOL_CALL -> ToolCard(
-                            title = part.name.orEmpty().ifBlank { stringResource(R.string.chat_tool_args) },
-                            body = part.args,
-                            bodyLabel = stringResource(R.string.chat_tool_args),
-                            isError = false,
-                            initiallyExpanded = false,
-                        )
-
-                        PartType.TOOL_RESULT -> ToolCard(
-                            title = part.name.orEmpty().ifBlank { stringResource(R.string.chat_tool_result) },
-                            body = part.output,
-                            bodyLabel = stringResource(R.string.chat_tool_result),
-                            isError = part.errorCode != null,
-                            initiallyExpanded = (part.output?.length ?: 0) <= TOOL_PREVIEW_CHARS,
-                        )
-
-                        PartType.ATTACHMENT -> AttachmentBubble(
-                            part = part,
+                        is MessageBlock.Attachment -> AttachmentBubble(
+                            part = block.part,
                             threadId = threadId,
                             cachedAttachments = cachedAttachments,
                             onEnsure = onEnsureAttachment,
                         )
 
-                        PartType.ERROR -> ToolCard(
-                            title = part.text.orEmpty(),
+                        is MessageBlock.Error -> ToolCard(
+                            title = block.part.text.orEmpty(),
                             body = null,
                             bodyLabel = stringResource(R.string.chat_tool_result),
                             isError = true,
-                            initiallyExpanded = false,
                         )
-
-                        else -> Unit
                     }
                 }
 
-                if (!streaming && entity.status == MessageStatus.FAILED) {
+                if (!streaming && failed != null) {
                     Spacer(Modifier.height(2.dp))
                     Text(
-                        text = entity.errorInfo.orEmpty(),
+                        text = failed.errorInfo.orEmpty(),
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.error,
                     )
@@ -1423,7 +1583,7 @@ private fun MessageBubble(
 
                 // 半截消息（spec §10、§19 第 11 条）：明确说出「这轮是断的」，并给一个以服务端
                 // 为准重取的入口。不自动重取 —— 断流时用户最需要的是先看清眼前这一截。
-                if (entity.status == MessageStatus.INTERRUPTED) {
+                if (interrupted) {
                     Spacer(Modifier.height(2.dp))
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Text(
@@ -1554,37 +1714,289 @@ private fun chatMarkdownTypography(): MarkdownTypography {
     )
 }
 
-/** 思考过程默认只露三行，点一下展开（spec §11「`reasoning` 默认折叠」）。 */
-@Composable
-private fun ReasoningBlock(text: String) {
-    var expanded by remember { mutableStateOf(false) }
+/**
+ * 一条消息的渲染块。[MessageBubble] 先把线性的 parts 归并成块再渲染。
+ *
+ * 归并的目的是让会话流默认只剩「思考过程（收起的一行）+ 回复正文」：`reasoning` 与工具调用 /
+ * 结果并进同一个 [Thinking]，不再让每个工具调用各占一张顶层卡片（spec §11）。
+ */
+private sealed interface MessageBlock {
+    data class Thinking(val parts: List<Part>) : MessageBlock
+    data class Text(val text: String, val isTail: Boolean) : MessageBlock
+    data class Attachment(val part: Part) : MessageBlock
+    data class Error(val part: Part) : MessageBlock
+}
 
-    Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clickable { expanded = !expanded }
-            .padding(vertical = 2.dp),
-    ) {
-        Text(
-            text = stringResource(R.string.chat_reasoning),
-            style = MaterialTheme.typography.labelSmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
-        Text(
-            text = text,
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            maxLines = if (expanded) Int.MAX_VALUE else 3,
-            overflow = TextOverflow.Ellipsis,
-        )
+/**
+ * 把线性的 parts 归并成渲染块：整条消息的 `reasoning` / `tool_call` / `tool_result` 全部收敛进
+ * 同一个 [MessageBlock.Thinking]（落在首次出现的位置），`text` / 附件 / 错误各自成块。
+ */
+private fun List<Part>.toBlocks(streaming: Boolean): List<MessageBlock> {
+    // 整条消息的思考与工具收敛成**一块**：不管它们原本是否被正文打断，界面上都只出一个「思考过程」。
+    val thinking = filter {
+        it.type == PartType.REASONING || it.type == PartType.TOOL_CALL || it.type == PartType.TOOL_RESULT
+    }
+
+    val out = mutableListOf<MessageBlock>()
+    var thinkingEmitted = false
+    forEachIndexed { index, part ->
+        when (part.type) {
+            // 只在首次遇到思考 / 工具时插入这一块，后续同类片段都归进它里面。
+            PartType.REASONING, PartType.TOOL_CALL, PartType.TOOL_RESULT ->
+                if (!thinkingEmitted) {
+                    out += MessageBlock.Thinking(thinking)
+                    thinkingEmitted = true
+                }
+
+            PartType.TEXT -> out += MessageBlock.Text(part.text.orEmpty(), streaming && index == lastIndex)
+
+            PartType.ATTACHMENT -> out += MessageBlock.Attachment(part)
+
+            PartType.ERROR -> out += MessageBlock.Error(part)
+
+            else -> Unit
+        }
+    }
+    return out
+}
+
+/**
+ * 「思考过程」展开后的一条内容：一段思考正文，或一次工具调用（参数 + 结果）。
+ *
+ * 工具调用的参数 / 结果**不一次铺开**（spec §11）：折叠时只显示工具名，点开这一条才看详情。
+ */
+private sealed interface ThinkingEntry {
+    data class Reasoning(val text: String) : ThinkingEntry
+    data class Tool(val name: String, val args: String?, val output: String?, val isError: Boolean) : ThinkingEntry
+}
+
+/**
+ * 把「思考过程」里的 parts 排成条目：`reasoning` 各成一条；`tool_call` 与其结果合成**一条** ——
+ * 上游没把调用 id 带到 part 上，只能按「出现顺序 + 同名」配对。
+ *
+ * 配不到调用的结果单独成条（历史被截断时会出现），信息不丢。
+ */
+private fun List<Part>.toThinkingEntries(): List<ThinkingEntry> {
+    val results = filter { it.type == PartType.TOOL_RESULT }.toMutableList()
+    val out = mutableListOf<ThinkingEntry>()
+    forEach { part ->
+        when (part.type) {
+            PartType.REASONING -> part.text?.takeIf(String::isNotBlank)
+                ?.let { out += ThinkingEntry.Reasoning(it) }
+
+            PartType.TOOL_CALL -> {
+                val name = part.name.orEmpty()
+                val at = results.indexOfFirst { it.name.orEmpty() == name }
+                val result = if (at >= 0) results.removeAt(at) else null
+                out += ThinkingEntry.Tool(name, part.args, result?.output, result?.errorCode != null)
+            }
+
+            else -> Unit
+        }
+    }
+    results.forEach { out += ThinkingEntry.Tool(it.name.orEmpty(), null, it.output, it.errorCode != null) }
+    return out
+}
+
+/**
+ * 这一轮「思考 + 工具」的耗时。
+ *
+ * 服务端把一轮回复拆成多条消息下发，每条都带毫秒级的 `timestamp`，落到本地的 `sortOrder` 与
+ * 实时行（`System.currentTimeMillis()`）同一量纲（见 `ChatRepository.toEntity`）。所以：
+ *
+ * - **多条**：首末两行的时间差就是从开始思考到正文落定的时长；
+ * - **单条**：只有刚刚流完、还没被历史替换掉的那一轮会这样（本地实时行），拿不到分阶段时间戳，
+ *   改用「行建立时刻 → 最后一次落库」的差（`updatedAt`）。历史行的 `updatedAt` 等于行自身时间，
+ *   差为 0，自然落到 `null`，不会被误算成一条跨越几天的耗时。
+ *
+ * 不足 [MIN_THINKING_DURATION_MS] 不值得显示，返回 null。
+ */
+private fun List<MessageEntity>.thinkingDurationMs(): Long? {
+    val span = if (size >= 2) {
+        last().sortOrder - first().sortOrder
+    } else {
+        first().updatedAt - first().sortOrder
+    }
+    return span.takeIf { it >= MIN_THINKING_DURATION_MS }
+}
+
+/** 折叠着的思考过程里显示的耗时（`45s` / `1m 20s`；秒级，四舍五入）。 */
+@Composable
+private fun thinkingDurationLabel(ms: Long): String {
+    val total = (ms + 500) / 1000
+    val minutes = total / 60
+    val seconds = total % 60
+    return if (minutes <= 0) {
+        stringResource(R.string.chat_duration_seconds, seconds)
+    } else {
+        stringResource(R.string.chat_duration_minutes, minutes, seconds)
     }
 }
 
 /**
- * 工具调用 / 结果的折叠卡（M2 把 M1 的单行升级成卡片）。
+ * 「思考过程」折叠区：把一轮里的 `reasoning` 与工具调用 / 结果**并成一块**（spec §11），
+ * 默认收起、点标题行展开。
  *
- * `tool_call_chunk` 的 `name` 与 `args` 都是**流式片段**（`stream_project.py:141-160`），
- * 所以折叠状态下只露第一行，避免流式期间整块跳动。
+ * 之所以合并：会话流里用户想一眼看到的只有回复正文，模型在想什么属于过程细节 —— 让每个思考 /
+ * 工具片段各占一块会把正文挤散。收起时标题给出**整轮思考耗时**（拿不到时只留「思考过程」）；
+ * 展开后是思考正文 + 各次工具调用（每次只占一行工具名，各自再点开才看参数 / 结果）。
+ */
+@Composable
+private fun ThinkingBlock(parts: List<Part>, durationMs: Long?) {
+    var expanded by remember { mutableStateOf(false) }
+    val entries = remember(parts) { parts.toThinkingEntries() }
+    val title = if (durationMs == null) {
+        stringResource(R.string.chat_reasoning)
+    } else {
+        stringResource(R.string.chat_reasoning) + " · " + thinkingDurationLabel(durationMs)
+    }
+
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 2.dp)
+            .clip(RoundedCornerShape(8.dp))
+            .background(MaterialTheme.colorScheme.surface)
+            .clickable { expanded = !expanded }
+            .padding(horizontal = 8.dp, vertical = 6.dp),
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                text = title,
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f),
+            )
+            Icon(
+                imageVector = if (expanded) Icons.Filled.ExpandLess else Icons.Filled.ExpandMore,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.size(16.dp),
+            )
+        }
+
+        // 正文只在展开时渲染（不预先摆一份）：`reasoning` 与 `tool_call` 的 `args` 都是**流式片段**，
+        // 预渲染会让块高随每帧变化（spec §12）。
+        if (expanded) {
+            entries.forEach { entry ->
+                when (entry) {
+                    is ThinkingEntry.Reasoning -> {
+                        Spacer(Modifier.height(4.dp))
+                        Text(
+                            text = entry.text,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+
+                    is ThinkingEntry.Tool -> ToolEntry(
+                        name = entry.name,
+                        args = entry.args,
+                        output = entry.output,
+                        isError = entry.isError,
+                    )
+                }
+            }
+        }
+    }
+}
+
+/**
+ * 「思考过程」里的一次工具调用：默认只占一行（工具名），点开才看参数 / 结果 ——
+ * 折叠时不再把整段代码记录铺开（spec §11）。
+ */
+@Composable
+private fun ToolEntry(
+    name: String,
+    args: String?,
+    output: String?,
+    isError: Boolean,
+) {
+    var expanded by remember { mutableStateOf(false) }
+    val accent = if (isError) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant
+    val hasArgs = !args.isNullOrBlank()
+    val hasOutput = !output.isNullOrBlank()
+
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(top = 4.dp)
+            .clip(RoundedCornerShape(6.dp))
+            .clickable(enabled = hasArgs || hasOutput || isError) { expanded = !expanded }
+            .padding(horizontal = 6.dp, vertical = 4.dp),
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Icon(
+                imageVector = Icons.Filled.Build,
+                contentDescription = null,
+                tint = accent,
+                modifier = Modifier.size(14.dp),
+            )
+            Spacer(Modifier.width(6.dp))
+            Text(
+                text = name.ifBlank { stringResource(R.string.chat_tool_call) },
+                style = MaterialTheme.typography.labelMedium,
+                color = accent,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f),
+            )
+            if (hasArgs || hasOutput || isError) {
+                Icon(
+                    imageVector = if (expanded) Icons.Filled.ExpandLess else Icons.Filled.ExpandMore,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.size(16.dp),
+                )
+            }
+        }
+
+        if (isError) {
+            Text(
+                text = stringResource(R.string.chat_tool_failed),
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.error,
+            )
+        }
+
+        if (expanded) {
+            if (hasArgs) {
+                Text(
+                    text = stringResource(R.string.chat_tool_args),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Text(
+                    text = args,
+                    style = MaterialTheme.typography.bodySmall,
+                    fontFamily = FontFamily.Monospace,
+                    color = accent,
+                )
+            }
+            if (hasOutput) {
+                Text(
+                    text = stringResource(R.string.chat_tool_result),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Text(
+                    text = output,
+                    style = MaterialTheme.typography.bodySmall,
+                    fontFamily = FontFamily.Monospace,
+                    color = accent,
+                )
+            }
+        }
+    }
+}
+
+/**
+ * 消息级错误的折叠卡（`PartType.ERROR`）。
+ *
+ * 工具调用 / 结果已经并进 [ThinkingBlock]，不再走这里。错误仍单独成块 —— 它不是「过程细节」，
+ * 而是一条需要在会话流里被看见的结果，所以留在顶层：收起时一行、点开看详情。
  */
 @Composable
 private fun ToolCard(
@@ -1592,9 +2004,8 @@ private fun ToolCard(
     body: String?,
     bodyLabel: String,
     isError: Boolean,
-    initiallyExpanded: Boolean,
 ) {
-    var expanded by remember { mutableStateOf(initiallyExpanded) }
+    var expanded by remember { mutableStateOf(false) }
     val accent = if (isError) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant
     val hasBody = !body.isNullOrBlank()
 
@@ -1633,30 +2044,19 @@ private fun ToolCard(
             }
         }
 
-        if (hasBody) {
+        if (hasBody && expanded) {
             Spacer(Modifier.height(3.dp))
-            if (expanded) {
-                Text(
-                    text = bodyLabel,
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-                Text(
-                    text = body.orEmpty(),
-                    style = MaterialTheme.typography.bodySmall,
-                    fontFamily = FontFamily.Monospace,
-                    color = accent,
-                )
-            } else {
-                Text(
-                    text = body.orEmpty().lineSequence().firstOrNull { it.isNotBlank() }.orEmpty(),
-                    style = MaterialTheme.typography.labelSmall,
-                    fontFamily = FontFamily.Monospace,
-                    color = accent,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
-            }
+            Text(
+                text = bodyLabel,
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Text(
+                text = body.orEmpty(),
+                style = MaterialTheme.typography.bodySmall,
+                fontFamily = FontFamily.Monospace,
+                color = accent,
+            )
         }
 
         if (isError) {
@@ -1702,6 +2102,15 @@ private fun CompactDivider() {
     }
 }
 
+internal fun shouldShowWorkbenchBar(imeVisible: Boolean): Boolean = !imeVisible
+
+internal fun shouldApplyChatBottomBarNavigationPadding(imeVisible: Boolean): Boolean = !imeVisible
+
+internal fun shouldShowChatBackAction(
+    messages: List<MessageEntity>,
+    thread: ThreadEntity?,
+): Boolean = messages.isNotEmpty() || !thread?.title.isNullOrBlank()
+
 /**
  * 消息流里的一行。
  *
@@ -1711,8 +2120,13 @@ private fun CompactDivider() {
 private sealed interface ChatRow {
     val key: String
 
-    data class Message(val entity: MessageEntity) : ChatRow {
-        override val key: String get() = entity.id
+    /**
+     * 一个气泡。[entities] 是该气泡包含的本地消息行 —— 用户消息恒为单条；服务端把一轮回复拆成
+     * 多条下发（`assistant` 的思考 / 工具调用、`tool` 的工具结果、`assistant` 的正文各占一条），
+     * 这些连续的非用户行在界面上属于同一个气泡，合并后一轮只出一个「思考过程」折叠区（spec §11）。
+     */
+    data class Message(val entities: List<MessageEntity>) : ChatRow {
+        override val key: String get() = entities.first().id
     }
 
     /** 同一个毫秒不会被压缩两次，所以时间戳本身足够当稳定 key。 */
@@ -1729,21 +2143,39 @@ private sealed interface ChatRow {
  * 比所有消息都新的标记排在队尾：压缩本来就发生在回合之间，那时确实还没有下一条消息。
  *
  * [markers] 必须按时间正序（`CompactMarkerDao.observeByThread` 已经保证了）。
+ *
+ * 连续的非用户消息归并成同一个 [ChatRow.Message]：服务端把一轮回复拆成多条行下发，它们共用
+ * 一个气泡，合并后一轮只出一个「思考过程」折叠区，不会在会话流里出现连续的多段思考过程（spec §11）。
+ * 用户消息与压缩标记都会打断分组。
  */
 private fun buildChatRows(
     messages: List<MessageEntity>,
     markers: List<CompactMarkerEntity>,
 ): List<ChatRow> {
-    if (markers.isEmpty()) return messages.map { ChatRow.Message(it) }
-
     val rows = ArrayList<ChatRow>(messages.size + markers.size)
+    var group = ArrayList<MessageEntity>()
+
+    fun flush() {
+        if (group.isNotEmpty()) {
+            rows += ChatRow.Message(group)
+            group = ArrayList()
+        }
+    }
+
     var next = 0
     messages.forEach { message ->
         while (next < markers.size && markers[next].createdAt <= message.sortOrder) {
+            flush()
             rows += ChatRow.Compact(markers[next++].createdAt)
         }
-        rows += ChatRow.Message(message)
+        if (message.role == ROLE_USER) {
+            flush()
+            rows += ChatRow.Message(listOf(message))
+        } else {
+            group += message
+        }
     }
+    flush()
     while (next < markers.size) rows += ChatRow.Compact(markers[next++].createdAt)
     return rows
 }
@@ -1768,15 +2200,8 @@ private fun newCameraUri(context: Context): Uri {
 private fun hasPermission(context: Context, permission: String): Boolean =
     ContextCompat.checkSelfPermission(context, permission) == PackageManager.PERMISSION_GRANTED
 
-/**
- * 把识别结果接到开口前已有的文字后面（spec §14）。识别服务每次给的都是「这一句话的完整
- * 重写」，所以整体覆盖而不是追加；已有的文字按句读留一个空格，别粘在一起。
- */
-private fun withVoicePrefix(base: String, text: String): String =
-    if (base.isBlank()) text else "${base.trim()} $text"
-
-/** 短于这个长度的工具结果默认展开，长输出折叠成一行预览。 */
-private const val TOOL_PREVIEW_CHARS = 160
+/** 短于这个耗时不值得在「思考过程」标题上显示（spec §11）。 */
+private const val MIN_THINKING_DURATION_MS = 1_000L
 
 /** 正文超过这个字符数就默认折叠（spec §12「长内容保护」、§19 第 17 条）。 */
 private const val LONG_TEXT_CHARS = 20_000

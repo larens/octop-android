@@ -90,7 +90,13 @@
 | `client_pending_id` | str? | 客户端 UUID，用于关联本地占位消息 |
 | `expected_turn_id` | str? | busy 时必填（来自 `turn.started`） |
 | `hitl_policy` | `{mode: ask\|allow_all\|allow_tools, tools: []}`? | |
-| `skills` / `mcp_servers` / `knowledge_base_ids` / `target_agent_ids` | list? | |
+| `skills` / `mcp_servers` / `knowledge_base_ids` / `target_agent_ids` | list? | 见下 |
+
+补充说明（客户端相关）：
+
+- `target_agent_ids`：`@专家`（`docs/spec.md` §23.5）。**名字写在 `text` 里**（`@专家名`），客户端发送时按名字反查 `agent_id` 填这里；服务端只收这个字段，不看正文里的 `@`。上游没有「按回合切换角色 / 系统提示词」的机制，所以「换专家」在协议层 = 把另一个专家拉进本轮。
+- `mcp_servers` / `knowledge_base_ids`：**省略 = 跟随服务端默认**（该用户的 `default_open` 连接器 ∪ 这个 agent 预置的 `mcp_servers` / 默认知识库）；传 `[]` = 本轮显式关掉默认项；传非空列表 = **只用这几个**，默认项被顶掉（`infra/gateway/process/processor.py:1448-1461`）。本客户端**刻意不传**这两个字段，理由见 `docs/spec.md` §23.8。
+- `skills`：省略 = 该 agent 已启用的全部技能；`[]` = 本轮关掉全部技能。
 
 **`conversation_mode` 三种取值**（`chat/models.py:56-59` 原文注释）：
 
@@ -233,8 +239,8 @@ turn_active, hitl_pending, conversation_mode, pending_plan_path, hitl_policy
   "role": "user|assistant",
   "id": "<message_id>",
   "content": [ /* blocks */ ],
-  "created_at": 1792900437,
-  "attachments": [...]        // 仅 user，来自 inbound attachments
+  "timestamp": 1792900437123,   // epoch 毫秒，由 _apply_history_timestamp 加上
+  "attachments": [...]          // 仅 user，来自 inbound attachments
 }
 
 // 工具消息（role == "tool"）
@@ -246,13 +252,19 @@ turn_active, hitl_pending, conversation_mode, pending_plan_path, hitl_policy
 }
 ```
 
-**block 类型**（`serialize.py:858, 875, 884, 944`）：
+**注意时间戳字段名与量纲**：历史消息带的是 `timestamp`（**毫秒**，`serialize.py:611-619`），
+**没有 `created_at`**（那个字段只出现在会话列表的 thread 上，且是秒）。消息级时间戳在
+`_history_timestamp_ms`（`serialize.py:604-608`）里逐级退回：消息自身的 checkpoint ts →
+`fallback_created_at`（thread 的创建时刻）→ 都没有时**整个字段不出现**，此时客户端只能按
+服务端顺序排，拿不到真实时间差（spec §11 的「一轮耗时」就会不显示）。
+
+**block 类型**（`serialize.py:842-864, 858, 875, 884, 944`）：
 
 | `type` | 字段 |
 |--------|------|
 | `text` | `text` |
 | `thinking` | `thinking` |
-| `tool_use` | 由 `tool_calls` 生成（`serialize.py:966`） |
+| `tool_use` | `name`、`id`（调用 id）、`input`（入参，由 `args`/`input` 归一化而来） |
 | `tool_result` | `id`, `name`, `output`, `artifact`?, `error_code`? |
 | `image` / `image_url` / `file` | 附件相关，带 `workspace_path` 等 |
 
@@ -289,7 +301,7 @@ Authorization: Bearer <jwt>
 
 **列表视图会裁剪 payload**：`content` / `text` / `thinking` 被整个丢掉，`args` / `result` 截到 2000 字符，`summary` 截到 240 字符（`trajectory.py:37-43, 113-132`）。要完整载荷得走 `GET …/trajectory/events/{event_id}`。
 
-**客户端用法**：`ts * 1000` 得到毫秒，与消息 `sortOrder` 同一量纲（历史消息为 `created_at * 1000 + index`），因此可以直接按时间把分隔线插进消息流。失败一律静默 —— 老实例没有该路由时是 404，不该影响会话本身。
+**客户端用法**：`ts * 1000` 得到毫秒，与消息 `sortOrder` 同一量纲（历史消息为 `timestamp + index`，`timestamp` 本身就是毫秒，见 §5.3），因此可以直接按时间把分隔线插进消息流。失败一律静默 —— 老实例没有该路由时是 404，不该影响会话本身。
 
 ### 5.5 自动任务（服务端 cron）
 

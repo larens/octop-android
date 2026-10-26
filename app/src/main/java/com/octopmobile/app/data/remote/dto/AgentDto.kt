@@ -29,3 +29,13 @@ data class AgentDto(
     @SerialName("owner_username") val ownerUsername: String? = null,
     @SerialName("is_shared") val isShared: Boolean = false,
 )
+
+/** `GET /api/providers/resolved`：当前用户可选的聊天模型。 */
+@Serializable
+data class ResolvedModelDto(
+    @SerialName("provider_name") val providerName: String,
+    val model: String,
+    val name: String? = null,
+    val reasoning: Boolean = false,
+    @SerialName("context_window") val contextWindow: Long? = null,
+)

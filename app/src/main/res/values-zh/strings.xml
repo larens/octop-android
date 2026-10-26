@@ -97,6 +97,8 @@
     <string name="chat_no_messages">还没有消息。</string>
     <string name="chat_load_older">加载更早的消息</string>
     <string name="chat_reasoning">思考过程</string>
+    <string name="chat_duration_seconds">%1$d 秒</string>
+    <string name="chat_duration_minutes">%1$d 分 %2$d 秒</string>
     <string name="chat_compacted">上下文已压缩</string>
     <string name="chat_interrupted">输出中断</string>
     <string name="chat_refetch_turn">重新拉取该轮</string>
@@ -116,6 +118,10 @@
     <string name="threads_new">新建会话</string>
     <string name="threads_creating">正在创建…</string>
     <string name="chat_input_hint">派一个任务…</string>
+    <string name="chat_input_hint_new">发消息给 Octop…</string>
+    <string name="chat_new_title">新会话</string>
+    <string name="chat_model_loading">模型加载中…</string>
+    <string name="chat_model_auto">自动模型</string>
     <string name="chat_send">发送</string>
     <string name="chat_stop">中止</string>
     <string name="chat_more_actions">更多操作</string>
@@ -125,13 +131,10 @@
     <string name="chat_take_photo">拍照</string>
     <string name="chat_record_voice_note">录制语音笔记</string>
     <string name="chat_mention">@ 专家</string>
-    <string name="chat_mention_title">选择要 @ 的专家</string>
-    <string name="chat_mention_remove">移除 @ 专家</string>
-    <string name="chat_voice_input">语音输入</string>
-    <string name="chat_voice_listening">正在听…</string>
     <string name="chat_uploading">正在上传…</string>
     <string name="chat_attach_failed">无法读取该文件。</string>
     <string name="chat_queued">当前离线，恢复连接后自动发送。</string>
+    <string name="chat_tool_call">工具调用</string>
     <string name="chat_tool_args">参数</string>
     <string name="chat_tool_result">结果</string>
     <string name="chat_tool_failed">工具执行失败</string>
@@ -139,6 +142,8 @@
     <string name="chat_hitl_question_title">智能体在问你</string>
     <string name="chat_hitl_approve">同意</string>
     <string name="chat_hitl_reject">拒绝</string>
+    <string name="chat_history_title">历史会话</string>
+    <string name="chat_history_empty">还没有历史会话</string>
     <string name="chat_hitl_reply">提交回答</string>
     <string name="chat_hitl_reason_hint">拒绝原因 / 回答（必填）</string>
 
@@ -149,13 +154,10 @@
 
     <string name="shortcut_new_thread_short">新建任务</string>
     <string name="shortcut_new_thread_long">开始一个新任务</string>
-    <string name="shortcut_voice_short">语音输入</string>
-    <string name="shortcut_voice_long">用语音输入开始一个新任务</string>
     <string name="shortcut_camera_short">拍照</string>
     <string name="shortcut_camera_long">拍一张照片作为新任务的附件</string>
 
     <string name="err_camera_unavailable">没有可用的相机应用。</string>
-    <string name="err_voice_failed">语音输入失败。</string>
     <string name="err_voice_note_unavailable">没有可用的录音应用。</string>
 
     <string name="today_hero_title">今天值得推进什么？</string>
@@ -197,8 +199,43 @@
     <string name="memory_kind_project">项目</string>
     <string name="memory_kind_preference">偏好</string>
     <string name="memory_kind_commitment">承诺</string>
+    <string name="memory_kind_entity">实体</string>
+    <string name="memory_kind_profile">画像</string>
     <string name="memory_source">来自「%1$s」</string>
     <string name="memory_delete_message">删除「%1$s」？</string>
+    <string name="memory_profile_title">用户画像</string>
+    <string name="memory_profile_subtitle_fallback">服务端记忆总览</string>
+    <string name="memory_profile_updated">更新于 %1$s</string>
+    <string name="memory_profile_stat_focus">%1$d 条关注</string>
+    <string name="memory_profile_stat_emotions">%1$d 条情绪</string>
+    <string name="memory_profile_stat_archives">%1$d 条档案</string>
+    <string name="memory_focus_title">当前关注</string>
+    <string name="memory_truths_title">你告诉过我的</string>
+    <string name="memory_emotion_title">情绪日记</string>
+    <string name="memory_archive_title">记忆沉淀</string>
+    <string name="memory_manual_title">手工补充</string>
+    <string name="memory_loading_title">正在整理记忆</string>
+    <string name="memory_loading_body">先从服务端拉取画像、情绪和沉淀档案。</string>
+    <string name="memory_agent_missing_title">还没有可用的记忆空间</string>
+    <string name="memory_agent_missing_body">先连接并选中一个智能体，记忆页才能读取它的长期档案。</string>
+    <string name="memory_server_unavailable_title">暂时连不上服务端记忆</string>
+    <string name="memory_server_empty_title">服务端还没有沉淀出记忆</string>
+    <string name="memory_server_empty_body">继续对话、让会话跑一阵子后，画像、情绪日记和记忆沉淀会逐步出现。</string>
+    <string name="memory_emotion_empty_title">还没有情绪日记</string>
+    <string name="memory_emotion_empty_body">服务端还没提炼出 episode，等有更多连续对话后会在这里出现。</string>
+    <string name="memory_archive_empty_title">还没有核心档案</string>
+    <string name="memory_archive_empty_body">事实、偏好、项目线索等结构化沉淀会在这里汇总。</string>
+    <string name="memory_emotion_intensity">强度 %1$d/5</string>
+    <string name="memory_emotion_neutral">平稳</string>
+    <string name="memory_emotion_anxious">焦虑</string>
+    <string name="memory_emotion_happy">愉快</string>
+    <string name="memory_emotion_sad">低落</string>
+    <string name="memory_emotion_angry">烦躁</string>
+    <string name="memory_emotion_calm">平静</string>
+    <string name="memory_emotion_excited">兴奋</string>
+    <string name="memory_emotion_stressed">压力</string>
+    <string name="memory_emotion_tired">疲惫</string>
+    <string name="memory_emotion_grateful">感激</string>
 
     <!-- Automations (server cron, docs/spec.md §23.3, protocol §5.5) -->
     <string name="tasks_new">新建自动任务</string>

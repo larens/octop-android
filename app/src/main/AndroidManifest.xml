@@ -31,12 +31,12 @@
         android:required="false" />
 
     <!--
-      Android 11 起默认看不见别的应用（包可见性过滤），`SpeechRecognizer` 要拿到系统里的
-      识别服务就得显式声明这条 queries，否则语音输入会直接判为「设备不支持」。
+      Android 11 起默认看不见别的应用（包可见性过滤）：`+` 菜单里的「录制语音笔记」要先用
+      `resolveActivity` 找到系统录音机，不声明这条 queries 就会被判成「没有可用的录音应用」。
     -->
     <queries>
         <intent>
-            <action android:name="android.speech.RecognitionService" />
+            <action android:name="android.provider.MediaStore.RECORD_SOUND" />
         </intent>
     </queries>
 

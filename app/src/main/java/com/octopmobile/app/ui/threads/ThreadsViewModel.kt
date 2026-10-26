@@ -111,18 +111,6 @@ class ThreadsViewModel(private val container: AppContainer) : ViewModel() {
         }
     }
 
-    fun selectAgent(agent: AgentDto) {
-        val baseUrl = host.value ?: return
-        if (agent.agentId == uiState.selectedAgentId) return
-
-        uiState = uiState.copy(selectedAgentId = agent.agentId, error = null, threadsLoaded = false)
-        agentId.value = agent.agentId
-        viewModelScope.launch {
-            container.prefs.setSelectedAgent(agent.agentId, agent.name)
-            refresh(baseUrl, agent.agentId)
-        }
-    }
-
     /**
      * 下拉刷新（spec §11）：走的是增量同步，不是重载页面。
      *

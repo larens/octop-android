@@ -2,8 +2,19 @@ package com.octopmobile.app.data.repo
 
 import com.octopmobile.app.data.db.MemoryItemDao
 import com.octopmobile.app.data.db.MemoryItemEntity
+import com.octopmobile.app.data.remote.ApiResult
+import com.octopmobile.app.data.remote.OctopApi
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.supervisorScope
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonNull
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
 import java.util.UUID
+import java.time.Instant
 
 /**
  * 结构化记忆（docs/spec.md §23.3）。
@@ -75,3 +86,424 @@ class MemoryRepository(private val dao: MemoryItemDao) {
         dao.clear()
     }
 }
+
+/**
+ * 服务端记忆聚合。
+ *
+ * 上游已经把「关于我 / 当前关注 / 你告诉过我的 / 情绪 episode / 原子记忆」拆成多条接口；
+ * 手机端不把它们逐个照搬成后台视图，而是聚合成适合 Today 风格卡片页的三块：
+ *
+ * 1. 用户画像
+ * 2. 情绪日记
+ * 3. 记忆沉淀
+ *
+ * 所有解析都走**宽松兜底**：`octop-memory` 返回的是 JSON-RPC 透传结构，不同版本字段可能
+ * 微调，所以这里尽量按语义提取文本，而不是强绑一套脆弱 DTO。
+ */
+class ServerMemoryRepository(private val api: OctopApi) {
+
+    suspend fun snapshot(agentId: String): ApiResult<ServerMemorySnapshot> {
+        val about = api.memoryTerminalAboutMe(agentId)
+        if (about is ApiResult.Failure) return about
+        val aboutValue = (about as ApiResult.Ok).value
+
+        return supervisorScope {
+            val focusDeferred = async { api.memoryTerminalCurrentFocus(agentId).valueOrNull() }
+            val toldDeferred = async { api.memoryTerminalThingsYouToldMe(agentId).valueOrNull() }
+            val entityDeferred = async { api.memoryTerminalEntities(agentId).valueOrNull() }
+            val episodeDeferred = async { api.memoryEpisodes(agentId).valueOrNull() }
+            val atomDeferred = async { api.memoryAtoms(agentId).valueOrNull() }
+
+            val extras = awaitAll(
+                focusDeferred,
+                toldDeferred,
+                entityDeferred,
+                episodeDeferred,
+                atomDeferred,
+            )
+
+            val focus = extras[0]
+            val told = extras[1]
+            val entities = extras[2]
+            val episodes = extras[3]
+            val atoms = extras[4]
+            val portrait = buildPortrait(aboutValue, focus, told)
+            val archives = buildArchives(entities, atoms, portrait)
+
+            ApiResult.Ok(
+                ServerMemorySnapshot(
+                    portrait = portrait,
+                    episodes = parseEpisodes(episodes),
+                    archives = archives,
+                ),
+            )
+        }
+    }
+
+    private fun buildPortrait(
+        about: JsonElement,
+        focus: JsonElement?,
+        told: JsonElement?,
+    ): MemoryPortrait {
+        val aboutTexts = extractTexts(about).filter(::looksLikeProfileText)
+        val toldTexts = extractTexts(told).filter(::looksLikeProfileText)
+        val summary = aboutTexts
+            .ifEmpty { toldTexts }
+            .take(PORTRAIT_SUMMARY_MAX)
+            .joinToString(separator = "\n\n")
+            .let(::cleanProfileDisplayText)
+            .trim()
+        val focusItems = extractTexts(focus)
+            .ifEmpty { deriveHighlights(aboutTexts + toldTexts, onlyFocus = true) }
+            .take(PORTRAIT_LIST_MAX)
+        val truthItems = toldTexts
+            .ifEmpty { deriveHighlights(aboutTexts, onlyFocus = false) }
+            .take(PORTRAIT_LIST_MAX)
+
+        return MemoryPortrait(
+            summary = summary,
+            focus = focusItems,
+            truths = truthItems,
+        )
+    }
+
+    private fun parseEpisodes(payload: JsonElement?): List<MemoryEpisode> {
+        return itemObjects(payload)
+            .mapNotNull { item ->
+                val summary = firstText(item, "summary", "story", "content", "text", "description")
+                    ?: return@mapNotNull null
+                MemoryEpisode(
+                    emotion = firstText(item, "emotion", "mood", "primary_emotion"),
+                    summary = summary,
+                    intensity = firstInt(item, "intensity", "intensity_score", "score", "level"),
+                    occurredAt = firstTimestamp(item, "occurred_at", "created_at", "updated_at", "timestamp"),
+                )
+            }
+            .distinctBy { listOf(it.emotion.orEmpty(), it.summary, it.occurredAt).joinToString("|") }
+            .take(EPISODE_MAX)
+    }
+
+    private fun buildArchives(
+        entities: JsonElement?,
+        atoms: JsonElement?,
+        portrait: MemoryPortrait,
+    ): List<MemoryArchiveItem> {
+        val entityItems = itemObjects(entities).mapNotNull { item ->
+            val title = firstText(
+                item,
+                "title",
+                "name",
+                "label",
+                "summary",
+                "text",
+                "description",
+            ) ?: return@mapNotNull null
+            MemoryArchiveItem(
+                kind = firstText(item, "entity_type", "kind", "type") ?: "entity",
+                title = title,
+                detail = secondaryText(item, primary = title),
+                updatedAt = firstTimestamp(item, "updated_at", "created_at", "timestamp"),
+            )
+        }
+
+        val atomItems = itemObjects(atoms).mapNotNull { item ->
+            val title = firstText(
+                item,
+                "title",
+                "summary",
+                "text",
+                "content",
+                "value",
+                "fact",
+                "claim",
+                "name",
+                "description",
+            )
+                ?: return@mapNotNull null
+            MemoryArchiveItem(
+                kind = firstText(item, "candidate_type", "kind", "type"),
+                title = title,
+                detail = secondaryText(item, primary = title),
+                updatedAt = firstTimestamp(item, "occurred_at", "created_at", "updated_at", "timestamp"),
+            )
+        }
+
+        val fallbackItems = (portrait.truths + portrait.focus)
+            .distinct()
+            .map {
+                MemoryArchiveItem(
+                    kind = classifyProfileKind(it),
+                    title = it,
+                    detail = null,
+                    updatedAt = null,
+                )
+            }
+
+        val textFallback = extractTexts(entities)
+            .map { MemoryArchiveItem(kind = "entity", title = it, detail = null, updatedAt = null) }
+
+        return (atomItems + entityItems + textFallback + fallbackItems)
+            .distinctBy { listOf(it.kind.orEmpty(), it.title, it.detail.orEmpty()).joinToString("|") }
+            .take(ARCHIVE_MAX)
+    }
+
+    private fun secondaryText(item: JsonObject, primary: String): String? {
+        return candidateTexts(item)
+            .firstOrNull { it != primary }
+    }
+
+    private fun itemObjects(payload: JsonElement?): List<JsonObject> = when (payload) {
+        null, JsonNull -> emptyList()
+        is JsonArray -> payload.flatMap { element ->
+            when (element) {
+                is JsonObject -> listOf(element) + nestedObjectArrays(element, 1)
+                is JsonArray -> itemObjects(element)
+                else -> emptyList()
+            }
+        }
+        is JsonObject -> {
+            val arrays = listOf(
+                payload["items"],
+                payload["results"],
+                payload["entries"],
+                payload["episodes"],
+                payload["atoms"],
+                payload["entities"],
+                payload["data"],
+                payload["sections"],
+                payload["blocks"],
+                payload["pages"],
+            )
+            arrays.firstNotNullOfOrNull { (it as? JsonArray)?.takeIf { array -> array.isNotEmpty() } }
+                ?.mapNotNull { it as? JsonObject }
+                ?: (listOf(payload) + nestedObjectArrays(payload, 1))
+        }
+
+        else -> emptyList()
+    }
+
+    private fun extractTexts(payload: JsonElement?): List<String> = when (payload) {
+        null, JsonNull -> emptyList()
+        is JsonPrimitive -> payload.contentOrNull()
+            ?.takeIf(::looksLikeReadableText)
+            ?.let { splitReadableText(it) }
+            ?: emptyList()
+        is JsonArray -> payload.flatMap(::extractTexts)
+        is JsonObject -> {
+            val keyedTexts = listOf(
+                payload["items"],
+                payload["results"],
+                payload["entries"],
+                payload["lines"],
+                payload["stories"],
+                payload["bullets"],
+                payload["episodes"],
+                payload["data"],
+                payload["sections"],
+                payload["blocks"],
+                payload["pages"],
+                payload["content"],
+                payload["body"],
+                payload["page"],
+            ).flatMap(::extractTexts)
+            val directTexts = candidateTexts(payload).flatMap(::splitReadableText)
+            val recursiveTexts = payload.values
+                .take(RECURSIVE_VALUE_LIMIT)
+                .flatMap(::extractTexts)
+            (directTexts + keyedTexts + recursiveTexts)
+                .map(String::trim)
+                .filter(String::isNotBlank)
+                .distinct()
+        }
+    }
+
+    private fun candidateTexts(item: JsonObject): List<String> = listOf(
+        item["title"],
+        item["summary"],
+        item["text"],
+        item["content"],
+        item["body"],
+        item["description"],
+        item["value"],
+        item["story"],
+        item["focus"],
+        item["fact"],
+        item["claim"],
+        item["label"],
+        item["name"],
+        item["subtitle"],
+        item["headline"],
+        item["message"],
+        item["note"],
+        item["markdown"],
+    ).mapNotNull { (it as? JsonPrimitive)?.contentOrNull()?.trim()?.takeIf(::looksLikeReadableText) }
+
+    private fun firstText(item: JsonObject, vararg keys: String): String? =
+        keys.firstNotNullOfOrNull { key ->
+            (item[key] as? JsonPrimitive)?.contentOrNull()?.trim()?.takeIf(String::isNotBlank)
+        }
+
+    private fun firstInt(item: JsonObject, vararg keys: String): Int? =
+        keys.firstNotNullOfOrNull { key ->
+            (item[key] as? JsonPrimitive)?.contentOrNull()?.toIntOrNull()
+        }
+
+    private fun firstTimestamp(item: JsonObject, vararg keys: String): Long? =
+        keys.firstNotNullOfOrNull { key ->
+            val raw = (item[key] as? JsonPrimitive)?.contentOrNull()?.trim()?.takeIf(String::isNotBlank)
+                ?: return@firstNotNullOfOrNull null
+            parseTimestamp(raw)
+        }
+
+    private fun parseTimestamp(raw: String): Long? {
+        raw.toLongOrNull()?.let { number ->
+            return if (number >= 1_000_000_000_000L) number else number * 1000
+        }
+        return runCatching { Instant.parse(raw).toEpochMilli() }.getOrNull()
+    }
+
+    private fun deriveHighlights(texts: List<String>, onlyFocus: Boolean): List<String> {
+        val sentences = texts.flatMap(::splitReadableText)
+            .map(String::trim)
+            .filter(String::isNotBlank)
+            .distinct()
+        return if (onlyFocus) {
+            sentences.filter(::looksLikeFocusSentence).ifEmpty { sentences }.take(PORTRAIT_LIST_MAX)
+        } else {
+            sentences.take(PORTRAIT_LIST_MAX)
+        }
+    }
+
+    private fun splitReadableText(text: String): List<String> {
+        return sanitizeTextCandidate(text)
+            .replace("&#10;", "\n")
+            .replace("&amp;#10;", "\n")
+            .replace("\\n", "\n")
+            .replace("&quot;", "\"")
+            .replace("&#39;", "'")
+            .replace("\r", "\n")
+            .split('\n', '。', '；', ';')
+            .map { it.trim().trimStart('-', '•', '*', '.', '、') }
+            .filter(::looksLikeReadableText)
+    }
+
+    private fun sanitizeTextCandidate(text: String): String {
+        return text
+            .replace(Regex("(?im)^\\s*(user|assistant|system|tool)\\s*$"), "")
+            .replace(Regex("(?im)^\\s*(high|medium|low)\\s*$"), "")
+            .replace(Regex("(?im)^\\s*decision\\s*$"), "")
+            .replace(Regex("(?im)^\\s*\\d{4}-\\d{2}-\\d{2}([t ][0-9:.+-z]+)?\\s*$"), "")
+    }
+
+    private fun cleanProfileDisplayText(text: String): String {
+        return sanitizeTextCandidate(text)
+            .replace("&#10;", "\n")
+            .replace("&amp;#10;", "\n")
+            .replace("\\n", "\n")
+            .split('\n')
+            .map(String::trim)
+            .filter(::looksLikeReadableText)
+            .filter(::looksLikeProfileText)
+            .distinct()
+            .take(PORTRAIT_SUMMARY_MAX)
+            .joinToString("\n\n")
+    }
+
+    private fun nestedObjectArrays(item: JsonObject, depth: Int): List<JsonObject> {
+        if (depth > MAX_RECURSION_DEPTH) return emptyList()
+        return item.values.flatMap { value ->
+            when (value) {
+                is JsonObject -> listOf(value) + nestedObjectArrays(value, depth + 1)
+                is JsonArray -> value.flatMap { child ->
+                    when (child) {
+                        is JsonObject -> listOf(child) + nestedObjectArrays(child, depth + 1)
+                        is JsonArray -> itemObjects(child)
+                        else -> emptyList()
+                    }
+                }
+
+                else -> emptyList()
+            }
+        }
+    }
+
+    private fun looksLikeReadableText(text: String): Boolean {
+        val value = text.trim()
+        if (value.length < 2) return false
+        if (value.startsWith("http://") || value.startsWith("https://")) return false
+        if (value.matches(Regex("^[A-Za-z0-9_-]{16,}$"))) return false
+        if (value.matches(Regex("^\\d{4}-\\d{2}-\\d{2}([T ][0-9:.+-Z]+)?$"))) return false
+        if (value.matches(Regex("^[0-9:.+-]+$"))) return false
+        if (value.lowercase() in setOf("user", "assistant", "system", "tool", "high", "medium", "low", "decision")) return false
+        return value.any { it.isLetter() || it.code > 127 }
+    }
+
+    private fun looksLikeProfileText(text: String): Boolean {
+        val value = text.trim()
+        return listOf(
+            "Agent",
+            "运行时",
+            "OCR",
+            "音视频",
+            "转写链路",
+            "会话日志",
+            "多模态",
+            "runtime",
+            "audio event",
+        ).none { marker -> value.contains(marker, ignoreCase = true) }
+    }
+
+    private fun looksLikeFocusSentence(text: String): Boolean =
+        listOf("关注", "正在", "计划", "想要", "准备", "最近", "现在", "项目", "任务", "宝宝", "孩子")
+            .any { marker -> text.contains(marker) }
+
+    private fun classifyProfileKind(text: String): String = when {
+        listOf("喜欢", "偏好", "习惯", "倾向", "常用", "主要用").any(text::contains) -> "preference"
+        listOf("项目", "开发", "任务", "工作", "构建", "客户端", "安卓", "Octop").any(text::contains) -> "project"
+        listOf("孩子", "宝宝", "家人", "老师", "身份", "名字", "称呼").any(text::contains) -> "person"
+        else -> "profile"
+    }
+
+    private fun JsonPrimitive.contentOrNull(): String? =
+        if (this == JsonNull) null else content
+
+    private fun ApiResult<JsonElement>.valueOrNull(): JsonElement? = when (this) {
+        is ApiResult.Ok -> value
+        is ApiResult.Failure -> null
+    }
+
+    private companion object {
+        const val PORTRAIT_SUMMARY_MAX = 4
+        const val PORTRAIT_LIST_MAX = 4
+        const val EPISODE_MAX = 6
+        const val ARCHIVE_MAX = 8
+        const val RECURSIVE_VALUE_LIMIT = 24
+        const val MAX_RECURSION_DEPTH = 4
+    }
+}
+
+data class ServerMemorySnapshot(
+    val portrait: MemoryPortrait,
+    val episodes: List<MemoryEpisode>,
+    val archives: List<MemoryArchiveItem>,
+)
+
+data class MemoryPortrait(
+    val summary: String,
+    val focus: List<String>,
+    val truths: List<String>,
+)
+
+data class MemoryEpisode(
+    val emotion: String?,
+    val summary: String,
+    val intensity: Int?,
+    val occurredAt: Long?,
+)
+
+data class MemoryArchiveItem(
+    val kind: String?,
+    val title: String,
+    val detail: String?,
+    val updatedAt: Long?,
+)

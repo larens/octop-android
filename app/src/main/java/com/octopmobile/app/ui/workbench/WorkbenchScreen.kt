@@ -4,6 +4,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.consumeWindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Chat
 import androidx.compose.material.icons.filled.Psychology
@@ -15,6 +16,7 @@ import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -47,22 +49,18 @@ fun WorkbenchScreen(
     onOpenSettings: () -> Unit,
     onOpenWeb: () -> Unit,
     onNeedsLogin: () -> Unit,
+    initialTab: WorkbenchTab = WorkbenchTab.CHATS,
 ) {
     // 记住选中的那一栏：从会话页返回时应该回到离开前的那一栏，而不是弹回会话列表
-    var tab by rememberSaveable { mutableStateOf(WorkbenchTab.CHATS) }
+    var tab by rememberSaveable { mutableStateOf(initialTab) }
+
+    LaunchedEffect(initialTab) {
+        tab = initialTab
+    }
 
     Scaffold(
         bottomBar = {
-            NavigationBar {
-                WorkbenchTab.entries.forEach { item ->
-                    NavigationBarItem(
-                        selected = item == tab,
-                        onClick = { tab = item },
-                        icon = { Icon(imageVector = item.icon, contentDescription = null) },
-                        label = { Text(stringResource(item.labelRes)) },
-                    )
-                }
-            }
+            WorkbenchBottomBar(current = tab, onSelect = { tab = it })
         },
     ) { padding ->
         Box(
@@ -77,6 +75,7 @@ fun WorkbenchScreen(
                     onOpenSettings = onOpenSettings,
                     onOpenWeb = onOpenWeb,
                     onNeedsLogin = onNeedsLogin,
+                    autoOpenNewConversation = true,
                 )
 
                 WorkbenchTab.TODAY -> TodayPane(
@@ -87,10 +86,41 @@ fun WorkbenchScreen(
 
                 WorkbenchTab.TASKS -> TasksPane(onNeedsLogin = onNeedsLogin)
 
-                WorkbenchTab.MEMORY -> MemoryPane()
+                WorkbenchTab.MEMORY -> MemoryPane(onNeedsLogin = onNeedsLogin)
             }
         }
     }
+}
+
+@Composable
+fun WorkbenchBottomBar(
+    current: WorkbenchTab,
+    onSelect: (WorkbenchTab) -> Unit,
+) {
+    NavigationBar(modifier = Modifier.navigationBarsPadding()) {
+        WorkbenchTab.entries.forEach { item ->
+            NavigationBarItem(
+                selected = item == current,
+                onClick = { onSelect(item) },
+                icon = { Icon(imageVector = item.icon, contentDescription = null) },
+                label = { Text(stringResource(item.labelRes)) },
+            )
+        }
+    }
+}
+
+fun WorkbenchTab.routeValue(): String = when (this) {
+    WorkbenchTab.CHATS -> "chats"
+    WorkbenchTab.TODAY -> "today"
+    WorkbenchTab.TASKS -> "tasks"
+    WorkbenchTab.MEMORY -> "memory"
+}
+
+fun workbenchTabOf(raw: String?): WorkbenchTab = when (raw) {
+    "today" -> WorkbenchTab.TODAY
+    "tasks" -> WorkbenchTab.TASKS
+    "memory" -> WorkbenchTab.MEMORY
+    else -> WorkbenchTab.CHATS
 }
 
 private val WorkbenchTab.labelRes: Int

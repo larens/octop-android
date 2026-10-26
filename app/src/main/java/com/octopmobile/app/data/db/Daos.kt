@@ -57,6 +57,9 @@ interface ThreadDao {
     @Query("UPDATE threads SET title = :title WHERE threadId = :threadId")
     suspend fun setTitle(threadId: String, title: String?)
 
+    @Query("UPDATE threads SET modelRef = :modelRef WHERE threadId = :threadId")
+    suspend fun setModelRef(threadId: String, modelRef: String?)
+
     @Query("UPDATE threads SET unreadCount = 0 WHERE threadId = :threadId")
     suspend fun markRead(threadId: String)
 

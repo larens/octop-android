@@ -97,6 +97,8 @@
     <string name="chat_no_messages">No messages yet.</string>
     <string name="chat_load_older">Load earlier messages</string>
     <string name="chat_reasoning">Thinking</string>
+    <string name="chat_duration_seconds">%1$ds</string>
+    <string name="chat_duration_minutes">%1$dm %2$ds</string>
     <string name="chat_compacted">Context compacted</string>
     <string name="chat_interrupted">Output interrupted</string>
     <string name="chat_refetch_turn">Reload this turn</string>
@@ -116,6 +118,10 @@
     <string name="threads_new">New conversation</string>
     <string name="threads_creating">Creating…</string>
     <string name="chat_input_hint">Assign a task…</string>
+    <string name="chat_input_hint_new">Message Octop…</string>
+    <string name="chat_new_title">New conversation</string>
+    <string name="chat_model_loading">Loading models…</string>
+    <string name="chat_model_auto">Auto model</string>
     <string name="chat_send">Send</string>
     <string name="chat_stop">Stop</string>
     <string name="chat_more_actions">More actions</string>
@@ -125,13 +131,10 @@
     <string name="chat_take_photo">Take a photo</string>
     <string name="chat_record_voice_note">Record voice note</string>
     <string name="chat_mention">@ Expert</string>
-    <string name="chat_mention_title">Mention an expert</string>
-    <string name="chat_mention_remove">Remove mention</string>
-    <string name="chat_voice_input">Voice input</string>
-    <string name="chat_voice_listening">Listening…</string>
     <string name="chat_uploading">Uploading…</string>
     <string name="chat_attach_failed">Could not read that file.</string>
     <string name="chat_queued">Offline. Will send when reconnected.</string>
+    <string name="chat_tool_call">Tool call</string>
     <string name="chat_tool_args">Arguments</string>
     <string name="chat_tool_result">Result</string>
     <string name="chat_tool_failed">Tool failed</string>
@@ -139,6 +142,8 @@
     <string name="chat_hitl_question_title">The agent is asking</string>
     <string name="chat_hitl_approve">Approve</string>
     <string name="chat_hitl_reject">Reject</string>
+    <string name="chat_history_title">History</string>
+    <string name="chat_history_empty">No conversation history yet</string>
     <string name="chat_hitl_reply">Send answer</string>
     <string name="chat_hitl_reason_hint">Reason / answer (required)</string>
 
@@ -149,13 +154,10 @@
 
     <string name="shortcut_new_thread_short">New task</string>
     <string name="shortcut_new_thread_long">Start a new task</string>
-    <string name="shortcut_voice_short">Voice input</string>
-    <string name="shortcut_voice_long">Start a new task with voice input</string>
     <string name="shortcut_camera_short">Take a photo</string>
     <string name="shortcut_camera_long">Take a photo and attach it to a new task</string>
 
     <string name="err_camera_unavailable">No camera app is available.</string>
-    <string name="err_voice_failed">Voice input failed.</string>
     <string name="err_voice_note_unavailable">No recorder app is available.</string>
 
     <string name="today_hero_title">What is worth moving forward today?</string>
@@ -197,8 +199,43 @@
     <string name="memory_kind_project">Project</string>
     <string name="memory_kind_preference">Preference</string>
     <string name="memory_kind_commitment">Commitment</string>
+    <string name="memory_kind_entity">Entity</string>
+    <string name="memory_kind_profile">Profile</string>
     <string name="memory_source">From “%1$s”</string>
     <string name="memory_delete_message">Delete “%1$s”?</string>
+    <string name="memory_profile_title">Profile</string>
+    <string name="memory_profile_subtitle_fallback">Server memory overview</string>
+    <string name="memory_profile_updated">Updated %1$s</string>
+    <string name="memory_profile_stat_focus">%1$d focus items</string>
+    <string name="memory_profile_stat_emotions">%1$d emotions</string>
+    <string name="memory_profile_stat_archives">%1$d archive items</string>
+    <string name="memory_focus_title">Current focus</string>
+    <string name="memory_truths_title">What you told me</string>
+    <string name="memory_emotion_title">Emotion diary</string>
+    <string name="memory_archive_title">Memory archive</string>
+    <string name="memory_manual_title">Manual notes</string>
+    <string name="memory_loading_title">Loading memory</string>
+    <string name="memory_loading_body">Fetching portrait, emotions, and archive data from the server.</string>
+    <string name="memory_agent_missing_title">No memory space yet</string>
+    <string name="memory_agent_missing_body">Connect and select an agent first so the Memory tab can read its long-term archive.</string>
+    <string name="memory_server_unavailable_title">Server memory is unavailable</string>
+    <string name="memory_server_empty_title">No server memory yet</string>
+    <string name="memory_server_empty_body">Keep chatting and let a few turns finish. Portrait, emotion diary, and archive data will show up here.</string>
+    <string name="memory_emotion_empty_title">No emotion diary yet</string>
+    <string name="memory_emotion_empty_body">The server has not distilled any episodes yet. They will appear here after more conversation history accumulates.</string>
+    <string name="memory_archive_empty_title">No archive entries yet</string>
+    <string name="memory_archive_empty_body">Structured facts, preferences, and project clues will gather here.</string>
+    <string name="memory_emotion_intensity">Intensity %1$d/5</string>
+    <string name="memory_emotion_neutral">Neutral</string>
+    <string name="memory_emotion_anxious">Anxious</string>
+    <string name="memory_emotion_happy">Happy</string>
+    <string name="memory_emotion_sad">Sad</string>
+    <string name="memory_emotion_angry">Angry</string>
+    <string name="memory_emotion_calm">Calm</string>
+    <string name="memory_emotion_excited">Excited</string>
+    <string name="memory_emotion_stressed">Stressed</string>
+    <string name="memory_emotion_tired">Tired</string>
+    <string name="memory_emotion_grateful">Grateful</string>
 
     <!-- Automations (server cron, docs/spec.md §23.3, protocol §5.5) -->
     <string name="tasks_new">New automation</string>

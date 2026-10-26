@@ -60,6 +60,11 @@ sealed interface ClientFrame {
      * （`api/routers/chat/models.py:64-67`），服务端把它原样透传给本轮（`chat/turn.py:289`）。
      * 上游**没有**按回合切换角色 / 系统提示词的机制（`system_prompt` 是 agent 级配置），
      * 所以「切换专家」在协议层就等于「把另一个专家拉进这一轮」。
+     *
+     * 上游还接受 `mcp_servers` / `skills` / `knowledge_base_ids` 三个**按回合挑选**的列表，
+     * 本帧**刻意不带**：省略 = 跟随服务端默认（该用户的 `default_open` 连接器 ∪ 这个 agent
+     * 预置的连接器、agent 已启用的全部技能），传了非空列表反而会把默认项顶掉
+     * （`infra/gateway/process/processor.py:1448-1461`）。理由见 spec §23.8。
      */
     @Serializable
     @SerialName("user_turn")

@@ -2,6 +2,7 @@ package com.octopmobile.app.data.remote.dto
 
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 
 /**
@@ -16,7 +17,12 @@ data class MessageDto(
     val role: String,
     val id: String? = null,
     val content: List<ContentBlockDto> = emptyList(),
-    /** epoch 秒。 */
+    /**
+     * **服务端实际下发的时间戳，epoch 毫秒**（上游 `serialize.py:611-619` 的
+     * `entry["timestamp"] = ts_ms`）。这是排序与「一轮耗时」的唯一可靠来源。
+     */
+    @SerialName("timestamp") val timestampMs: Long? = null,
+    /** epoch 秒。仅兜底：上游的历史消息里不带这个字段，正常都走 [timestampMs]。 */
     @SerialName("created_at") val createdAt: Long? = null,
     val attachments: List<JsonObject> = emptyList(),
     /** 仅 `role == "tool"` 时出现（多 agent 场景）。 */
@@ -43,6 +49,8 @@ data class ContentBlockDto(
     /** `tool_use` 的调用 id；`tool_result` 与之对应。 */
     val id: String? = null,
     val name: String? = null,
+    /** `tool_use` 的入参（上游 `serialize.py:842-864` 把 `args`/`input` 统一放在 `input`）。 */
+    val input: JsonElement? = null,
     val output: String? = null,
     val artifact: JsonObject? = null,
     @SerialName("error_code") val errorCode: String? = null,

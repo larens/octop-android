@@ -5,6 +5,7 @@ import com.octopmobile.app.data.db.ThreadEntity
 import com.octopmobile.app.data.remote.ApiResult
 import com.octopmobile.app.data.remote.OctopApi
 import com.octopmobile.app.data.remote.dto.ConversationMode
+import com.octopmobile.app.data.remote.dto.ResolvedModelDto
 import com.octopmobile.app.data.remote.dto.RenameThreadBody
 import com.octopmobile.app.data.remote.dto.ThreadDto
 import kotlinx.coroutines.flow.Flow
@@ -102,6 +103,20 @@ class ThreadRepository(
             is ApiResult.Failure -> result
         }
     }
+
+    /** 改当前会话模型（`PATCH model_ref`）。 */
+    suspend fun setModel(threadId: String, modelRef: String?): ApiResult<Unit> =
+        when (val result = api.patchThread(agentId, threadId, RenameThreadBody(modelRef = modelRef))) {
+            is ApiResult.Ok -> {
+                threadDao.setModelRef(threadId, modelRef)
+                result
+            }
+
+            is ApiResult.Failure -> result
+        }
+
+    /** 拉当前账号可见的模型列表，供移动端输入区选择。 */
+    suspend fun resolvedModels(): ApiResult<List<ResolvedModelDto>> = api.resolvedModels()
 
     /** 删除会话（`DELETE`，204）。服务端删成功后本地一并删掉 —— 列表里就不该再有它。 */
     suspend fun delete(threadId: String): ApiResult<Unit> =

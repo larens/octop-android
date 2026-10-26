@@ -51,6 +51,7 @@ import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
 import java.io.IOException
 import java.util.UUID
@@ -898,24 +899,31 @@ class ChatRepository(
 /**
  * 历史消息 → 本地行。
  *
- * `sortOrder = createdAt * 1000 + index`：与本地实时行（`System.currentTimeMillis()`）同一量纲，
- * 因此两批消息混在一起也能正确排序。同一秒内的多条消息靠 `index` 拉开。
+ * `sortOrder = timestamp + index`：与本地实时行（`System.currentTimeMillis()`）同一量纲，
+ * 因此两批消息混在一起也能正确排序。同一毫秒内的多条消息靠 `index` 拉开。
+ *
+ * 服务端给的是**毫秒**（`timestamp`），不是秒，所以这里不要再乘 1000。只有老实例/异常路径
+ * 拿不到 `timestamp` 时才退回 `created_at`（秒）——那时 `sortOrder` 会退化成 `0 + index`，
+ * 排序仍按服务端顺序，但「一轮耗时」这类需要真实时间差的展示拿不到值。
  */
 private fun MessageDto.toEntity(agentId: String, index: Int, threadId: String, json: Json): MessageEntity {
-    val seconds = createdAt ?: 0L
+    val at = timestampMs ?: (createdAt?.times(1000) ?: 0L)
     return MessageEntity(
         // 极少数消息没有 id（不该发生）：用一个不撞 `local-` 前缀的兜底 id，
         // 免得刚写进去就被 loadHistory 的占位清理顺手删掉。
-        id = id ?: "hist-fallback-$seconds-$index",
+        id = id ?: "hist-fallback-$at-$index",
         threadId = threadId,
         turnId = null,
         role = role,
-        sortOrder = seconds * 1000 + index,
+        sortOrder = at + index,
         partsJson = PartsCodec.encode(json, content.mapNotNull { it.toPart(agentId) }),
         status = MessageStatus.DONE,
         errorInfo = null,
         streamInterruptCount = 0,
-        updatedAt = System.currentTimeMillis(),
+        // 历史行取服务端时间（与行序一致）而不是「写入本地的时刻」：拉一次历史会重写
+        // `updatedAt`，用本地时刻会让这一列跟消息本身毫无关系。副作用是历史行的
+        // `updatedAt == sortOrder`，UI 据此区分「服务端行」与「本地流式行」（见 `thinkingDurationMs`）。
+        updatedAt = at,
     )
 }
 
@@ -930,7 +938,13 @@ private fun MessageDto.toEntity(agentId: String, index: Int, threadId: String, j
 private fun ContentBlockDto.toPart(agentId: String): Part? = when (type) {
     BlockType.TEXT -> Part(type = PartType.TEXT, text = text)
     BlockType.THINKING -> Part(type = PartType.REASONING, text = thinking)
-    BlockType.TOOL_USE -> Part(type = PartType.TOOL_CALL, name = name)
+    BlockType.TOOL_USE -> Part(
+        type = PartType.TOOL_CALL,
+        name = name,
+        // 入参在 `input` 上（`serialize.py:842-864`）。空对象当成「没有参数」，免得折叠里
+        // 多出一行 `参数 {}`；有值时按 [Part.args] 的约定存 JSON 文本。
+        args = input?.takeIf { it !is JsonNull && it.toString() != EMPTY_JSON_OBJECT }?.toString(),
+    )
     BlockType.TOOL_RESULT -> Part(
         type = PartType.TOOL_RESULT,
         name = name,
@@ -960,3 +974,6 @@ private fun ContentBlockDto.toPart(agentId: String): Part? = when (type) {
 
 /** 图片块缺 mime 时的兜底值，只用来让 UI 走「内联渲染」而不是「文件名卡片」。 */
 private const val IMAGE_MIME = "image/*"
+
+/** `JsonObject` 的紧凑串形式，用来识别「没有参数」的空对象。 */
+private const val EMPTY_JSON_OBJECT = "{}"

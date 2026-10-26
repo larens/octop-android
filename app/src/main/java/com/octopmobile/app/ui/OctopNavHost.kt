@@ -16,6 +16,9 @@ import com.octopmobile.app.ui.login.LoginScreen
 import com.octopmobile.app.ui.settings.SettingsScreen
 import com.octopmobile.app.ui.web.WebViewActivity
 import com.octopmobile.app.ui.workbench.WorkbenchScreen
+import com.octopmobile.app.ui.workbench.WorkbenchTab
+import com.octopmobile.app.ui.workbench.routeValue
+import com.octopmobile.app.ui.workbench.workbenchTabOf
 
 /**
  * 全应用唯一的导航图。连接向导、登录、会话列表、会话、设置都是全屏 destination，
@@ -65,13 +68,14 @@ fun OctopNavHost(
 
         // 会话 / Today / 任务 / 记忆是同一个工作台的四个栏，由底部导航切换（docs/spec.md §23），
         // 所以这里只注册一个 destination —— 栏间切换不进返回栈，返回键从任何一栏都退回上一级。
-        composable(Routes.THREADS) {
+        val workbenchContent: @Composable (WorkbenchTab) -> Unit = { initialTab ->
             WorkbenchScreen(
                 onOpenThread = { agentId, threadId ->
                     navController.navigate(Routes.chat(agentId, threadId))
                 },
                 onOpenSettings = { navController.navigate(Routes.SETTINGS) },
                 onOpenWeb = openWeb,
+                initialTab = initialTab,
                 // 用 THREADS 换 LOGIN：栈里不该留着已经作废的列表页
                 onNeedsLogin = {
                     navController.navigate(Routes.LOGIN) {
@@ -79,6 +83,23 @@ fun OctopNavHost(
                     }
                 },
             )
+        }
+
+        composable(Routes.THREADS) {
+            workbenchContent(WorkbenchTab.CHATS)
+        }
+
+        composable(
+            route = Routes.THREADS_PATTERN,
+            arguments = listOf(
+                navArgument(Routes.ARG_TAB) {
+                    type = NavType.StringType
+                    nullable = true
+                    defaultValue = WorkbenchTab.CHATS.routeValue()
+                },
+            ),
+        ) { entry ->
+            workbenchContent(workbenchTabOf(entry.arguments?.getString(Routes.ARG_TAB)))
         }
 
         composable(
@@ -92,6 +113,16 @@ fun OctopNavHost(
                 agentId = entry.arguments?.getString(Routes.ARG_AGENT_ID).orEmpty(),
                 threadId = entry.arguments?.getString(Routes.ARG_THREAD_ID).orEmpty(),
                 onBack = { navController.popBackStack() },
+                onOpenThread = { agentId, threadId ->
+                    navController.navigate(Routes.chat(agentId, threadId)) {
+                        launchSingleTop = true
+                    }
+                },
+                onOpenWorkbenchTab = { tab ->
+                    navController.navigate(Routes.threads(tab.routeValue())) {
+                        launchSingleTop = true
+                    }
+                },
             )
         }
 

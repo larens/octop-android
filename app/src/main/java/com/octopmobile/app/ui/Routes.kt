@@ -14,6 +14,8 @@ object Routes {
     const val CONNECT = "connect"
     const val LOGIN = "login"
     const val THREADS = "threads"
+    const val ARG_TAB = "tab"
+    const val THREADS_PATTERN = "threads?$ARG_TAB={$ARG_TAB}"
     const val SETTINGS = "settings"
 
     const val ARG_AGENT_ID = "agentId"
@@ -23,6 +25,9 @@ object Routes {
 
     /** 会话内的 `agent_id` 是业务字符串标识，不是服务端自增主键 `id`（见 docs/protocol.md §4）。 */
     fun chat(agentId: String, threadId: String): String = "chat/$agentId/$threadId"
+
+    fun threads(tab: String? = null): String =
+        if (tab.isNullOrBlank()) THREADS else "threads?$ARG_TAB=${Uri.encode(tab)}"
 
     /**
      * 深链（docs/spec.md §14）：`octopmobile://thread/{thread_id}`。

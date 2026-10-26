@@ -23,7 +23,6 @@ data class Handoff(
 
 object AppActions {
     const val NEW_THREAD = "com.octopmobile.app.action.NEW_THREAD"
-    const val VOICE = "com.octopmobile.app.action.VOICE"
     const val CAMERA = "com.octopmobile.app.action.CAMERA"
 
     /** 分享入口没有自己的 action 常量（用的是系统的 `ACTION_SEND`），这里给它一个内部标识。 */
@@ -34,7 +33,7 @@ object AppActions {
 
     /** 只认自家 action；`MAIN` / `VIEW` / `SEND` 都不算。 */
     fun from(intentAction: String?): String? = intentAction?.takeIf {
-        it == NEW_THREAD || it == VOICE || it == CAMERA
+        it == NEW_THREAD || it == CAMERA
     }
 }
 

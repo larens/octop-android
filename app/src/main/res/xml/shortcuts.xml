@@ -22,18 +22,6 @@
     <shortcut
         android:enabled="true"
         android:icon="@drawable/ic_launcher_foreground"
-        android:shortcutId="voice_input"
-        android:shortcutLongLabel="@string/shortcut_voice_long"
-        android:shortcutShortLabel="@string/shortcut_voice_short">
-        <intent
-            android:action="com.octopmobile.app.action.VOICE"
-            android:targetClass="com.octopmobile.app.ui.MainActivity"
-            android:targetPackage="com.octopmobile.native" />
-    </shortcut>
-
-    <shortcut
-        android:enabled="true"
-        android:icon="@drawable/ic_launcher_foreground"
         android:shortcutId="take_photo"
         android:shortcutLongLabel="@string/shortcut_camera_long"
         android:shortcutShortLabel="@string/shortcut_camera_short">

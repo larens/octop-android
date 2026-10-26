@@ -12,7 +12,6 @@ import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -22,7 +21,6 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -36,7 +34,6 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -70,7 +67,6 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.octopmobile.app.R
 import com.octopmobile.app.data.db.ThreadEntity
-import com.octopmobile.app.data.remote.dto.AgentDto
 import com.octopmobile.app.ui.AppActions
 import com.octopmobile.app.ui.PendingChatStart
 import com.octopmobile.app.ui.PendingHandoff
@@ -96,6 +92,7 @@ fun ThreadsScreen(
     onOpenSettings: () -> Unit,
     onOpenWeb: () -> Unit,
     onNeedsLogin: () -> Unit,
+    autoOpenNewConversation: Boolean = false,
 ) {
     val context = LocalContext.current
     val viewModel: ThreadsViewModel = viewModel(factory = ThreadsViewModel.Factory)
@@ -150,15 +147,22 @@ fun ThreadsScreen(
     var tagTarget by remember { mutableStateOf<ThreadEntity?>(null) }
     var memoryTarget by remember { mutableStateOf<ThreadEntity?>(null) }
 
-    val selectedAgent = state.agents.firstOrNull { it.agentId == state.selectedAgentId }
+    var autoOpened by rememberSaveable { mutableStateOf(false) }
+
+    // WorkBuddy 风格入口：落到「会话」栏时默认先给一条新会话，历史再由会话页左侧抽屉查看。
+    LaunchedEffect(autoOpenNewConversation, state.selectedAgentId, state.creating) {
+        if (!autoOpenNewConversation || autoOpened) return@LaunchedEffect
+        if (state.selectedAgentId == null || state.creating) return@LaunchedEffect
+        autoOpened = true
+        viewModel.createThread()
+    }
 
     Scaffold(
         topBar = {
             TopAppBar(
                 title = {
                     Text(
-                        text = selectedAgent?.name?.takeIf { it.isNotBlank() }
-                            ?: stringResource(R.string.app_name),
+                        text = stringResource(R.string.app_name),
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
                     )
@@ -193,59 +197,48 @@ fun ThreadsScreen(
             )
         },
     ) { padding ->
-        Column(
+        Box(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(padding),
         ) {
-            // 只有一个 agent 时不给切换器，省掉一行没用的界面
-            if (state.agents.size > 1) {
-                AgentSwitcher(
-                    agents = state.agents,
-                    selectedAgentId = state.selectedAgentId,
-                    onSelect = viewModel::selectAgent,
-                )
-            }
+            PullToRefreshBox(
+                // 只在用户下拉时亮自带转圈；后台同步交给下面那条细进度条（spec §12）。
+                isRefreshing = state.syncing && state.pulled,
+                onRefresh = viewModel::refresh,
+                modifier = Modifier.fillMaxSize(),
+            ) {
+                when {
+                    // 本地一条会话都没有、又还没问到服务端 → 骨架屏（spec §12）。判据是
+                    // threadsLoaded 而不是「agent 目录拉完没」：两者之间那段同样是「还没问到」。
+                    threads.isEmpty() && !state.threadsLoaded -> ThreadSkeleton()
 
-            Box(modifier = Modifier.fillMaxSize()) {
-                PullToRefreshBox(
-                    // 只在用户下拉时亮自带转圈；后台同步交给下面那条细进度条（spec §12）。
-                    isRefreshing = state.syncing && state.pulled,
-                    onRefresh = viewModel::refresh,
-                    modifier = Modifier.fillMaxSize(),
-                ) {
-                    when {
-                        // 本地一条会话都没有、又还没问到服务端 → 骨架屏（spec §12）。判据是
-                        // threadsLoaded 而不是「agent 目录拉完没」：两者之间那段同样是「还没问到」。
-                        threads.isEmpty() && !state.threadsLoaded -> ThreadSkeleton()
+                    threads.isEmpty() -> ThreadFallback(
+                        message = state.error?.asText() ?: stringResource(R.string.threads_empty),
+                        onRetry = viewModel::retry,
+                    )
 
-                        threads.isEmpty() -> ThreadFallback(
-                            message = state.error?.asText() ?: stringResource(R.string.threads_empty),
-                            onRetry = viewModel::retry,
-                        )
-
-                        else -> ThreadList(
-                            threads = threads,
-                            onOpenThread = onOpenThread,
-                            onTogglePin = viewModel::togglePin,
-                            onRename = { renameTarget = it },
-                            onEditTags = { tagTarget = it },
-                            onSaveMemory = { memoryTarget = it },
-                            onDelete = { deleteTarget = it },
-                        )
-                    }
-                }
-
-                // 同步中只给顶部一条细进度条，规格与会话页一致（spec §12 / §19 第 15 条）。
-                if (state.syncing && !state.pulled) {
-                    LinearProgressIndicator(
-                        modifier = Modifier
-                            .align(Alignment.TopCenter)
-                            .fillMaxWidth()
-                            .height(TOP_PROGRESS_HEIGHT),
-                        trackColor = Color.Transparent,
+                    else -> ThreadList(
+                        threads = threads,
+                        onOpenThread = onOpenThread,
+                        onTogglePin = viewModel::togglePin,
+                        onRename = { renameTarget = it },
+                        onEditTags = { tagTarget = it },
+                        onSaveMemory = { memoryTarget = it },
+                        onDelete = { deleteTarget = it },
                     )
                 }
+            }
+
+            // 同步中只给顶部一条细进度条，规格与会话页一致（spec §12 / §19 第 15 条）。
+            if (state.syncing && !state.pulled) {
+                LinearProgressIndicator(
+                    modifier = Modifier
+                        .align(Alignment.TopCenter)
+                        .fillMaxWidth()
+                        .height(TOP_PROGRESS_HEIGHT),
+                    trackColor = Color.Transparent,
+                )
             }
         }
     }
@@ -304,27 +297,6 @@ fun ThreadsScreen(
                 memoryTarget = null
             },
         )
-    }
-}
-
-@Composable
-private fun AgentSwitcher(
-    agents: List<AgentDto>,
-    selectedAgentId: String?,
-    onSelect: (AgentDto) -> Unit,
-) {
-    LazyRow(
-        modifier = Modifier.fillMaxWidth(),
-        contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp),
-        horizontalArrangement = Arrangement.spacedBy(8.dp),
-    ) {
-        items(agents, key = { it.agentId }) { agent ->
-            FilterChip(
-                selected = agent.agentId == selectedAgentId,
-                onClick = { onSelect(agent) },
-                label = { Text(agent.name?.takeIf { it.isNotBlank() } ?: agent.agentId) },
-            )
-        }
     }
 }
 

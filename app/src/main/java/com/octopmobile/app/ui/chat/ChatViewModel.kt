@@ -22,7 +22,9 @@ import com.octopmobile.app.data.remote.ApiError
 import com.octopmobile.app.data.remote.ApiResult
 import com.octopmobile.app.data.remote.dto.AgentDto
 import com.octopmobile.app.data.remote.dto.HitlDecision
+import com.octopmobile.app.data.remote.dto.ResolvedModelDto
 import com.octopmobile.app.data.repo.ChatRepository
+import com.octopmobile.app.data.repo.ThreadRepository
 import com.octopmobile.app.data.ws.ChatSocket
 import com.octopmobile.app.ui.appContainer
 import kotlinx.coroutines.Dispatchers
@@ -41,6 +43,16 @@ data class ChatUiState(
     val error: ApiError? = null,
     /** WS 下发的 `error` 帧原文。 */
     val streamError: String? = null,
+    val modelsLoading: Boolean = false,
+    val modelOptions: List<ChatModelOption> = emptyList(),
+    val selectedModelRef: String? = null,
+)
+
+data class ChatModelOption(
+    val modelRef: String,
+    val label: String,
+    val providerName: String,
+    val reasoning: Boolean,
 )
 
 /**
@@ -60,6 +72,7 @@ class ChatViewModel(
 ) : ViewModel() {
 
     private var repository: ChatRepository? = null
+    private var threadRepository: ThreadRepository? = null
 
     /**
      * 仓库是否可用（[repository] 已赋值且首屏历史已处理完）。
@@ -101,13 +114,11 @@ class ChatViewModel(
      * 可以 `@` 的专家：`GET /api/agents`（`scope=mine` = 自己的 + 别人共享的），
      * 去掉当前会话这个 agent 自己 —— `target_agent_ids` 是「把**别的**专家拉进本轮」，
      * `@` 自己没有意义（spec §23.5）。
+     *
+     * 它同时是发送时把正文里的 `@名字` 还原成 `agent_id` 的唯一凭据（见 [mentionTargets]）。
      */
     private val _mentionable = MutableStateFlow<List<AgentDto>>(emptyList())
     val mentionable: StateFlow<List<AgentDto>> = _mentionable.asStateFlow()
-
-    /** 已选中、等随下一条消息一起发出的专家（对应帧里的 `target_agent_ids`）。 */
-    private val _mentions = MutableStateFlow<List<AgentDto>>(emptyList())
-    val mentions: StateFlow<List<AgentDto>> = _mentions.asStateFlow()
 
     /**
      * 本地附件缓存索引，按 [com.octopmobile.app.data.attachments.AttachmentRefs.idOf] 的 id 索引。
@@ -139,7 +150,9 @@ class ChatViewModel(
             }
 
             val repo = container.chatRepository(baseUrl, agentId, threadId)
+            val threadRepo = container.threadRepository(baseUrl, agentId)
             repository = repo
+            threadRepository = threadRepo
 
             launch { repo.observeMessages().collect { _messages.value = it } }
             launch { repo.observeThread().collect { _thread.value = it } }
@@ -157,6 +170,7 @@ class ChatViewModel(
             // `@专家` 候选：一次只读请求，失败就当作「没有别的专家」—— 不打扰用户，
             // 输入栏也只是不出现那个入口（spec §23.5）。
             launch { loadMentionable(baseUrl) }
+            launch { loadModels(baseUrl, threadRepo) }
 
             // 永不返回：连接 + 订阅 + 持续消费事件
             launch { repo.run() }
@@ -214,31 +228,35 @@ class ChatViewModel(
 
     /**
      * 发送一轮输入。附件在发送时随帧一起走，所以这里先清空待发列表 ——
-     * 即使 socket 离线被排进 `pending_ops`，帧里也已经带着它们了。`@专家` 同理。
+     * 即使 socket 离线被排进 `pending_ops`，帧里也已经带着它们了。
+     *
+     * `@专家` 不在这里存一份状态：它就在正文里（[mentionTargets]），把那几个字删掉就等于取消。
      */
     fun send(text: String) {
         val repo = repository ?: return
         val files = _attachments.value
         if (text.isBlank() && files.isEmpty()) return
 
-        val targets = _mentions.value.map { it.agentId }
+        val targets = mentionTargets(text)
         _attachments.value = emptyList()
-        _mentions.value = emptyList()
         _notice.value = null
         viewModelScope.launch {
             if (!repo.sendTurn(text, files, targets)) _notice.value = ChatNotice.Queued
         }
     }
 
-    /** 选中一个专家（重复选中不叠加）。 */
-    fun addMention(agent: AgentDto) {
-        if (_mentions.value.any { it.agentId == agent.agentId }) return
-        _mentions.value = _mentions.value + agent
-    }
-
-    fun removeMention(agent: AgentDto) {
-        _mentions.value = _mentions.value - agent
-    }
+    /**
+     * 从正文里认出 `@专家名`，还原成帧里的 `target_agent_ids`（spec §23.5）。
+     *
+     * 名字只从 [mentionable] 里认，所以「正文里恰好有个 `@xxx`」不会被误当成专家；而
+     * `@` 是不是从候选列表里点进去的并不重要 —— 手打一个和候选同名的 `@名字` 同样生效，
+     * 这正是 `@` 该有的行为。名字里的正则字符不必转义，这里是纯文本包含判断。
+     */
+    private fun mentionTargets(text: String): List<String> =
+        _mentionable.value
+            .filter { text.contains(MENTION_PREFIX + it.displayName()) }
+            .map { it.agentId }
+            .distinct()
 
     fun cancel() {
         val repo = repository ?: return
@@ -328,11 +346,44 @@ class ChatViewModel(
         _notice.value = null
     }
 
+    fun selectModel(modelRef: String?) {
+        val repo = threadRepository ?: return
+        val normalized = modelRef?.takeIf { it.isNotBlank() }
+        if (uiState.selectedModelRef == normalized) return
+        viewModelScope.launch {
+            when (val result = repo.setModel(threadId, normalized)) {
+                is ApiResult.Ok -> {
+                    uiState = uiState.copy(selectedModelRef = normalized)
+                }
+
+                is ApiResult.Failure -> _notice.value = ChatNotice.Failure(result.error)
+            }
+        }
+    }
+
     /** `@专家` 候选只拉一次。失败静默：这不是主链路，拉不到就只是没有这个入口。 */
     private suspend fun loadMentionable(baseUrl: String) {
         val result = container.instanceRepository(baseUrl).agents()
         if (result !is ApiResult.Ok) return
         _mentionable.value = result.value.filter { it.agentId != agentId }
+    }
+
+    private suspend fun loadModels(baseUrl: String, threadRepo: ThreadRepository) {
+        uiState = uiState.copy(modelsLoading = true)
+        val agentsResult = container.instanceRepository(baseUrl).agents()
+        val modelsResult = threadRepo.resolvedModels()
+        val currentAgent = (agentsResult as? ApiResult.Ok)?.value?.firstOrNull { it.agentId == agentId }
+        val selected = _thread.value?.modelRef
+            ?: currentAgent?.defaultModel
+        if (modelsResult is ApiResult.Ok) {
+            uiState = uiState.copy(
+                modelsLoading = false,
+                modelOptions = modelsResult.value.map { it.toChatOption() },
+                selectedModelRef = selected,
+            )
+        } else {
+            uiState = uiState.copy(modelsLoading = false, selectedModelRef = selected)
+        }
     }
 
     private suspend fun loadFirstPage() {
@@ -373,6 +424,13 @@ class ChatViewModel(
     }
 }
 
+private fun ResolvedModelDto.toChatOption(): ChatModelOption = ChatModelOption(
+    modelRef = providerName + "/" + model,
+    label = name?.takeIf { it.isNotBlank() } ?: model,
+    providerName = providerName,
+    reasoning = reasoning,
+)
+
 /**
  * 一次性提示。
  *
@@ -389,6 +447,16 @@ sealed interface ChatNotice {
     /** 上传接口失败。 */
     data class Failure(val error: ApiError) : ChatNotice
 }
+
+/**
+ * `@专家` 的触发字符（spec §23.5）。
+ *
+ * 只在两处出现：输入框里的内联文本，以及发送时按它把名字还原成 `agent_id`。
+ */
+internal const val MENTION_PREFIX = "@"
+
+/** 专家名缺失时退回 `agent_id` —— 候选列表与输入框里的 `@名字` 都靠它。 */
+internal fun AgentDto.displayName(): String = name?.takeIf { it.isNotBlank() } ?: agentId
 
 /** 从 `content://` 读出来的待上传内容。读完即用，不落盘。 */
 private class AttachmentPayload(val name: String, val mime: String, val bytes: ByteArray)
