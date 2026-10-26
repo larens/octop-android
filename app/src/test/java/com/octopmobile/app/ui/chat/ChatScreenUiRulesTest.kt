@@ -7,16 +7,6 @@ import org.junit.Test
 class ChatScreenUiRulesTest {
 
     @Test
-    fun `drops bottom navigation padding while ime is visible`() {
-        assertFalse(shouldApplyChatBottomBarNavigationPadding(imeVisible = true))
-    }
-
-    @Test
-    fun `keeps bottom navigation padding when ime is hidden`() {
-        assertTrue(shouldApplyChatBottomBarNavigationPadding(imeVisible = false))
-    }
-
-    @Test
     fun `untouched new conversation is removed on exit`() {
         assertTrue(
             shouldDeleteUntouchedConversation(

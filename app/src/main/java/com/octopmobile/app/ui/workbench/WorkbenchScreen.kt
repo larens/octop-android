@@ -172,10 +172,10 @@ private fun NewConversationPane(
 fun WorkbenchBottomBar(
     current: WorkbenchTab,
     onSelect: (WorkbenchTab) -> Unit,
+    modifier: Modifier = Modifier,
 ) {
     NavigationBar(
-        modifier = Modifier
-            .navigationBarsPadding(),
+        modifier = modifier.navigationBarsPadding(),
         containerColor = MaterialTheme.colorScheme.background,
     ) {
         WorkbenchTab.entries.forEach { item ->

@@ -8,6 +8,7 @@ import android.net.Uri
 import android.provider.MediaStore
 import android.text.format.DateUtils
 import android.widget.Toast
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
@@ -23,6 +24,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -31,14 +33,14 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.ime
 import androidx.compose.foundation.layout.imePadding
-import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
-import androidx.compose.foundation.layout.isImeVisible
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
@@ -72,7 +74,6 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DrawerValue
-import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilledTonalIconButton
@@ -82,6 +83,7 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.LocalContentColor
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.MenuDefaults
 import androidx.compose.material3.ModalDrawerSheet
 import androidx.compose.material3.ModalNavigationDrawer
 import androidx.compose.material3.OutlinedButton
@@ -127,7 +129,14 @@ import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.TextFieldValue
+import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.unit.IntRect
+import androidx.compose.ui.unit.IntSize
+import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.window.Popup
+import androidx.compose.ui.window.PopupPositionProvider
+import androidx.compose.ui.window.PopupProperties
 import androidx.core.content.ContextCompat
 import androidx.core.content.FileProvider
 import androidx.lifecycle.Lifecycle
@@ -325,7 +334,17 @@ fun ChatScreen(
     val listState = rememberLazyListState()
     val scope = rememberCoroutineScope()
     val drawerState = rememberDrawerState(initialValue = DrawerValue.Closed)
-    val imeVisible = WindowInsets.isImeVisible
+    val density = LocalDensity.current
+    val imeInsetPx = WindowInsets.ime.getBottom(density)
+    val navBarsInsetPx = WindowInsets.navigationBars.getBottom(density)
+    // 键盘弹出期间导航高度随键盘高度连续收缩（不用布尔切换、避免 0↔全高瞬间跳变的
+    // “闪现”）：键盘全开时高度为 0、落在键盘下方，输入区仍由 imePadding 贴住键盘。
+    // 高度含导航栏 inset（与 workbench 页的底部栏一致）；「键盘收起 → 输入框回落」不再
+    // 叠加第二份 inset，退出编辑态后输入框的高度就是它的默认高度，进入/退出前后一致。
+    val navHeightDp = with(density) {
+        val full = 80.dp.roundToPx() + navBarsInsetPx
+        (full - imeInsetPx).coerceAtLeast(0).toDp()
+    }
 
     fun hideKeyboard() {
         focusManager.clearFocus(force = true)
@@ -469,7 +488,6 @@ fun ChatScreen(
             bottomBar = {
                 Column {
                     ChatBottomBar(
-                        imeVisible = imeVisible,
                         blocked = blocked,
                         pending = pending,
                         attachments = attachments,
@@ -506,15 +524,18 @@ fun ChatScreen(
                         onRemove = viewModel::removeAttachment,
                         onResolve = viewModel::resolveHitl,
                     )
-                    // 激活输入态不保留底部导航高度，输入区才能贴着键盘；未激活时导航常驻不动。
-                    if (!imeVisible && !inputFocused) {
-                        WorkbenchBottomBar(
-                            current = WorkbenchTab.CHATS,
-                            onSelect = { tab ->
-                                if (tab != WorkbenchTab.CHATS) onOpenWorkbenchTab(tab)
-                            },
-                        )
-                    }
+                    // 底部导航常驻组合、不随输入态晚出现：键盘弹出时它高度收为 0、落在键盘
+                    // 下方被盖住，输入区仍由 imePadding 贴住键盘；键盘收起后导航恢复原高，
+                    // 输入框回到底部栏上方的初始位置。
+                    WorkbenchBottomBar(
+                        current = WorkbenchTab.CHATS,
+                        onSelect = { tab ->
+                            if (tab != WorkbenchTab.CHATS) onOpenWorkbenchTab(tab)
+                        },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(navHeightDp),
+                    )
                 }
             },
         ) { padding ->
@@ -853,7 +874,6 @@ private fun HistoryDrawerRow(
  */
 @Composable
 private fun ChatBottomBar(
-    imeVisible: Boolean,
     blocked: Boolean,
     pending: HitlPending?,
     attachments: List<UploadedAttachment>,
@@ -882,14 +902,10 @@ private fun ChatBottomBar(
         Column(
             modifier = Modifier
                 .fillMaxWidth()
+                // 底部导航的高度已含导航栏 inset（navHeightDp），这里只贴键盘，不再叠一层
+                // 导航栏 padding —— 否则键盘收起、imeVisible 翻转的那一拍输入框会再跳高一段，
+                // 退出编辑态后回不到“第一次的好位置”。
                 .imePadding()
-                .then(
-                    if (shouldApplyChatBottomBarNavigationPadding(imeVisible)) {
-                        Modifier.navigationBarsPadding()
-                    } else {
-                        Modifier
-                    },
-                )
                 .padding(horizontal = 8.dp, vertical = 6.dp),
         ) {
             if (pending != null) {
@@ -959,6 +975,14 @@ private fun InputRow(
     var menuExpanded by remember { mutableStateOf(false) }
     var modelExpanded by remember { mutableStateOf(false) }
     var focused by remember { mutableStateOf(false) }
+    // 弹层定位要避开键盘：键盘弹出时菜单翻到输入区上方，而不是开到键盘后面。
+    val imeBottomPx = WindowInsets.ime.getBottom(LocalDensity.current)
+
+    // 自定义弹层不抢窗口焦点，back 不会自动关菜单，这里显式兜底。
+    BackHandler(enabled = menuExpanded || modelExpanded) {
+        menuExpanded = false
+        modelExpanded = false
+    }
 
     fun submit() {
         if (!sendable) return
@@ -1061,9 +1085,10 @@ private fun InputRow(
                     )
 
                     if (!focused) {
-                        DropdownMenu(
+                        KeepFocusMenu(
                             expanded = menuExpanded,
                             onDismissRequest = { menuExpanded = false },
+                            imeBottomInsetPx = imeBottomPx,
                         ) {
                             AttachmentMenuItems(
                                 canMention = canMention,
@@ -1096,9 +1121,10 @@ private fun InputRow(
                                     contentDescription = stringResource(R.string.chat_more_actions),
                                 )
                             }
-                            DropdownMenu(
+                            KeepFocusMenu(
                                 expanded = menuExpanded,
                                 onDismissRequest = { menuExpanded = false },
+                                imeBottomInsetPx = imeBottomPx,
                             ) {
                                 AttachmentMenuItems(
                                     canMention = canMention,
@@ -1143,9 +1169,10 @@ private fun InputRow(
                                     )
                                 }
                             }
-                            DropdownMenu(
+                            KeepFocusMenu(
                                 expanded = modelExpanded,
                                 onDismissRequest = { modelExpanded = false },
+                                imeBottomInsetPx = imeBottomPx,
                             ) {
                                 if (selectedModel != null) {
                                     DropdownMenuItem(
@@ -1204,6 +1231,65 @@ private fun InputRow(
                         }
                     }
                 }
+            }
+        }
+    }
+}
+
+/** 输入框激活状态下用的“不抢焦点”菜单弹层：DropdownMenu 的 Popup 是 focusable=true，
+ *  打开时会拿走窗口焦点、把输入法收起。这里用 focusable=false 的 Popup 渲染同一份菜单内容，
+ *  窗口焦点保持在输入框上，键盘不会收起，操作完还能继续编辑。 */
+@Composable
+private fun KeepFocusMenu(
+    expanded: Boolean,
+    onDismissRequest: () -> Unit,
+    imeBottomInsetPx: Int,
+    content: @Composable ColumnScope.() -> Unit,
+) {
+    if (!expanded) return
+    val density = LocalDensity.current
+    Popup(
+        popupPositionProvider = object : PopupPositionProvider {
+            override fun calculatePosition(
+                anchorBounds: IntRect,
+                windowSize: IntSize,
+                layoutDirection: LayoutDirection,
+                popupContentSize: IntSize,
+            ): IntOffset {
+                // 与 DropdownMenu 相同的弹出习惯：锚点左缘略微左移、优先向下展开，
+                // 下方放不下时翻到上方。
+                val horizontalMargin = with(density) { 8.dp.roundToPx() }
+                val verticalMargin = with(density) { 8.dp.roundToPx() }
+                val x = (anchorBounds.left - horizontalMargin)
+                    .coerceAtLeast(horizontalMargin)
+                    .coerceAtMost(
+                        (windowSize.width - horizontalMargin - popupContentSize.width)
+                            .coerceAtLeast(horizontalMargin),
+                    )
+                // 键盘占用的底部区域不可用：放不下就翻到锚点上方。
+                val usableBottom = windowSize.height - imeBottomInsetPx.coerceAtLeast(0)
+                val belowY = anchorBounds.bottom + verticalMargin
+                val fitsBelow = belowY + popupContentSize.height <= usableBottom
+                val y = if (fitsBelow) {
+                    belowY
+                } else {
+                    (anchorBounds.top - verticalMargin - popupContentSize.height)
+                        .coerceAtLeast(verticalMargin)
+                }
+                return IntOffset(x, y)
+            }
+        },
+        onDismissRequest = onDismissRequest,
+        properties = PopupProperties(focusable = false),
+    ) {
+        Surface(
+            shape = MenuDefaults.shape,
+            color = MenuDefaults.containerColor,
+            shadowElevation = 8.dp,
+            tonalElevation = 0.dp,
+        ) {
+            Column(modifier = Modifier.padding(vertical = 8.dp)) {
+                content()
             }
         }
     }
@@ -2328,8 +2414,6 @@ private fun CompactDivider() {
         HorizontalDivider(modifier = Modifier.weight(1f))
     }
 }
-
-internal fun shouldApplyChatBottomBarNavigationPadding(imeVisible: Boolean): Boolean = !imeVisible
 
 /**
  * 消息流里的一行。
