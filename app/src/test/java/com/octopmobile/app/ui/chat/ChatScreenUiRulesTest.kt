@@ -7,19 +7,12 @@ import org.junit.Test
 class ChatScreenUiRulesTest {
 
     @Test
-    fun `hides bottom workbench chrome when ime is visible`() {
-        assertFalse(shouldShowWorkbenchBar(imeVisible = true, inputFocused = false))
+    fun `drops bottom navigation padding while ime is visible`() {
         assertFalse(shouldApplyChatBottomBarNavigationPadding(imeVisible = true))
     }
 
     @Test
-    fun `hides bottom workbench chrome while input is focused`() {
-        assertFalse(shouldShowWorkbenchBar(imeVisible = false, inputFocused = true))
-    }
-
-    @Test
-    fun `keeps bottom workbench chrome when input is inactive`() {
-        assertTrue(shouldShowWorkbenchBar(imeVisible = false, inputFocused = false))
+    fun `keeps bottom navigation padding when ime is hidden`() {
         assertTrue(shouldApplyChatBottomBarNavigationPadding(imeVisible = false))
     }
 

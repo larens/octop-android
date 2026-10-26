@@ -11,16 +11,11 @@ import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
-import androidx.compose.animation.fadeIn
-import androidx.compose.animation.fadeOut
-import androidx.compose.animation.slideInVertically
-import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Box
@@ -509,18 +504,13 @@ fun ChatScreen(
                         onRemove = viewModel::removeAttachment,
                         onResolve = viewModel::resolveHitl,
                     )
-                    AnimatedVisibility(
-                        visible = shouldShowWorkbenchBar(imeVisible, inputFocused),
-                        enter = fadeIn() + slideInVertically(initialOffsetY = { it / 2 }),
-                        exit = fadeOut() + slideOutVertically(targetOffsetY = { it / 2 }),
-                    ) {
-                        WorkbenchBottomBar(
-                            current = WorkbenchTab.CHATS,
-                            onSelect = { tab ->
-                                if (tab != WorkbenchTab.CHATS) onOpenWorkbenchTab(tab)
-                            },
-                        )
-                    }
+                    // 底部导航常驻：输入法弹出时直接盖住它，不做显隐/位移动画，避免上下弹动。
+                    WorkbenchBottomBar(
+                        current = WorkbenchTab.CHATS,
+                        onSelect = { tab ->
+                            if (tab != WorkbenchTab.CHATS) onOpenWorkbenchTab(tab)
+                        },
+                    )
                 }
             },
         ) { padding ->
@@ -2235,11 +2225,6 @@ private fun CompactDivider() {
         HorizontalDivider(modifier = Modifier.weight(1f))
     }
 }
-
-internal fun shouldShowWorkbenchBar(
-    imeVisible: Boolean,
-    inputFocused: Boolean,
-): Boolean = !imeVisible && !inputFocused
 
 internal fun shouldApplyChatBottomBarNavigationPadding(imeVisible: Boolean): Boolean = !imeVisible
 
