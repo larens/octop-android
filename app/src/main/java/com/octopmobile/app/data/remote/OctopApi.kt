@@ -543,6 +543,13 @@ class OctopApi(
     companion object {
         const val DEFAULT_PAGE_SIZE = 30
 
+        /**
+         * 会话列表全量同步用的上限。服务端列表路由只认 `limit`、没有分页游标，
+         * 取的还是「最新在前」的一页；返回条数 < limit 的短页才等于全量，
+         * 客户端才能放心做本地收敛（见 ThreadRepository.refresh）。
+         */
+        const val FULL_SYNC_LIMIT = 2000
+
         private const val API = "api"
         private const val AUTH = "auth"
         private const val AGENTS = "agents"

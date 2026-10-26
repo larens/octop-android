@@ -25,17 +25,29 @@ class ThreadRepository(
     fun observeThreads(): Flow<List<ThreadEntity>> = threadDao.observeByAgent(agentId)
 
     /**
-     * 拉一页会话列表并合并进本地缓存。返回本次落库的条数，供 UI 区分「没有会话」与「拉取失败」。
+     * 拉会话列表并合并进本地缓存。返回本次落库的条数，供 UI 区分「没有会话」与「拉取失败」。
      *
      * 是**合并**而不是覆盖：`ThreadDto` 既不含最后一条消息，也不含未读数（字段清单见
      * docs/protocol.md §5.2），整体 `upsert` 会把本地攒的东西抹掉。
+     *
+     * 默认按 [OctopApi.FULL_SYNC_LIMIT] 拉全量：服务端没有翻页游标，返回短页就等于
+     * 拿到了全部会话，此时顺手把服务端已不存在的本地行删掉（换过实例、服务端清理
+     * 过都可能留下孤儿），让两端会话队列保持一致。离线时刷新失败，本地缓存原样保留。
      */
-    suspend fun refresh(limit: Int = OctopApi.DEFAULT_PAGE_SIZE): ApiResult<Int> =
+    suspend fun refresh(limit: Int = OctopApi.FULL_SYNC_LIMIT): ApiResult<Int> =
         when (val result = api.threads(agentId, limit)) {
             is ApiResult.Ok -> {
                 val local = threadDao.listByAgent(agentId).associateBy { it.threadId }
                 val entities = result.value.map { it.toEntity(agentId, local[it.threadId]) }
                 threadDao.upsertAll(entities)
+                // 只有「这一页没满」才能确定是全量；满页说明服务端可能还有更多，不能动手。
+                if (result.value.size < limit) {
+                    if (result.value.isEmpty()) {
+                        threadDao.deleteAllByAgent(agentId)
+                    } else {
+                        threadDao.deleteMissing(agentId, result.value.map { it.threadId })
+                    }
+                }
                 ApiResult.Ok(entities.size)
             }
 

@@ -51,6 +51,17 @@ interface ThreadDao {
     @Upsert
     suspend fun upsertAll(entities: List<ThreadEntity>)
 
+    @Query("DELETE FROM threads WHERE agentId = :agentId")
+    suspend fun deleteAllByAgent(agentId: String)
+
+    /**
+     * 删掉服务端已不存在的本地行（全量同步后的收敛，见
+     * [com.octopmobile.app.data.repo.ThreadRepository.refresh]）。
+     * 空列表会让 `NOT IN ()` 变成非法 SQL，空集情况由调用方走 [deleteAllByAgent]。
+     */
+    @Query("DELETE FROM threads WHERE agentId = :agentId AND threadId NOT IN (:keepIds)")
+    suspend fun deleteMissing(agentId: String, keepIds: List<String>)
+
     @Query("UPDATE threads SET pinned = :pinned WHERE threadId = :threadId")
     suspend fun setPinned(threadId: String, pinned: Boolean)
 

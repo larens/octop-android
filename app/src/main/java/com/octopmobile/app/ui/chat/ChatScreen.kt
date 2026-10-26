@@ -227,6 +227,15 @@ fun ChatScreen(
     // 系统入口（快捷方式 / 分享）带进来的动作，见下面的 LaunchedEffect（spec §14）。
     val chatStart by PendingChatStart.pending.collectAsStateWithLifecycle()
 
+    // 抽屉里的改名 / 置顶 / 删除失败走 `ThreadsUiState.notice`：会话页没有列表上的
+    // 错误区域可看，得用一次性 Toast 接住（跟旧列表页的提示一致）。
+    val threadNotice = threadListState.notice?.asText()
+    LaunchedEffect(threadNotice) {
+        if (threadNotice == null) return@LaunchedEffect
+        threadsViewModel.consumeNotice()
+        Toast.makeText(context, threadNotice, Toast.LENGTH_SHORT).show()
+    }
+
     // 消息与压缩标记合成一条渲染序列，标记插在「第一条晚于它的消息」之前（spec §8.2）。
     val rows = remember(messages, compactMarkers) { buildChatRows(messages, compactMarkers) }
 
