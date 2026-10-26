@@ -157,14 +157,19 @@ class ThreadRepository(
 /**
  * 服务端时间戳是 epoch **秒**，本地统一毫秒（docs/spec.md §8.2）。
  *
- * `last_active` 缺失时退到 `created_at` —— 排序键不能是 0，否则会话会全部堆到列表底部。
+ * 服务端空会话的 `last_active` 是 `0`（列为 NOT NULL），不是「缺失」也不是有效时间戳；
+ * 0 和缺失都退到 `created_at`，实在拿不到就沿用本地那份，绝不能让排序键变 0
+ * （否则列表时间显示成 1970-01-01，会话也会堆到最底部）。
  * 列表接口不返回最后一条消息，所以 [ThreadEntity.lastMessage] 沿用本地那份、由会话页回填。
  *
  * **未读数**（docs/protocol.md §5.2）：服务端只在「有消息落进这个会话」时才推 `last_active`，
  * 所以「比本地新」就是一个可靠的变化信号，据此 +1；[local] 为空的新会话从 0 起算。
  */
 private fun ThreadDto.toEntity(agentId: String, local: ThreadEntity?): ThreadEntity {
-    val activeSeconds = lastActive ?: createdAt ?: 0L
+    val activeSeconds = lastActive?.takeIf { it > 0 }
+        ?: createdAt?.takeIf { it > 0 }
+        ?: local?.lastActiveAt?.div(1000)
+        ?: 0L
     val activeAt = activeSeconds * 1000
     val unread = when {
         local == null -> 0
@@ -178,7 +183,9 @@ private fun ThreadDto.toEntity(agentId: String, local: ThreadEntity?): ThreadEnt
         lastMessage = local?.lastMessage,
         pinned = pinned,
         lastActiveAt = activeAt,
-        createdAt = (createdAt ?: activeSeconds) * 1000,
+        createdAt = createdAt?.takeIf { it > 0 }?.times(1000)
+            ?: local?.createdAt
+            ?: activeAt,
         unreadCount = unread,
         modelRef = modelRef,
         conversationMode = conversationMode,
