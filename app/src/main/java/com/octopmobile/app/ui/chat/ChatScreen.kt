@@ -398,10 +398,11 @@ fun ChatScreen(
         drawerState = drawerState,
         drawerContent = {
             ModalDrawerSheet {
+                // 新会话是草稿：首条消息后服务端 id 才定，当前标记要跟绑定后的真实 id 走。
+                val currentThreadId = thread?.threadId ?: threadId
                 HistoryDrawerContent(
                     threads = historyThreads,
-                    // 新会话是草稿：首条消息后服务端 id 才定，当前标记要跟绑定后的真实 id 走。
-                    currentThreadId = thread?.threadId ?: threadId,
+                    currentThreadId = currentThreadId,
                     syncing = threadListState.syncing,
                     creating = threadListState.creating,
                     onNewConversation = {
@@ -412,7 +413,11 @@ fun ChatScreen(
                     onSelectThread = { item ->
                         scope.launch {
                             drawerState.close()
-                            onOpenThread(item.agentId, item.threadId)
+                            // 点当前行只收抽屉；切到别的会话才导航（chat 路由共享同一个
+                            // destination id，导航层没法靠 launchSingleTop 区分换会话）。
+                            if (item.threadId != currentThreadId) {
+                                onOpenThread(item.agentId, item.threadId)
+                            }
                         }
                     },
                 )

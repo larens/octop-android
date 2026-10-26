@@ -119,9 +119,9 @@ fun OctopNavHost(
                 onBack = { navController.popBackStack() },
                 onOpenSettings = { navController.navigate(Routes.SETTINGS) },
                 onOpenThread = { agentId, threadId ->
-                    navController.navigate(Routes.chat(agentId, threadId)) {
-                        launchSingleTop = true
-                    }
+                    // 所有 chat 路由（chat/{agentId}/{threadId}）都是同一个 destination id，
+                    // launchSingleTop 按 id 比较会把「切换会话」也当成重复导航吞掉，所以不能带它。
+                    navController.navigate(Routes.chat(agentId, threadId))
                 },
                 onOpenWorkbenchTab = { tab ->
                     navController.navigate(Routes.threads(tab.routeValue())) {
