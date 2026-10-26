@@ -116,7 +116,6 @@ fun OctopNavHost(
             ChatScreen(
                 agentId = entry.arguments?.getString(Routes.ARG_AGENT_ID).orEmpty(),
                 threadId = entry.arguments?.getString(Routes.ARG_THREAD_ID).orEmpty(),
-                onBack = { navController.popBackStack() },
                 onOpenSettings = { navController.navigate(Routes.SETTINGS) },
                 onOpenThread = { agentId, threadId ->
                     // 所有 chat 路由（chat/{agentId}/{threadId}）都是同一个 destination id，

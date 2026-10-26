@@ -11,11 +11,16 @@ import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Box
@@ -49,7 +54,6 @@ import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.ArrowDownward
 import androidx.compose.material.icons.filled.AttachFile
@@ -184,7 +188,6 @@ import java.io.File
 fun ChatScreen(
     agentId: String,
     threadId: String,
-    onBack: () -> Unit,
     onOpenThread: (agentId: String, threadId: String) -> Unit,
     onOpenWorkbenchTab: (WorkbenchTab) -> Unit,
     onOpenSettings: () -> Unit,
@@ -326,7 +329,6 @@ fun ChatScreen(
     val scope = rememberCoroutineScope()
     val drawerState = rememberDrawerState(initialValue = DrawerValue.Closed)
     val imeVisible = WindowInsets.isImeVisible
-    val showBackAction = shouldShowChatBackAction(messages, thread)
 
     fun hideKeyboard() {
         focusManager.clearFocus(force = true)
@@ -457,14 +459,6 @@ fun ChatScreen(
                         }
                     },
                     actions = {
-                        if (showBackAction) {
-                            IconButton(onClick = onBack) {
-                                Icon(
-                                    imageVector = Icons.AutoMirrored.Filled.ArrowBack,
-                                    contentDescription = stringResource(R.string.action_cancel),
-                                )
-                            }
-                        }
                         Box(
                             modifier = Modifier
                                 .padding(end = 16.dp)
@@ -515,7 +509,11 @@ fun ChatScreen(
                         onRemove = viewModel::removeAttachment,
                         onResolve = viewModel::resolveHitl,
                     )
-                    if (shouldShowWorkbenchBar(imeVisible, inputFocused)) {
+                    AnimatedVisibility(
+                        visible = shouldShowWorkbenchBar(imeVisible, inputFocused),
+                        enter = fadeIn() + slideInVertically(initialOffsetY = { it / 2 }),
+                        exit = fadeOut() + slideOutVertically(targetOffsetY = { it / 2 }),
+                    ) {
                         WorkbenchBottomBar(
                             current = WorkbenchTab.CHATS,
                             onSelect = { tab ->
@@ -2244,11 +2242,6 @@ internal fun shouldShowWorkbenchBar(
 ): Boolean = !imeVisible && !inputFocused
 
 internal fun shouldApplyChatBottomBarNavigationPadding(imeVisible: Boolean): Boolean = !imeVisible
-
-internal fun shouldShowChatBackAction(
-    messages: List<MessageEntity>,
-    thread: ThreadEntity?,
-): Boolean = messages.isNotEmpty() || !thread?.title.isNullOrBlank()
 
 /**
  * 消息流里的一行。
