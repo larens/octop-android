@@ -5,6 +5,10 @@
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
     <uses-permission android:name="android.permission.CAMERA" />
+    <uses-permission android:name="android.permission.READ_CALENDAR" />
+    <uses-permission android:name="android.permission.health.READ_STEPS" />
+    <uses-permission android:name="android.permission.health.READ_SLEEP" />
+    <uses-permission android:name="android.permission.health.READ_EXERCISE" />
 
     <!--
       长任务通知（docs/spec.md §14）。Android 13 起发通知要运行时授权，被拒就静默降级：
@@ -38,6 +42,7 @@
         <intent>
             <action android:name="android.provider.MediaStore.RECORD_SOUND" />
         </intent>
+        <package android:name="com.google.android.apps.healthdata" />
     </queries>
 
     <!--
@@ -79,6 +84,9 @@
                 <data
                     android:host="thread"
                     android:scheme="octopmobile" />
+                <data
+                    android:host="today"
+                    android:scheme="octopmobile" />
             </intent-filter>
 
             <!--
@@ -102,6 +110,29 @@
                 android:name="android.app.shortcuts"
                 android:resource="@xml/shortcuts" />
         </activity>
+
+        <!--
+          Health Connect requires a user-visible explanation of how health data is used.
+          The Activity serves Android 13 and below; the protected alias is the Android 14+
+          platform entry shown from Health Connect's permission-management screen.
+        -->
+        <activity
+            android:name=".ui.HealthPermissionsRationaleActivity"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="androidx.health.ACTION_SHOW_PERMISSIONS_RATIONALE" />
+            </intent-filter>
+        </activity>
+        <activity-alias
+            android:name=".ui.ViewHealthPermissionUsageActivity"
+            android:exported="true"
+            android:permission="android.permission.START_VIEW_PERMISSION_USAGE"
+            android:targetActivity=".ui.HealthPermissionsRationaleActivity">
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW_PERMISSION_USAGE" />
+                <category android:name="android.intent.category.HEALTH_PERMISSIONS" />
+            </intent-filter>
+        </activity-alias>
 
         <!--
           WebView 兜底通道（docs/spec.md §7 方案 C）。原生界面缺少某个功能时从这里回到网页版；

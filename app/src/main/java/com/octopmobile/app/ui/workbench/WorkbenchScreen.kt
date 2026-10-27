@@ -26,21 +26,31 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import com.octopmobile.app.R
 import com.octopmobile.app.ui.AppActions
 import com.octopmobile.app.ui.PendingChatStart
 import com.octopmobile.app.ui.PendingHandoff
+import com.octopmobile.app.ui.PendingShareHandoff
 import com.octopmobile.app.ui.asText
 import com.octopmobile.app.ui.threads.ThreadsViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.compose.runtime.DisposableEffect
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.octopmobile.app.OctopApp
+import com.octopmobile.app.data.mobile.ShareInboxSourceAdapter
+import kotlinx.coroutines.launch
 
 /**
  * 工作台的四个落点（docs/spec.md §23）。
@@ -62,12 +72,39 @@ fun WorkbenchScreen(
     onOpenThread: (agentId: String, threadId: String) -> Unit,
     onOpenFreshThread: (agentId: String, threadId: String) -> Unit,
     onNeedsLogin: () -> Unit,
-    initialTab: WorkbenchTab = WorkbenchTab.CHATS,
+    initialTab: WorkbenchTab = WorkbenchTab.TODAY,
 ) {
+    val todayPushViewModel: TodayPushViewModel = viewModel(factory = TodayPushViewModel.Factory)
+    val lifecycleOwner = LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            when (event) {
+                Lifecycle.Event.ON_START -> {
+                    todayPushViewModel.start()
+                    todayPushViewModel.refreshNow()
+                }
+                Lifecycle.Event.ON_STOP -> todayPushViewModel.stop()
+                else -> Unit
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        if (lifecycleOwner.lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)) {
+            todayPushViewModel.start()
+            todayPushViewModel.refreshNow()
+        }
+        onDispose {
+            lifecycleOwner.lifecycle.removeObserver(observer)
+            todayPushViewModel.stop()
+        }
+    }
     // 记住选中的那一栏：从会话页返回时应该回到离开前的那一栏，而不是弹回会话列表
     var tab by rememberSaveable { mutableStateOf(initialTab) }
     var memorySubpageOpen by rememberSaveable { mutableStateOf(false) }
     var taskComposerOpen by rememberSaveable { mutableStateOf(false) }
+    var mobileDataOpen by rememberSaveable { mutableStateOf(false) }
+    var shareChoice by rememberSaveable { mutableStateOf(false) }
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
 
     LaunchedEffect(initialTab) {
         tab = initialTab
@@ -76,11 +113,17 @@ fun WorkbenchScreen(
     LaunchedEffect(tab) {
         if (tab != WorkbenchTab.MEMORY) memorySubpageOpen = false
         if (tab != WorkbenchTab.TASKS) taskComposerOpen = false
+        if (tab != WorkbenchTab.TODAY) mobileDataOpen = false
+    }
+
+    val incomingShare by PendingShareHandoff.pending.collectAsStateWithLifecycle()
+    LaunchedEffect(incomingShare) {
+        if (incomingShare != null) shareChoice = true
     }
 
     Scaffold(
         bottomBar = {
-            if (!memorySubpageOpen && !taskComposerOpen) {
+            if (!memorySubpageOpen && !taskComposerOpen && !mobileDataOpen) {
                 WorkbenchBottomBar(current = tab, onSelect = { tab = it })
             }
         },
@@ -92,16 +135,33 @@ fun WorkbenchScreen(
                 .consumeWindowInsets(padding),
         ) {
             when (tab) {
-                WorkbenchTab.CHATS -> NewConversationPane(
-                    onOpenFreshThread = onOpenFreshThread,
-                    onNeedsLogin = onNeedsLogin,
-                )
+                WorkbenchTab.CHATS -> if (incomingShare == null) {
+                    NewConversationPane(
+                        onOpenFreshThread = onOpenFreshThread,
+                        onNeedsLogin = onNeedsLogin,
+                    )
+                } else {
+                    Box(Modifier.fillMaxSize())
+                }
 
-                WorkbenchTab.TODAY -> TodayPane(
-                    onOpenThread = onOpenThread,
-                    onOpenMemory = { tab = WorkbenchTab.MEMORY },
-                    onNeedsLogin = onNeedsLogin,
-                )
+                WorkbenchTab.TODAY -> when {
+                    mobileDataOpen -> MobileDataPane(onBack = { mobileDataOpen = false })
+                    else -> TodayPane(
+                        onOpenThread = onOpenThread,
+                        onOpenMemory = { tab = WorkbenchTab.MEMORY },
+                        onProcessMobileSignal = { prompt, todayCardId ->
+                            PendingHandoff.arm(
+                                com.octopmobile.app.ui.Handoff(
+                                    text = prompt,
+                                    action = AppActions.SHARE,
+                                    todayCardId = todayCardId,
+                                ),
+                            )
+                            tab = WorkbenchTab.CHATS
+                        },
+                        onNeedsLogin = onNeedsLogin,
+                    )
+                }
 
                 WorkbenchTab.TASKS -> TasksPane(
                     onNeedsLogin = onNeedsLogin,
@@ -115,6 +175,52 @@ fun WorkbenchScreen(
             }
         }
     }
+
+    if (shareChoice) {
+        ShareDestinationDialog(
+            onAskAgent = {
+                val handoff = PendingShareHandoff.take()
+                shareChoice = false
+                if (handoff != null) PendingHandoff.arm(handoff)
+                tab = WorkbenchTab.CHATS
+            },
+            onSave = {
+                val handoff = PendingShareHandoff.take()
+                shareChoice = false
+                if (handoff != null) {
+                    scope.launch {
+                        val container = (context.applicationContext as OctopApp).container
+                        val draft = ShareInboxSourceAdapter(context.contentResolver)
+                            .collect(handoff.text, handoff.uris)
+                        container.mobileDataRepository().saveShare(draft)
+                    }
+                }
+                tab = WorkbenchTab.TODAY
+                mobileDataOpen = true
+            },
+            onDismiss = {
+                PendingShareHandoff.take()
+                shareChoice = false
+            },
+        )
+    }
+}
+
+@Composable
+private fun ShareDestinationDialog(onAskAgent: () -> Unit, onSave: () -> Unit, onDismiss: () -> Unit) {
+    androidx.compose.material3.AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(stringResource(R.string.share_destination_title)) },
+        text = { Text(stringResource(R.string.share_destination_body)) },
+        confirmButton = {
+            Button(onClick = onSave) { Text(stringResource(R.string.share_destination_save)) }
+        },
+        dismissButton = {
+            androidx.compose.material3.TextButton(onClick = onAskAgent) {
+                Text(stringResource(R.string.share_destination_ask))
+            }
+        },
+    )
 }
 
 /**
@@ -137,7 +243,7 @@ private fun NewConversationPane(
     var startRequested by rememberSaveable { mutableStateOf(false) }
     val handoff by PendingHandoff.pending.collectAsStateWithLifecycle()
     LaunchedEffect(handoff, state.selectedAgentId) {
-        if (startRequested || state.selectedAgentId == null) return@LaunchedEffect
+        if ((startRequested && handoff == null) || state.selectedAgentId == null) return@LaunchedEffect
         startRequested = true
         // 有交接就带上（NEW_THREAD 本身就是开空会话，到此为止）；没有就只建新会话。
         val start = PendingHandoff.take()

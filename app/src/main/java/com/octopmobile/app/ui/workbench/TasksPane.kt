@@ -252,6 +252,7 @@ fun TasksPane(
             ),
     ) {
         TasksHeader(
+            taskCount = tasks.size,
             refreshing = state.syncing,
             onRefresh = viewModel::sync,
             onAdd = {
@@ -291,24 +292,54 @@ fun TasksPane(
 }
 
 @Composable
-private fun TasksHeader(refreshing: Boolean, onRefresh: () -> Unit, onAdd: () -> Unit) {
+private fun TasksHeader(
+    taskCount: Int,
+    refreshing: Boolean,
+    onRefresh: () -> Unit,
+    onAdd: () -> Unit,
+) {
     Row(
-        modifier = Modifier.fillMaxWidth().padding(start = 16.dp, end = 8.dp, top = 8.dp, bottom = 4.dp),
+        modifier = Modifier.fillMaxWidth().padding(start = 16.dp, end = 8.dp, top = 10.dp, bottom = 8.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Text(
-            stringResource(R.string.tasks_title),
-            style = MaterialTheme.typography.headlineSmall,
-            fontWeight = FontWeight.SemiBold,
-            modifier = Modifier.weight(1f),
-        )
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                stringResource(R.string.tasks_title),
+                style = MaterialTheme.typography.headlineMedium.copy(fontWeight = FontWeight.Medium),
+            )
+            Spacer(Modifier.height(3.dp))
+            Text(
+                stringResource(R.string.tasks_header_summary, taskCount),
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
         if (refreshing) {
-            CircularProgressIndicator(modifier = Modifier.padding(end = 12.dp).size(18.dp), strokeWidth = 2.dp)
+            Surface(
+                shape = CircleShape,
+                color = MaterialTheme.colorScheme.surface.copy(alpha = 0.78f),
+            ) {
+                Box(
+                    modifier = Modifier.size(48.dp),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(20.dp),
+                        strokeWidth = 2.dp,
+                    )
+                }
+            }
         } else {
-            IconButton(onClick = onRefresh) {
-                Icon(Icons.Filled.Refresh, stringResource(R.string.tasks_refresh))
+            Surface(
+                shape = CircleShape,
+                color = MaterialTheme.colorScheme.surface.copy(alpha = 0.78f),
+            ) {
+                IconButton(onClick = onRefresh) {
+                    Icon(Icons.Filled.Refresh, stringResource(R.string.tasks_refresh))
+                }
             }
         }
+        Spacer(Modifier.width(8.dp))
         Surface(shape = CircleShape, color = MaterialTheme.colorScheme.surface.copy(alpha = 0.9f)) {
             IconButton(onClick = onAdd) {
                 Icon(Icons.Filled.Add, stringResource(R.string.tasks_new))

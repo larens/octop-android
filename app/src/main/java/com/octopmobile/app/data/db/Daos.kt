@@ -382,3 +382,107 @@ interface PendingOpDao {
     @Query("DELETE FROM pending_ops")
     suspend fun clear()
 }
+
+@Dao
+interface MobileSourceDao {
+    @Query("SELECT * FROM mobile_sources ORDER BY sourceType ASC")
+    fun observeAll(): Flow<List<MobileSourceEntity>>
+
+    @Query("SELECT * FROM mobile_sources WHERE sourceType = :sourceType LIMIT 1")
+    suspend fun find(sourceType: String): MobileSourceEntity?
+
+    @Upsert
+    suspend fun upsert(entity: MobileSourceEntity)
+
+    @Query("DELETE FROM mobile_sources")
+    suspend fun clear()
+}
+
+@Dao
+interface MobileEventDao {
+    @Query("SELECT * FROM mobile_events ORDER BY observedAt DESC LIMIT :limit")
+    fun observeRecent(limit: Int): Flow<List<MobileEventEntity>>
+
+    @Query("SELECT COUNT(*) FROM mobile_events WHERE uploadState = 'pending'")
+    fun observePendingCount(): Flow<Int>
+
+    /** 返回 -1 的项已经存在，避免重复采集把已上传事件重新塞回 outbox。 */
+    @Insert(onConflict = OnConflictStrategy.IGNORE)
+    suspend fun insertNew(entities: List<MobileEventEntity>): List<Long>
+
+    @Query("UPDATE mobile_events SET uploadState = 'uploaded' WHERE id IN (:ids)")
+    suspend fun markUploaded(ids: List<String>)
+
+    @Query("DELETE FROM mobile_events WHERE id = :id")
+    suspend fun delete(id: String)
+
+    @Query("DELETE FROM mobile_events")
+    suspend fun clear()
+}
+
+@Dao
+interface MobileOutboxDao {
+    @Query("SELECT * FROM mobile_outbox ORDER BY createdAt ASC LIMIT :limit")
+    suspend fun next(limit: Int): List<MobileOutboxEntity>
+
+    @Upsert
+    suspend fun upsertAll(entities: List<MobileOutboxEntity>)
+
+    @Query("UPDATE mobile_outbox SET retryCount = retryCount + 1, lastAttemptAt = :now WHERE eventId IN (:ids)")
+    suspend fun markAttempted(ids: List<String>, now: Long)
+
+    @Query("DELETE FROM mobile_outbox WHERE eventId IN (:ids)")
+    suspend fun deleteAll(ids: List<String>)
+
+    @Query("DELETE FROM mobile_outbox WHERE eventId = :id")
+    suspend fun delete(id: String)
+
+    @Query("DELETE FROM mobile_outbox")
+    suspend fun clear()
+}
+
+@Dao
+interface MobileSyncStateDao {
+    @Query("SELECT * FROM mobile_sync_state WHERE sourceType = :sourceType LIMIT 1")
+    suspend fun find(sourceType: String): MobileSyncStateEntity?
+
+    @Upsert
+    suspend fun upsert(entity: MobileSyncStateEntity)
+
+    @Query("DELETE FROM mobile_sync_state")
+    suspend fun clear()
+}
+
+@Dao
+interface TodayCardDao {
+    @Query(
+        """
+        SELECT * FROM today_cards
+        WHERE agentId = :agentId AND lifecycle != 'dismissed'
+          AND (lifecycle != 'snoozed' OR snoozedUntil <= :now)
+        ORDER BY updatedAt DESC
+        """,
+    )
+    fun observeVisible(agentId: String, now: Long): Flow<List<TodayCardEntity>>
+
+    @Upsert
+    suspend fun upsertAll(entities: List<TodayCardEntity>)
+
+    @Upsert
+    suspend fun upsert(entity: TodayCardEntity)
+
+    @Query(
+        "SELECT id FROM today_cards WHERE agentId = :agentId AND executionThreadId = :threadId " +
+            "AND actionState IN ('prepared', 'running', 'waiting_confirmation')",
+    )
+    suspend fun activeExecutionCardIds(agentId: String, threadId: String): List<String>
+
+    @Query("DELETE FROM today_cards WHERE agentId = :agentId")
+    suspend fun deleteByAgent(agentId: String)
+
+    @Query("DELETE FROM today_cards WHERE agentId = :agentId AND id NOT IN (:keepIds)")
+    suspend fun deleteMissing(agentId: String, keepIds: List<String>)
+
+    @Query("DELETE FROM today_cards")
+    suspend fun clear()
+}

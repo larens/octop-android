@@ -7,6 +7,7 @@ import android.webkit.CookieManager
 import android.webkit.WebStorage
 import android.widget.Toast
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -41,6 +42,7 @@ import com.octopmobile.app.BuildConfig
 import com.octopmobile.app.Const
 import com.octopmobile.app.OctopApp
 import com.octopmobile.app.R
+import com.octopmobile.app.ui.workbench.MobileDataPane
 import com.octopmobile.app.ui.web.WebViewActivity
 import kotlinx.coroutines.launch
 import java.util.Locale
@@ -56,6 +58,7 @@ fun SettingsScreen(
     onBack: () -> Unit,
     onHostCleared: () -> Unit,
     onLoggedOut: () -> Unit,
+    onOpenMobileData: () -> Unit,
 ) {
     val context = LocalContext.current
     val container = remember(context) { (context.applicationContext as OctopApp).container }
@@ -182,6 +185,16 @@ fun SettingsScreen(
                 onClick = { openWebFallback() },
             )
 
+            HorizontalDivider(Modifier.padding(vertical = 8.dp))
+
+            SectionHeader(stringResource(R.string.settings_data_sources))
+
+            ActionRow(
+                title = stringResource(R.string.settings_mobile_data_title),
+                subtitle = stringResource(R.string.settings_mobile_data_summary),
+                onClick = onOpenMobileData,
+            )
+
             ActionRow(
                 title = stringResource(R.string.settings_clear_cache),
                 subtitle = stringResource(
@@ -190,6 +203,10 @@ fun SettingsScreen(
                 ),
                 onClick = { clearCache() },
             )
+
+            HorizontalDivider(Modifier.padding(vertical = 8.dp))
+
+            SectionHeader(stringResource(R.string.settings_account))
 
             ActionRow(
                 title = stringResource(R.string.settings_logout),
@@ -219,6 +236,19 @@ fun SettingsScreen(
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(horizontal = 24.dp, vertical = 16.dp),
             )
+        }
+    }
+}
+
+@Composable
+fun MobileDataSettingsScreen(onBack: () -> Unit) {
+    Scaffold { padding ->
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(padding),
+        ) {
+            MobileDataPane(onBack = onBack)
         }
     }
 }

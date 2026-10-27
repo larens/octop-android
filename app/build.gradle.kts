@@ -44,8 +44,13 @@ android {
         targetSdk = 35
         versionCode = 1
         versionName = "1.0.0"
+        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
         resourceConfigurations += listOf("en", "zh")
+    }
+
+    sourceSets {
+        getByName("androidTest").assets.srcDir("$projectDir/schemas")
     }
 
     if (hasSigningConfig) {
@@ -109,7 +114,13 @@ android {
         // lifecycle 2.8.x 自带的 lint 检查基于新版 Kotlin 分析 API，与 AGP 8.7.3 内嵌的 lint
         // 不兼容，会在 lintVitalRelease 阶段抛 IncompatibleClassChangeError 直接让 release
         // 构建失败。这是工具链问题、不是代码问题，只关掉这一个检查，其余检查照旧。
-        disable += "NullSafeMutableLiveData"
+        disable += listOf(
+            "NullSafeMutableLiveData",
+            // Compose lint bundled by the current BOM expects a newer Kotlin analysis API than AGP 8.7.3.
+            "FrequentlyChangingValue",
+            "RememberInComposition",
+            "AutoboxingStateCreation",
+        )
     }
 }
 
@@ -153,6 +164,10 @@ dependencies {
     implementation(libs.room.ktx)
     ksp(libs.room.compiler)
 
+    // 手机数据桥：后台可靠上传与系统健康数据聚合。
+    implementation(libs.androidx.work.runtime)
+    implementation(libs.androidx.health.connect)
+
     // 网络与序列化
     implementation(libs.okhttp)
     implementation(libs.okhttp.sse)
@@ -168,4 +183,7 @@ dependencies {
 
     testImplementation(libs.junit)
     testImplementation(libs.mockwebserver)
+    androidTestImplementation(libs.room.testing)
+    androidTestImplementation(libs.androidx.test.ext.junit)
+    androidTestImplementation(libs.androidx.test.runner)
 }

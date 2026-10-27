@@ -13,6 +13,7 @@ import androidx.navigation.navArgument
 import com.octopmobile.app.ui.chat.ChatScreen
 import com.octopmobile.app.ui.connect.ConnectScreen
 import com.octopmobile.app.ui.login.LoginScreen
+import com.octopmobile.app.ui.settings.MobileDataSettingsScreen
 import com.octopmobile.app.ui.settings.SettingsScreen
 import com.octopmobile.app.ui.web.WebViewActivity
 import com.octopmobile.app.ui.workbench.WorkbenchScreen
@@ -33,6 +34,7 @@ import com.octopmobile.app.ui.workbench.workbenchTabOf
 @Composable
 fun OctopNavHost(
     startDestination: String,
+    initialWorkbenchTab: WorkbenchTab = WorkbenchTab.TODAY,
     pendingRoute: String? = null,
     onPendingRouteConsumed: () -> Unit = {},
     navController: NavHostController = rememberNavController(),
@@ -80,17 +82,13 @@ fun OctopNavHost(
                     }
                 },
                 initialTab = initialTab,
-                // 用 THREADS 换 LOGIN：栈里不该留着已经作废的列表页
+                // 登录态失效时清掉当前工作台，避免登录后返回已经作废的页面
                 onNeedsLogin = {
                     navController.navigate(Routes.LOGIN) {
-                        popUpTo(Routes.THREADS) { inclusive = true }
+                        popUpTo(0)
                     }
                 },
             )
-        }
-
-        composable(Routes.THREADS) {
-            workbenchContent(WorkbenchTab.CHATS)
         }
 
         composable(
@@ -99,7 +97,7 @@ fun OctopNavHost(
                 navArgument(Routes.ARG_TAB) {
                     type = NavType.StringType
                     nullable = true
-                    defaultValue = WorkbenchTab.CHATS.routeValue()
+                    defaultValue = initialWorkbenchTab.routeValue()
                 },
             ),
         ) { entry ->
@@ -140,6 +138,15 @@ fun OctopNavHost(
                 onLoggedOut = {
                     navController.navigate(Routes.LOGIN) { popUpTo(0) }
                 },
+                onOpenMobileData = {
+                    navController.navigate(Routes.SETTINGS_MOBILE_DATA)
+                },
+            )
+        }
+
+        composable(Routes.SETTINGS_MOBILE_DATA) {
+            MobileDataSettingsScreen(
+                onBack = { navController.popBackStack() },
             )
         }
     }

@@ -153,7 +153,7 @@
 
 ### 4.3 通知 WebSocket
 
-`WS /api/notifications/ws?token=`（`chat/notify_ws.py:23-26`）—— 用于 cron / 主动关怀推送。**本版不实现**。
+`WS /api/notifications/ws?token=`（`chat/notify_ws.py:23-26`）—— 用于 cron / 主动关怀推送。移动端在工作台前台期间保持一条用户级连接；收到 `dashboard_push` 且 `event=today.card_changed` 时，只按 `agent_id/card_id` 判断是否刷新 Today，不在推送体携带卡片正文。
 
 ---
 
@@ -167,6 +167,33 @@
 | GET | `/api/agents/{agent_id}` | 同上 |
 
 `agent_id` 是**字符串**业务标识（`agents` 表另有整数自增 `id`）。关键字段：`name`, `description`, `default_model`, `icon_url`, `color`, `enabled`, `welcome_message`（`infra/db/repos/agents.py`）。
+
+### 5.1.1 手机事件与 Today 卡（当前自托管实例扩展）
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| POST | `/api/agents/{agent_id}/mobile/ingest` | 最多 50 条手机事件；按 `(agent_id, event_id)` 幂等 |
+| GET | `/api/agents/{agent_id}/today/cards` | 返回未归档且未处于稍后窗口的结构化卡片 |
+| GET | `/api/agents/{agent_id}/today/sources` | 返回手机数据与网页兴趣的最新成功时间、下一次检查、覆盖状态和问题数 |
+| PATCH | `/api/agents/{agent_id}/today/cards/{card_id}` | `unread/read/snoozed/dismissed`；稍后需 `snoozed_until` |
+| GET | `/api/agents/{agent_id}/interest-monitors` | 查询当前 Agent 的兴趣监控 |
+| POST | `/api/agents/{agent_id}/interest-monitors` | 用自然语言主题和 `manual/morning/evening/twice_daily` 创建监控 |
+| PATCH | `/api/agents/{agent_id}/interest-monitors/{monitor_id}` | 启停或调整监控频率；显式操作会清除反馈造成的临时降频 |
+| POST | `/api/agents/{agent_id}/interest-monitors/{monitor_id}/run` | 立即检查；返回结果、新增和发布数量 |
+| DELETE | `/api/agents/{agent_id}/interest-monitors/{monitor_id}` | 删除监控和搜索结果，并重算其所在聚合简报 |
+| POST | `/api/agents/{agent_id}/today/cards/{card_id}/feedback` | 记录 `useful/irrelevant/too_frequent/poor_source` 结构化反馈；不相关同时归档卡片，反馈会按关联监控或来源设置有限期降频 |
+| GET/POST | `/api/agents/{agent_id}/today/goals` | 查询或创建带定义、成功标准和复核时间的明确目标 |
+| PATCH | `/api/agents/{agent_id}/today/goals/{goal_id}` | 暂停、恢复、完成或重新确认目标 |
+
+这些接口都要求 Agent 所有者 JWT。服务端把近期日程、最近健康事实、主动分享和新增网页结果聚合成卡片；每张卡包含 `why_now`、`action_prompt`、`risk_level` 与 `evidence`。`risk_level` 只允许 `A0-A4`：A0 记录、A1 提醒、A2 生成草稿或建议、A3 私域写入、A4 对外发送/删除/付费/权限等高影响动作。A3/A4 卡片只表示“待确认”，不得在结构化工具成功返回前声称已执行或已完成。兴趣监控可选绑定活跃目标；绑定后的简报按“本地日期 × 晨晚窗口 × 目标”隔离，并携带目标名称与成功标准。目标超过 `review_at` 后卡片标为待复核、通知优先级降为低。兴趣监控首轮只建立搜索基线，相同结果不会重复发布；未绑定目标的结果仍按用户、Agent、本地日期和晨间/晚间窗口聚合，手动检查进入当日即时窗口。新证据提交后，服务端通过 notification WS 发送最小 `today.card_changed` 事件，通知失败不回滚卡片。当前尚未接入自动模型调用和长期记忆写入。
+
+日程卡按用户本地日期排序：当天尚未开始的会议优先于未读的后续日程，7 天内日程保留在次级区域，当天已结束的日程只作记录。Android 日历 payload 可携带 `organizer`、`self_attendee_status`、`has_attendee_data`、`is_meeting`、`is_invitation` 与 `calendar_uid`；服务端优先按 `calendar_uid` 去重，旧 provider event id 造成的重复卡会合并证据后把副本标为 dismissed。
+
+`today/sources` 只返回实际出现过数据或配置了兴趣监控的来源，不把“从未接入”伪装成“今天没有变化”。移动端来源按最近一次成功入库时间判断是否过期：系统日历 36 小时、Health Connect 72 小时、主动分享 30 天；网页兴趣会区分 `ok/stale/pending/error/muted`，并携带下一次运行时间。该接口没有新增数据库真值，状态由现有 `mobile_events`、`interest_monitors` 和反馈回退字段实时计算。Android 在 Today 顶部展示可点击的数据覆盖状态，分别进入手机数据或兴趣监控页。
+
+Agent 通过内置受限工具 `today_card_publish` 发布卡片，不解析会话自由文本。工具要求稳定 `dedupe_key`、非空标题/摘要/`why_now`/`action_prompt`、至少一条可检查证据和 A0-A4 风险等级，并校验 Agent、用户与可选目标归属。证据支持三类：`mobile_event` 必须引用当前用户已入库的 `event_id`，`web` 必须提供 http(s) URL，`conversation` 必须引用同一 Agent、同一用户的真实 `thread_id`。同一 `dedupe_key` 更新原卡而不新增重复卡；已归档卡片不会因重复发布被重新唤醒。
+
+定时任务结果由服务端直接投影到 Today，不要求任务 Agent 再调用 `today_card_publish`：`task_type=text` 和 `task_type=agent` 成功交付后，服务端都按稳定键 `agent:cron:<cron_id>` 发布同一张卡，重复运行更新原卡；卡片绑定本次真实结果会话，标题使用任务名，摘要最多保留 3 条结果重点，证据保存结果会话和结果中的全部网页 URL（单一卡片最多 100 条证据）。新闻类任务映射为 `briefing`，并停用同日 `auto:news:*` 自动卡，避免“任务结果”和“新闻与动态”重复；详情页展示完整新闻清单，其他任务分别投影为 `calendar/health/inbox/review/research/task`。打开 Today 时还会为历史已完成任务补建卡片。
 
 ### 5.2 会话（thread）
 
@@ -348,6 +375,7 @@ DTO 来自 `CronJobRow.to_public_dict`（`infra/db/repos/cron.py:108-126`）：
 - 编辑器**直接让用户填规则原文**，不在客户端造一套规则 DSL —— 服务端是唯一解析方，两边各存一份只会多出一处不一致。
 - 「下次执行时间」由 `data/repo/ScheduleRules.kt` **本地估算**，只用于展示，不参与任何逻辑：服务端按自己的 `default_timezone` 解释挂钟时间，与设备时区不一致时会差几小时。
 - 所有写操作遵循「服务端先成功再改本地镜像」。本地表是纯缓存，可以整体重建。
+- 任务完成后的可见结果由服务端投影为 Today 卡；客户端不解析任务会话文本来另造卡片。每个任务固定使用 `agent:cron:<cron_id>`，任务页与 Today 展示的是同一次运行结果，新闻类任务会接管同日自动新闻卡。
 - 空列表走 `deleteByAgent` 而不是 `NOT IN ()` —— 后者在 SQLite 上是语法错的写法。
 
 ---
@@ -433,3 +461,14 @@ Content-Type: application/json
 11. `tool_call_chunk` 的 `name` 与 `args` 是片段，`index` 才是一条工具调用的身份；`display_name` 是给人看的名字，优先展示它。
 12. **`turn.ended` 里没有「被取消」这个字段**：实到字段只有 `turn_id` / `thread_id` / `failed?` / `hitl_paused?`（`infra/gateway/ws/ws_channel.py:337-342`）。所以「用户按了中止」这条信息只能客户端自己记 —— 收到它那一轮的 `turn.ended` 时据此把本地那一行标成中断，而不是 `done`（spec §19 第 11 条）。
 13. **`token` 帧不带任何消息身份**（只有 `content` / `node?`），一条流式行对应哪一轮完全靠客户端自己按回合建行。因此本地流式行的 id 必须与 `turn_id` 绑定（`local-<turn_id>`），断流重连后服务端若仍在跑同一轮，续到的 token 才会写回**同一行**而不是另起一条。
+
+### 8.1 Today 卡片执行状态
+
+`PATCH /api/agents/{agent_id}/today/cards/{card_id}/action` 记录 Today 建议交给 Agent 后的真实执行状态。请求字段为 `state`、`thread_id?`、`turn_id?`、`error?`；状态只允许 `prepared / running / waiting_confirmation / completed / failed`。
+
+- 点击“交给 Agent”只写 `prepared`，不能直接视为完成。
+- 草稿会话不上传；`POST /threads` 成功并绑定真实 `thread_id` 后才建立关联。
+- `turn.started` 写 `running`，`hitl_required` 写 `waiting_confirmation`，`turn.ended` 按 `failed` 写 `completed / failed`，`error` 写 `failed`。
+- 卡片列表会用服务端 active turn 与 HITL store 校正非终态，但不会仅因当前没有 active turn 推断为完成。
+- 服务端同时校验卡片与执行会话属于当前用户及同一个 agent。
+- `risk_level=A3/A4` 的卡片只携带确认指令，发布工具本身不会写入 `completed`，也不会替代对应的 HITL 审批和真实工具结果。

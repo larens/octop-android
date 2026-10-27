@@ -7,9 +7,10 @@ import org.junit.Test
 
 class ThreadVisibilityTest {
     @Test
-    fun onlyUserDashboardConversationsAreVisible() {
+    fun userDashboardAndCronConversationsAreVisible() {
         assertTrue(isVisibleConversation(ThreadDto(threadId = "chat", channelType = "dashboard")))
-        assertFalse(isVisibleConversation(ThreadDto(threadId = "cron", channelType = "cron")))
+        assertTrue(isVisibleConversation(ThreadDto(threadId = "cron", channelType = "cron")))
+        assertFalse(isVisibleConversation(ThreadDto(threadId = "im", channelType = "feishu")))
         assertFalse(
             isVisibleConversation(
                 ThreadDto(

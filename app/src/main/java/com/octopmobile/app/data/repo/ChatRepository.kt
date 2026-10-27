@@ -92,6 +92,10 @@ class ChatRepository(
      */
     private val _threadId = MutableStateFlow(threadId)
     private val threadId: String get() = _threadId.value
+    val boundThreadId: String get() = threadId
+
+    private val _serverEvents = MutableSharedFlow<ServerEvent>(extraBufferCapacity = 32)
+    val serverEvents: SharedFlow<ServerEvent> = _serverEvents.asSharedFlow()
 
     /** 本地草稿（还没有服务端身份）。UI 层据此决定先建服务端会话再发首条消息。 */
     val isDraft: Boolean get() = ThreadRepository.isDraftId(threadId)
@@ -613,6 +617,7 @@ class ChatRepository(
             ServerEvent.Pong,
             -> Unit
         }
+        _serverEvents.emit(event)
     }
 
     // ------------------------------------------------------------ 附件

@@ -1,12 +1,13 @@
 package com.octopmobile.app.ui.workbench
 
-import android.net.Uri
+import android.graphics.drawable.AnimatedImageDrawable
+import android.os.Build
 import android.text.format.DateUtils
-import android.view.ViewGroup
-import android.widget.VideoView
+import android.widget.ImageView
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -14,7 +15,6 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -70,6 +70,9 @@ import com.octopmobile.app.data.repo.MemoryEpisode
 import com.octopmobile.app.ui.asText
 import java.text.DateFormat
 import java.text.SimpleDateFormat
+import java.time.Instant
+import java.time.LocalDate
+import java.time.ZoneId
 import java.util.Date
 import java.util.Locale
 
@@ -132,6 +135,12 @@ private fun MemoryHome(
     onOpenAllDiaries: () -> Unit,
     onOpenDiary: (MemoryEpisode) -> Unit,
 ) {
+    val recentDiaries = remember(state.snapshot?.episodes) {
+        recentDiaries(
+            diaries = state.snapshot?.episodes.orEmpty(),
+            nowMillis = System.currentTimeMillis(),
+        )
+    }
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
         contentPadding = PaddingValues(bottom = 24.dp),
@@ -170,7 +179,7 @@ private fun MemoryHome(
             item {
                 Box(modifier = Modifier.overlapPrevious(40.dp)) {
                     DiaryShelf(
-                        diaries = snapshot.episodes.take(3),
+                        diaries = recentDiaries,
                         onOpenAll = onOpenAllDiaries,
                         onOpenDiary = onOpenDiary,
                     )
@@ -198,7 +207,15 @@ private fun MemoryHero(
         modifier = Modifier
             .fillMaxWidth()
             .height(340.dp)
-            .background(MaterialTheme.colorScheme.background)
+            .background(
+                Brush.verticalGradient(
+                    listOf(
+                        MaterialTheme.colorScheme.primary.copy(alpha = 0.12f),
+                        MaterialTheme.colorScheme.background,
+                        MaterialTheme.colorScheme.background,
+                    ),
+                ),
+            )
             .clipToBounds(),
     ) {
         AgentHeroVideo(
@@ -206,9 +223,9 @@ private fun MemoryHero(
                 .fillMaxWidth()
                 .height(292.dp)
                 .graphicsLayer {
-                    scaleX = 1.7f
-                    scaleY = 1.7f
-                    translationY = 94.dp.toPx()
+                    scaleX = 1.30f
+                    scaleY = 1.30f
+                    translationY = 32.dp.toPx()
                 },
         )
         Box(
@@ -216,12 +233,11 @@ private fun MemoryHero(
                 .fillMaxSize()
                 .background(
                     Brush.verticalGradient(
-                        listOf(
-                            Color.Black.copy(alpha = 0.22f),
-                            Color.Transparent,
-                            MaterialTheme.colorScheme.background.copy(alpha = 0.12f),
-                            MaterialTheme.colorScheme.background,
-                        ),
+                        0f to Color.Transparent,
+                        0.42f to Color.Transparent,
+                        0.68f to MaterialTheme.colorScheme.background.copy(alpha = 0.58f),
+                        0.88f to MaterialTheme.colorScheme.background,
+                        1f to MaterialTheme.colorScheme.background,
                     ),
                 ),
         )
@@ -234,20 +250,40 @@ private fun MemoryHero(
             ) {
                 Text(
                     text = stringResource(R.string.memory_title),
-                    style = MaterialTheme.typography.headlineSmall,
-                    fontWeight = FontWeight.SemiBold,
-                    color = Color.White,
+                    style = MaterialTheme.typography.headlineMedium.copy(
+                        fontWeight = FontWeight.Medium,
+                    ),
+                    color = MaterialTheme.colorScheme.onBackground,
                     modifier = Modifier.weight(1f),
                 )
                 if (refreshing) {
-                    CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
+                    Surface(
+                        shape = CircleShape,
+                        color = MaterialTheme.colorScheme.surface.copy(alpha = 0.78f),
+                    ) {
+                        Box(
+                            modifier = Modifier.size(48.dp),
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(20.dp),
+                                strokeWidth = 2.dp,
+                                color = MaterialTheme.colorScheme.primary,
+                            )
+                        }
+                    }
                 } else if (canRefresh) {
-                    IconButton(onClick = onRefresh) {
-                        Icon(
-                            Icons.Filled.Refresh,
-                            stringResource(R.string.memory_refresh),
-                            tint = Color.White,
-                        )
+                    Surface(
+                        shape = CircleShape,
+                        color = MaterialTheme.colorScheme.surface.copy(alpha = 0.78f),
+                    ) {
+                        IconButton(onClick = onRefresh) {
+                            Icon(
+                                Icons.Filled.Refresh,
+                                stringResource(R.string.memory_refresh),
+                                tint = MaterialTheme.colorScheme.onSurface,
+                            )
+                        }
                     }
                 }
             }
@@ -256,12 +292,12 @@ private fun MemoryHero(
                 name,
                 style = MaterialTheme.typography.headlineMedium,
                 fontWeight = FontWeight.SemiBold,
-                color = Color.White,
+                color = MaterialTheme.colorScheme.onBackground,
             )
             Text(
                 text = stringResource(R.string.memory_agent_companion, name),
                 style = MaterialTheme.typography.bodyMedium,
-                color = Color.White.copy(alpha = 0.86f),
+                color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.78f),
                 modifier = Modifier.padding(bottom = 30.dp),
             )
         }
@@ -270,25 +306,27 @@ private fun MemoryHero(
 
 @Composable
 private fun AgentHeroVideo(modifier: Modifier = Modifier) {
-    val context = LocalContext.current
     AndroidView(
         modifier = modifier.graphicsLayer { clip = true },
         factory = { viewContext ->
-            VideoView(viewContext).apply {
-                layoutParams = ViewGroup.LayoutParams(
-                    ViewGroup.LayoutParams.MATCH_PARENT,
-                    ViewGroup.LayoutParams.MATCH_PARENT,
-                )
-                setVideoURI(Uri.parse("android.resource://${context.packageName}/${R.raw.memory_agent_blink}"))
-                setOnPreparedListener { player ->
-                    player.isLooping = true
-                    player.setVolume(0f, 0f)
-                    start()
+            ImageView(viewContext).apply {
+                scaleType = ImageView.ScaleType.FIT_CENTER
+                setBackgroundColor(android.graphics.Color.TRANSPARENT)
+                setImageResource(R.drawable.memory_agent_blink)
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                    (drawable as? AnimatedImageDrawable)?.apply {
+                        repeatCount = AnimatedImageDrawable.REPEAT_INFINITE
+                        start()
+                    }
                 }
             }
         },
-        update = { if (!it.isPlaying) it.start() },
-        onRelease = { it.stopPlayback() },
+        onRelease = { view ->
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                (view.drawable as? AnimatedImageDrawable)?.stop()
+            }
+            view.setImageDrawable(null)
+        },
     )
 }
 
@@ -401,6 +439,7 @@ private fun DiaryShelf(
             PaddedEmptyCard(R.string.memory_diary_empty_title, R.string.memory_diary_empty_body)
         } else {
             LazyRow(
+                modifier = Modifier.fillMaxWidth(),
                 contentPadding = PaddingValues(horizontal = 16.dp),
                 horizontalArrangement = Arrangement.spacedBy(12.dp),
             ) {
@@ -421,36 +460,55 @@ private fun DiaryShelf(
 
 @Composable
 private fun DiaryCard(diary: MemoryEpisode, onClick: () -> Unit) {
-    Surface(
+    val accent = diaryColor(diary)
+    val shape = RoundedCornerShape(22.dp)
+    Box(
         modifier = Modifier
-            .width(282.dp)
-            .aspectRatio(0.86f)
-            .clip(RoundedCornerShape(26.dp))
+            .width(252.dp)
+            .height(218.dp)
+            .clip(shape)
+            .background(
+                Brush.verticalGradient(
+                    listOf(
+                        MaterialTheme.colorScheme.surface,
+                        accent.copy(alpha = 0.10f),
+                    ),
+                ),
+            )
+            .border(1.dp, accent.copy(alpha = 0.18f), shape)
             .clickable(onClick = onClick),
-        shape = RoundedCornerShape(26.dp),
-        color = diaryColor(diary),
-        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.14f)),
     ) {
-        Column(modifier = Modifier.padding(20.dp)) {
-            DiaryDateBadge(diary.occurredAt)
-            Spacer(Modifier.height(18.dp))
+        Column(modifier = Modifier.padding(16.dp)) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                DiaryDateBadge(diary.occurredAt)
+                Spacer(Modifier.weight(1f))
+                diary.emotion?.takeIf(String::isNotBlank)?.let { EmotionPill(it) }
+                Spacer(Modifier.width(4.dp))
+                Icon(
+                    imageVector = Icons.AutoMirrored.Filled.KeyboardArrowRight,
+                    contentDescription = null,
+                    tint = accent.copy(alpha = 0.82f),
+                    modifier = Modifier.size(18.dp),
+                )
+            }
+            Spacer(Modifier.height(12.dp))
             Text(
                 diaryDisplayTitle(diary),
-                style = MaterialTheme.typography.titleLarge,
-                fontWeight = FontWeight.SemiBold,
+                style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.SemiBold),
                 maxLines = 2,
                 overflow = TextOverflow.Ellipsis,
             )
-            Spacer(Modifier.height(10.dp))
+            Spacer(Modifier.height(6.dp))
             Text(
                 diary.summary,
-                style = MaterialTheme.typography.bodyLarge,
+                style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
-                maxLines = 8,
+                maxLines = 4,
                 overflow = TextOverflow.Ellipsis,
             )
-            Spacer(Modifier.weight(1f))
-            diary.emotion?.takeIf(String::isNotBlank)?.let { EmotionPill(it) }
         }
     }
 }
@@ -461,15 +519,20 @@ private fun DiaryDateBadge(timestamp: Long?) {
     val day = date?.let { SimpleDateFormat("d", Locale.getDefault()).format(it) } ?: "--"
     val week = date?.let { SimpleDateFormat("EEE", Locale.getDefault()).format(it) } ?: "DAY"
     Surface(
-        shape = RoundedCornerShape(12.dp),
-        color = MaterialTheme.colorScheme.surface.copy(alpha = 0.78f),
+        shape = RoundedCornerShape(10.dp),
+        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.58f),
     ) {
-        Column(
-            horizontalAlignment = Alignment.CenterHorizontally,
-            modifier = Modifier.padding(horizontal = 12.dp, vertical = 7.dp),
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            modifier = Modifier.padding(horizontal = 8.dp, vertical = 5.dp),
         ) {
-            Text(week.uppercase(Locale.getDefault()), style = MaterialTheme.typography.labelSmall)
-            Text(day, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold)
+            Text(day, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+            Spacer(Modifier.width(5.dp))
+            Text(
+                week.uppercase(Locale.getDefault()),
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
         }
     }
 }
@@ -681,6 +744,29 @@ private fun EmotionPill(emotion: String) {
 
 private fun latestMemoryActivity(snapshot: com.octopmobile.app.data.repo.ServerMemorySnapshot): Long? =
     (snapshot.episodes.mapNotNull { it.occurredAt } + snapshot.archives.mapNotNull { it.updatedAt }).maxOrNull()
+
+internal fun recentDiaries(
+    diaries: List<MemoryEpisode>,
+    nowMillis: Long,
+    zoneId: ZoneId = ZoneId.systemDefault(),
+): List<MemoryEpisode> {
+    val today = Instant.ofEpochMilli(nowMillis).atZone(zoneId).toLocalDate()
+    val oldestDay = today.minusDays(6)
+    return diaries.asSequence()
+        .mapNotNull { diary ->
+            val timestamp = diary.occurredAt ?: return@mapNotNull null
+            val day = Instant.ofEpochMilli(timestamp).atZone(zoneId).toLocalDate()
+            if (day.isBefore(oldestDay) || day.isAfter(today)) null else diary to day
+        }
+        .sortedWith(
+            compareByDescending<Pair<MemoryEpisode, LocalDate>> { it.second }
+                .thenByDescending { it.first.occurredAt ?: Long.MIN_VALUE },
+        )
+        .distinctBy { it.second }
+        .take(7)
+        .map { it.first }
+        .toList()
+}
 
 private fun diaryDisplayTitle(diary: MemoryEpisode): String = diary.title?.takeIf(String::isNotBlank)
     ?: diary.summary.substringBeforeAny('。', '.', '！', '!', '？', '?', '\n').take(30)

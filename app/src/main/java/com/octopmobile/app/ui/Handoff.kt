@@ -20,6 +20,8 @@ data class Handoff(
     val uris: List<Uri> = emptyList(),
     /** [AppActions] 之一：建完会话之后还要顺手做什么。 */
     val action: String? = null,
+    /** Today 卡片来源；只在真实服务端会话创建后用于建立执行关联。 */
+    val todayCardId: String? = null,
 )
 
 object AppActions {
@@ -73,6 +75,28 @@ object PendingHandoff {
     fun arm(handoff: Handoff) = slot.arm(handoff)
 
     fun take(): Handoff? = slot.take()
+}
+
+/** 系统分享先由工作台询问去向，不能再无条件创建会话。 */
+object PendingShareHandoff {
+    private val slot = OneShot(ttlMs = 5 * 60_000L)
+
+    val pending: StateFlow<Handoff?> = slot.pending
+
+    fun arm(handoff: Handoff) = slot.arm(handoff)
+
+    fun take(): Handoff? = slot.take()
+}
+
+/** 系统通知落到的 Today 卡片；等 Today 真值同步到 Room 后再打开详情。 */
+object PendingTodayCard {
+    private val slot = OneShot()
+
+    val pending: StateFlow<Handoff?> = slot.pending
+
+    fun arm(cardId: String) = slot.arm(Handoff(todayCardId = cardId))
+
+    fun takeCardId(): String? = slot.take()?.todayCardId
 }
 
 /**

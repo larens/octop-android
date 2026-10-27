@@ -22,6 +22,8 @@ import androidx.compose.ui.Modifier
 import androidx.core.content.ContextCompat
 import com.octopmobile.app.OctopApp
 import com.octopmobile.app.ui.theme.OctopTheme
+import com.octopmobile.app.ui.workbench.WorkbenchTab
+import com.octopmobile.app.ui.workbench.routeValue
 import kotlinx.coroutines.flow.first
 
 /**
@@ -41,6 +43,7 @@ class MainActivity : ComponentActivity() {
      * `singleTask` 下 App 已经在栈里时点通知不会再走 `onCreate`，得由 [onNewIntent] 续上。
      */
     private var deepLink by mutableStateOf<Uri?>(null)
+    private var shareEntryPending by mutableStateOf(false)
 
     /**
      * 任务进度通知的运行时申请（Android 13+）。被拒绝不做任何补救 ——
@@ -62,34 +65,67 @@ class MainActivity : ComponentActivity() {
         setContent {
             OctopTheme {
                 var startDestination by remember { mutableStateOf<String?>(null) }
+                var startWorkbenchTab by remember { mutableStateOf<WorkbenchTab?>(null) }
                 var pendingRoute by remember { mutableStateOf<String?>(null) }
 
                 LaunchedEffect(Unit) {
                     val host = container.prefs.currentHost()
                     startDestination = when {
                         // 没配地址 → 连接向导；配了但没令牌 → 登录；都有 → 直接进工作台。
-                        // 「会话」栏会在首帧自己建新会话，不在这里先闪一次列表。
+                        // 默认落在 Today，先看今天值得处理什么。
                         host.isNullOrBlank() -> Routes.CONNECT
                         container.securePrefs.tokenFor(host) == null -> Routes.LOGIN
-                        else -> Routes.THREADS
+                        else -> Routes.THREADS_PATTERN
+                    }
+                    startWorkbenchTab = if (
+                        startDestination == Routes.THREADS_PATTERN &&
+                        Routes.todayCardIdFromDeepLink(deepLink) != null
+                    ) {
+                        WorkbenchTab.TODAY
+                    } else {
+                        WorkbenchTab.TODAY
                     }
                 }
 
                 // 深链要等 startDestination 定下来才知道能不能直达：向导页/登录页里没有可落脚的
                 // 会话列表，这时丢掉比强行跳过去更合理。agent 取当前选中那个 —— 深链只带会话 id。
                 LaunchedEffect(deepLink, startDestination) {
-                    val threadId = Routes.threadIdFromDeepLink(deepLink) ?: return@LaunchedEffect
+                    val threadId = Routes.threadIdFromDeepLink(deepLink)
+                    val todayCardId = Routes.todayCardIdFromDeepLink(deepLink)
+                    if (threadId == null && todayCardId == null) return@LaunchedEffect
                     val destination = startDestination ?: return@LaunchedEffect
                     // 先消费掉：接下来无论跳不跳，这次深链都算处理完了
                     deepLink = null
-                    if (destination != Routes.THREADS) return@LaunchedEffect
+                    if (destination != Routes.THREADS_PATTERN) return@LaunchedEffect
 
-                    val agentId = container.prefs.selectedAgentId.first() ?: return@LaunchedEffect
-                    pendingRoute = Routes.chat(agentId, threadId)
+                    pendingRoute = if (todayCardId != null) {
+                        PendingTodayCard.arm(todayCardId)
+                        // 冷启动已经直接落在 Today 时不需要再导航一次：会话栏的默认入口会
+                        // 自动建会话，和深链抢导航会把它重新盖回“新会话”。
+                        if (startWorkbenchTab == WorkbenchTab.TODAY) {
+                            null
+                        } else {
+                            Routes.threads(WorkbenchTab.TODAY.routeValue())
+                        }
+                    } else {
+                        val agentId = container.prefs.selectedAgentId.first() ?: return@LaunchedEffect
+                        Routes.chat(agentId, requireNotNull(threadId))
+                    }
+                }
+
+                // 从任意页面收到系统分享都先回到工作台，让用户选择“问 Agent”或“存入收集箱”。
+                LaunchedEffect(shareEntryPending, startDestination, pendingRoute) {
+                    if (!shareEntryPending) return@LaunchedEffect
+                    val destination = startDestination ?: return@LaunchedEffect
+                    shareEntryPending = false
+                    if (destination == Routes.THREADS_PATTERN && pendingRoute == null) {
+                        pendingRoute = Routes.threads(com.octopmobile.app.ui.workbench.WorkbenchTab.TODAY.routeValue())
+                    }
                 }
 
                 val destination = startDestination
-                if (destination == null) {
+                val initialWorkbenchTab = startWorkbenchTab
+                if (destination == null || initialWorkbenchTab == null) {
                     Surface(
                         modifier = Modifier.fillMaxSize(),
                         color = MaterialTheme.colorScheme.background,
@@ -97,6 +133,7 @@ class MainActivity : ComponentActivity() {
                 } else {
                     OctopNavHost(
                         startDestination = destination,
+                        initialWorkbenchTab = initialWorkbenchTab,
                         pendingRoute = pendingRoute,
                         onPendingRouteConsumed = { pendingRoute = null },
                     )
@@ -109,7 +146,7 @@ class MainActivity : ComponentActivity() {
         super.onNewIntent(intent)
         setIntent(intent)
         // 只认深链：从 WebView 兜底页 startActivity 回来时 intent 里没有 data，不该被清掉
-        if (Routes.threadIdFromDeepLink(intent.data) != null) {
+        if (Routes.threadIdFromDeepLink(intent.data) != null || Routes.todayCardIdFromDeepLink(intent.data) != null) {
             deepLink = intent.data
         }
         handleSystemEntry(intent)
@@ -133,7 +170,8 @@ class MainActivity : ComponentActivity() {
             val uris = sharedUris(intent)
             // 纯空分享（既没文字也没附件）不当作一次交接，免得建出一个空会话
             if (text == null && uris.isEmpty()) return
-            PendingHandoff.arm(Handoff(text = text, uris = uris, action = AppActions.SHARE))
+            PendingShareHandoff.arm(Handoff(text = text, uris = uris, action = AppActions.SHARE))
+            shareEntryPending = true
         }
     }
 
@@ -144,12 +182,16 @@ class MainActivity : ComponentActivity() {
      * 而我们要的就是「拿到什么类型就按什么类型处理」。
      */
     @Suppress("DEPRECATION")
-    private fun sharedUris(intent: Intent): List<Uri> = when (
-        val raw = intent.extras?.get(Intent.EXTRA_STREAM)
-    ) {
-        is Uri -> listOf(raw)
-        is ArrayList<*> -> raw.filterIsInstance<Uri>()
-        else -> emptyList()
+    private fun sharedUris(intent: Intent): List<Uri> {
+        val extraUris = when (val raw = intent.extras?.get(Intent.EXTRA_STREAM)) {
+            is Uri -> listOf(raw)
+            is ArrayList<*> -> raw.filterIsInstance<Uri>()
+            else -> emptyList()
+        }
+        val clipUris = intent.clipData?.let { clip ->
+            (0 until clip.itemCount).mapNotNull { clip.getItemAt(it).uri }
+        }.orEmpty()
+        return (extraUris + clipUris).distinct()
     }
 
     private fun requestNotificationPermission() {

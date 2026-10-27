@@ -40,6 +40,7 @@ import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
@@ -60,8 +61,11 @@ import androidx.compose.material.icons.filled.AttachFile
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.AlternateEmail
 import androidx.compose.material.icons.filled.Build
+import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Description
+import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.ExpandLess
 import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.KeyboardArrowDown
@@ -96,7 +100,6 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
-import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -323,7 +326,7 @@ fun ChatScreen(
         if (!ready) return@LaunchedEffect
         val start = PendingChatStart.take() ?: return@LaunchedEffect
         when (start.action) {
-            AppActions.SHARE -> viewModel.share(context, start.text, start.uris)
+            AppActions.SHARE -> viewModel.share(context, start.text, start.uris, start.todayCardId)
 
             AppActions.CAMERA -> if (hasPermission(context, Manifest.permission.CAMERA)) {
                 launchCamera()
@@ -449,44 +452,14 @@ fun ChatScreen(
     ) {
         Scaffold(
             topBar = {
-                TopAppBar(
-                    title = {
-                        Column {
-                            Text(
-                                text = thread?.title?.takeIf { it.isNotBlank() }
-                                    ?: stringResource(R.string.chat_new_title),
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis,
-                                style = MaterialTheme.typography.titleMedium,
-                            )
-                            if (turnActive) {
-                                Text(
-                                    text = stringResource(R.string.chat_turn_active),
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = MaterialTheme.colorScheme.primary,
-                                )
-                            }
-                        }
-                    },
-                    navigationIcon = {
-                        IconButton(onClick = {
-                            hideKeyboard()
-                            scope.launch { drawerState.open() }
-                        }) {
-                            Icon(
-                                imageVector = Icons.Filled.Menu,
-                                contentDescription = stringResource(R.string.chat_more_actions),
-                            )
-                        }
-                    },
-                    actions = {
-                        Box(
-                            modifier = Modifier
-                                .padding(end = 16.dp)
-                                .size(8.dp)
-                                .clip(CircleShape)
-                                .background(connectionColor(connection)),
-                        )
+                ChatHeader(
+                    title = thread?.title?.takeIf { it.isNotBlank() }
+                        ?: stringResource(R.string.chat_new_title),
+                    turnActive = turnActive,
+                    connectionColor = connectionColor(connection),
+                    onOpenDrawer = {
+                        hideKeyboard()
+                        scope.launch { drawerState.open() }
                     },
                 )
             },
@@ -679,6 +652,56 @@ fun ChatScreen(
 // ------------------------------------------------------------------ 输入区
 
 @Composable
+private fun ChatHeader(
+    title: String,
+    turnActive: Boolean,
+    connectionColor: Color,
+    onOpenDrawer: () -> Unit,
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .statusBarsPadding()
+            .padding(start = 4.dp, top = 4.dp, end = 16.dp, bottom = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        IconButton(onClick = onOpenDrawer) {
+            Icon(
+                imageVector = Icons.Filled.Menu,
+                contentDescription = stringResource(R.string.chat_more_actions),
+            )
+        }
+        Column(
+            modifier = Modifier
+                .weight(1f)
+                .padding(horizontal = 4.dp),
+        ) {
+            Text(
+                text = title,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                style = MaterialTheme.typography.headlineMedium.copy(
+                    fontWeight = FontWeight.Medium,
+                ),
+            )
+            if (turnActive) {
+                Text(
+                    text = stringResource(R.string.chat_turn_active),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.primary,
+                )
+            }
+        }
+        Box(
+            modifier = Modifier
+                .size(8.dp)
+                .clip(CircleShape)
+                .background(connectionColor),
+        )
+    }
+}
+
+@Composable
 private fun HistoryDrawerContent(
     threads: List<ThreadEntity>,
     currentThreadId: String,
@@ -699,11 +722,24 @@ private fun HistoryDrawerContent(
             .widthIn(max = 360.dp)
             .padding(horizontal = 12.dp, vertical = 16.dp),
     ) {
-        Text(
-            text = stringResource(R.string.app_name),
-            style = MaterialTheme.typography.headlineSmall,
-            modifier = Modifier.padding(horizontal = 12.dp),
-        )
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                text = stringResource(R.string.app_name),
+                style = MaterialTheme.typography.headlineSmall,
+                modifier = Modifier.weight(1f),
+            )
+            IconButton(onClick = onOpenSettings) {
+                Icon(
+                    imageVector = Icons.Filled.Settings,
+                    contentDescription = stringResource(R.string.settings_title),
+                )
+            }
+        }
         Spacer(Modifier.height(12.dp))
         OutlinedButton(
             onClick = onNewConversation,
@@ -728,33 +764,39 @@ private fun HistoryDrawerContent(
             Text(
                 text = stringResource(R.string.chat_history_title),
                 style = MaterialTheme.typography.labelLarge,
-                color = MaterialTheme.colorScheme.primary,
+                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.68f),
                 modifier = Modifier.weight(1f),
             )
             if (editing) {
                 if (selected.isNotEmpty()) {
-                    TextButton(onClick = { confirmDelete = true }) {
-                        Text(stringResource(R.string.chat_delete_selected, selected.size))
+                    IconButton(onClick = { confirmDelete = true }) {
+                        Icon(
+                            imageVector = Icons.Filled.Delete,
+                            contentDescription = stringResource(
+                                R.string.chat_delete_selected,
+                                selected.size,
+                            ),
+                        )
                     }
                 }
-                TextButton(
+                IconButton(
                     onClick = {
                         editing = false
                         selected = emptySet()
                     },
                 ) {
-                    Text(stringResource(R.string.chat_history_manage_done))
+                    Icon(
+                        imageVector = Icons.Filled.Check,
+                        contentDescription = stringResource(R.string.chat_history_manage_done),
+                    )
                 }
             } else {
-                TextButton(onClick = { editing = true }) {
-                    Text(stringResource(R.string.chat_history_manage))
+                IconButton(onClick = { editing = true }) {
+                    Icon(
+                        imageVector = Icons.Filled.Edit,
+                        contentDescription = stringResource(R.string.chat_history_manage),
+                    )
                 }
-            }
-            IconButton(onClick = onOpenSettings) {
-                Icon(
-                    imageVector = Icons.Filled.Settings,
-                    contentDescription = stringResource(R.string.settings_title),
-                )
             }
         }
         Spacer(Modifier.height(8.dp))

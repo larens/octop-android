@@ -39,7 +39,7 @@ class ThreadRepository(
         when (val result = api.threads(agentId, limit)) {
             is ApiResult.Ok -> {
                 val local = threadDao.listByAgent(agentId).associateBy { it.threadId }
-                // Cron/task sessions are implementation details, not user conversations.
+                // Android task drafts are implementation details; scheduled cron output is user-visible.
                 val visible = result.value.filter(::isVisibleConversation)
                 val entities = visible.map { it.toEntity(agentId, local[it.threadId]) }
                 threadDao.upsertAll(entities)
@@ -246,7 +246,11 @@ private fun ThreadDto.toEntity(agentId: String, local: ThreadEntity?): ThreadEnt
 }
 
 internal fun isVisibleConversation(thread: ThreadDto): Boolean =
-    (thread.channelType == null || thread.channelType == "dashboard") &&
+    (
+        thread.channelType == null ||
+            thread.channelType == "dashboard" ||
+            thread.channelType == "cron"
+    ) &&
         thread.sessionKey?.contains(":dashboard:android-task-") != true
 
 /** 角标显示上限，防止 `unreadCount` 无限累加（也避免徽标被撑成一条）。 */

@@ -23,11 +23,14 @@ import com.octopmobile.app.data.remote.ApiResult
 import com.octopmobile.app.data.remote.dto.AgentDto
 import com.octopmobile.app.data.remote.dto.HitlDecision
 import com.octopmobile.app.data.remote.dto.ResolvedModelDto
+import com.octopmobile.app.data.remote.dto.TodayCardActionBody
+import com.octopmobile.app.data.remote.dto.TodayCardActionState
 import com.octopmobile.app.data.repo.ChatRepository
 import com.octopmobile.app.data.repo.ConversationTurn
 import com.octopmobile.app.data.repo.ThreadRepository
 import com.octopmobile.app.data.repo.conversationTurnFor
 import com.octopmobile.app.data.ws.ChatSocket
+import com.octopmobile.app.data.ws.ServerEvent
 import com.octopmobile.app.ui.appContainer
 import com.octopmobile.app.ui.AutoCreatedConversation
 import kotlinx.coroutines.Dispatchers
@@ -62,6 +65,19 @@ data class ChatModelOption(
     val reasoning: Boolean,
 )
 
+internal fun todayActionState(event: ServerEvent): String? = when (event) {
+    is ServerEvent.TurnStarted -> TodayCardActionState.RUNNING
+    is ServerEvent.HitlRequired -> TodayCardActionState.WAITING_CONFIRMATION
+    is ServerEvent.TurnEnded -> when {
+        event.hitlPaused -> TodayCardActionState.WAITING_CONFIRMATION
+        event.failed -> TodayCardActionState.FAILED
+        else -> TodayCardActionState.COMPLETED
+    }
+    is ServerEvent.Error -> TodayCardActionState.FAILED
+    is ServerEvent.TurnStatus -> TodayCardActionState.RUNNING.takeIf { event.active }
+    else -> null
+}
+
 /**
  * 单会话流式（docs/spec.md §18 M1/M2）。
  *
@@ -85,6 +101,8 @@ class ChatViewModel(
 
     /** 草稿 → 服务端会话只建一次：并发点发送/分享时排队等，第二路直接复用已绑定的 id。 */
     private val draftBindMutex = Mutex()
+    private var todayCardId: String? = null
+    private var todayTurnId: String? = null
 
     /**
      * 仓库是否可用（[repository] 已赋值且首屏历史已处理完）。
@@ -183,6 +201,7 @@ class ChatViewModel(
             launch { repo.turnActive.collect { _turnActive.value = it } }
             launch { repo.hitl.collect { _hitl.value = it } }
             launch { repo.errors.collect { uiState = uiState.copy(streamError = it) } }
+            launch { repo.serverEvents.collect { reportTodayAction(instanceHost, repo, it) } }
             launch {
                 repo.observeAttachments().collect { list ->
                     _cachedAttachments.value = list.associateBy { it.id }
@@ -384,13 +403,20 @@ class ChatViewModel(
      * 附件逐个读、逐个传：分享来的 `content://` 常常没有长期读取权限，读不出来的直接跳过，
      * 不因为其中一个坏掉就把整条分享丢掉。只剩不下任何内容时才什么都不做。
      */
-    fun share(context: Context, text: String?, uris: List<Uri>) {
+    fun share(context: Context, text: String?, uris: List<Uri>, sourceTodayCardId: String? = null) {
         val repo = repository ?: return
         if (_busy.value) return
 
+        todayCardId = sourceTodayCardId
         _busy.value = true
         _notice.value = null
         viewModelScope.launch {
+            if (sourceTodayCardId != null) {
+                container.todayRepository(requireNotNull(baseUrl), agentId).setAction(
+                    sourceTodayCardId,
+                    TodayCardActionBody(TodayCardActionState.PREPARED),
+                )
+            }
             val uploaded = mutableListOf<UploadedAttachment>()
             for (uri in uris) {
                 val payload = withContext(Dispatchers.IO) { readAttachment(context, uri) } ?: continue
@@ -404,8 +430,58 @@ class ChatViewModel(
             val body = text?.trim().orEmpty()
             if (body.isEmpty() && uploaded.isEmpty()) return@launch
             // 分享也是「首条消息」，同样要先建服务端会话（拿 id 绑定）再发。
-            if (!bindDraftIfNeeded(repo)) return@launch
+            if (!bindDraftIfNeeded(repo)) {
+                sourceTodayCardId?.let { cardId ->
+                    container.todayRepository(requireNotNull(baseUrl), agentId).setAction(
+                        cardId,
+                        TodayCardActionBody(
+                            state = TodayCardActionState.FAILED,
+                            error = "Unable to create an execution thread",
+                        ),
+                    )
+                }
+                return@launch
+            }
+            if (sourceTodayCardId != null) {
+                container.todayRepository(requireNotNull(baseUrl), agentId).setAction(
+                    sourceTodayCardId,
+                    TodayCardActionBody(
+                        state = TodayCardActionState.PREPARED,
+                        threadId = repo.boundThreadId,
+                    ),
+                )
+            }
             if (!repo.sendTurn(body, uploaded)) _notice.value = ChatNotice.Queued
+        }
+    }
+
+    private suspend fun reportTodayAction(host: String, repo: ChatRepository, event: ServerEvent) {
+        val eventThreadId = event.threadId ?: repo.boundThreadId.takeUnless(ThreadRepository::isDraftId)
+        val state = todayActionState(event) ?: return
+        when (event) {
+            is ServerEvent.TurnStarted -> {
+                todayTurnId = event.turnId
+            }
+            else -> Unit
+        }
+        val turnId = when (event) {
+            is ServerEvent.TurnStarted -> event.turnId
+            is ServerEvent.TurnEnded -> event.turnId
+            else -> todayTurnId
+        }
+        container.todayRepository(host, agentId).reportAction(
+            cardId = todayCardId,
+            threadId = eventThreadId,
+            body = TodayCardActionBody(
+                state = state,
+                threadId = eventThreadId,
+                turnId = turnId,
+                error = (event as? ServerEvent.Error)?.message?.take(2_000),
+            ),
+        )
+        if (state == TodayCardActionState.COMPLETED || state == TodayCardActionState.FAILED) {
+            todayCardId = null
+            todayTurnId = null
         }
     }
 

@@ -3,20 +3,27 @@ package com.octopmobile.app.data
 import android.content.Context
 import com.octopmobile.app.data.attachments.AttachmentStore
 import com.octopmobile.app.data.db.OctopDatabase
+import com.octopmobile.app.data.mobile.LocalPayloadCipher
+import com.octopmobile.app.data.mobile.MobileDataRepository
 import com.octopmobile.app.data.prefs.SecurePrefs
 import com.octopmobile.app.data.remote.AuthInterceptor
 import com.octopmobile.app.data.remote.OctopApi
 import com.octopmobile.app.data.repo.AutomationRepository
 import com.octopmobile.app.data.repo.ChatRepository
 import com.octopmobile.app.data.repo.InstanceRepository
+import com.octopmobile.app.data.repo.InterestMonitorRepository
 import com.octopmobile.app.data.repo.MemoryRepository
 import com.octopmobile.app.data.repo.NaturalLanguageTaskRepository
 import com.octopmobile.app.data.repo.ServerMemoryRepository
 import com.octopmobile.app.data.repo.TagRepository
 import com.octopmobile.app.data.repo.ThreadRepository
+import com.octopmobile.app.data.repo.TodayRepository
+import com.octopmobile.app.data.repo.TodayGoalRepository
 import com.octopmobile.app.data.ws.ChatSocket
+import com.octopmobile.app.data.ws.DashboardNotificationSocket
 import kotlinx.serialization.json.Json
 import okhttp3.OkHttpClient
+import java.util.UUID
 import java.util.concurrent.TimeUnit
 
 /**
@@ -52,6 +59,10 @@ class AppContainer(context: Context) {
 
     /** 令牌与实例归属（docs/spec.md §15）。 */
     val securePrefs: SecurePrefs = SecurePrefs(appContext)
+    private val mobileCipher by lazy { LocalPayloadCipher() }
+    private val mobileDevicePrefs by lazy {
+        appContext.getSharedPreferences("mobile_device", Context.MODE_PRIVATE)
+    }
 
     /** 附件二进制的落盘与容量控制（docs/spec.md §13）。实例无关，全局一个即可。 */
     val attachments: AttachmentStore by lazy { AttachmentStore(appContext, database.attachments()) }
@@ -90,6 +101,14 @@ class AppContainer(context: Context) {
         client = okHttp,
         json = json,
     )
+
+    fun dashboardNotificationSocket(baseUrl: String): DashboardNotificationSocket =
+        DashboardNotificationSocket(
+            baseUrl = baseUrl,
+            tokenProvider = { securePrefs.tokenFor(baseUrl) },
+            client = okHttp,
+            json = json,
+        )
 
     // ------------------------------------------------------------ 仓储装配
 
@@ -149,4 +168,23 @@ class AppContainer(context: Context) {
             },
             refreshTasks = { automationRepository(baseUrl, agentId).refresh() },
         )
+
+    fun mobileDataRepository(): MobileDataRepository = MobileDataRepository(database, mobileCipher, json)
+
+    fun todayRepository(baseUrl: String, agentId: String): TodayRepository = TodayRepository(
+        agentId = agentId,
+        api = api(baseUrl),
+        database = database,
+        json = json,
+    )
+
+    fun interestMonitorRepository(baseUrl: String, agentId: String): InterestMonitorRepository =
+        InterestMonitorRepository(agentId, api(baseUrl))
+
+    fun todayGoalRepository(baseUrl: String, agentId: String): TodayGoalRepository =
+        TodayGoalRepository(agentId, api(baseUrl))
+
+    fun mobileDeviceId(): String = mobileDevicePrefs.getString("id", null) ?: UUID.randomUUID().toString().also {
+        mobileDevicePrefs.edit().putString("id", it).apply()
+    }
 }

@@ -202,3 +202,103 @@ data class PendingOpEntity(
     val retryCount: Int,
     val createdAt: Long,
 )
+
+object MobileSourceType {
+    const val SHARE_INBOX = "share_inbox"
+    const val SYSTEM_CALENDAR = "system_calendar"
+    const val HEALTH_CONNECT = "health_connect"
+}
+
+object MobileUploadState {
+    const val PENDING = "pending"
+    const val UPLOADED = "uploaded"
+}
+
+/** 用户逐项控制的手机数据源；权限状态与开关分开，避免把授权误当成同意上传。 */
+@Entity(tableName = "mobile_sources", indices = [Index("enabled"), Index("updatedAt")])
+data class MobileSourceEntity(
+    @PrimaryKey val sourceType: String,
+    val enabled: Boolean,
+    val permissionState: String,
+    val lastSyncAt: Long?,
+    val lastError: String?,
+    val updatedAt: Long,
+)
+
+/** 手机采集到的最小必要事件。原始内容不会直接进入长期记忆。 */
+@Entity(
+    tableName = "mobile_events",
+    indices = [Index("sourceType"), Index("occurredAt"), Index("uploadState")],
+)
+data class MobileEventEntity(
+    @PrimaryKey val id: String,
+    val sourceType: String,
+    val sourceRecordId: String?,
+    val eventType: String,
+    val occurredAt: Long,
+    val observedAt: Long,
+    val title: String,
+    val summary: String,
+    val payloadJson: String,
+    val privacyClass: String,
+    val uploadState: String,
+    val createdAt: Long,
+)
+
+/** 与展示事件分离的可靠上传队列；仅服务端明确接受后删除。 */
+@Entity(tableName = "mobile_outbox", indices = [Index("createdAt")])
+data class MobileOutboxEntity(
+    @PrimaryKey val eventId: String,
+    val payloadJson: String,
+    val retryCount: Int,
+    val lastAttemptAt: Long?,
+    val createdAt: Long,
+)
+
+@Entity(tableName = "mobile_sync_state")
+data class MobileSyncStateEntity(
+    @PrimaryKey val sourceType: String,
+    val cursor: String?,
+    val updatedAt: Long,
+)
+
+object TodayCardLifecycle {
+    const val UNREAD = "unread"
+    const val READ = "read"
+    const val SNOOZED = "snoozed"
+    const val DISMISSED = "dismissed"
+}
+
+/** 服务端 Today 真值的离线镜像；证据仍指向服务端保存的手机事件。 */
+@Entity(
+    tableName = "today_cards",
+    indices = [Index("agentId"), Index("lifecycle"), Index("updatedAt")],
+)
+data class TodayCardEntity(
+    @PrimaryKey val id: String,
+    val agentId: String,
+    val kind: String,
+    val title: String,
+    val summary: String,
+    val whyNow: String,
+    val confidence: Double,
+    val riskLevel: String,
+    val lifecycle: String,
+    val occurredAt: Long,
+    val snoozedUntil: Long?,
+    val actionPrompt: String,
+    val evidenceJson: String,
+    val evidenceCount: Int,
+    val evidenceSources: String,
+    val sourceUrl: String?,
+    val goalId: String?,
+    val goalTitle: String?,
+    val goalNeedsReview: Boolean,
+    val executionThreadId: String?,
+    val executionTurnId: String?,
+    val actionState: String?,
+    val actionError: String?,
+    val actionUpdatedAt: Long?,
+    val createdAt: Long,
+    val updatedAt: Long,
+)

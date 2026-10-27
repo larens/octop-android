@@ -12,9 +12,23 @@ import com.octopmobile.app.data.remote.dto.HistoryResponse
 import com.octopmobile.app.data.remote.dto.HitlResumeBody
 import com.octopmobile.app.data.remote.dto.LoginRequest
 import com.octopmobile.app.data.remote.dto.LoginResponse
+import com.octopmobile.app.data.remote.dto.InterestMonitorCreateBody
+import com.octopmobile.app.data.remote.dto.InterestMonitorDto
+import com.octopmobile.app.data.remote.dto.InterestMonitorPatchBody
+import com.octopmobile.app.data.remote.dto.InterestMonitorRunResponse
+import com.octopmobile.app.data.remote.dto.MobileIngestBatchBody
+import com.octopmobile.app.data.remote.dto.MobileIngestBatchResponse
 import com.octopmobile.app.data.remote.dto.ResolvedModelDto
 import com.octopmobile.app.data.remote.dto.RenameThreadBody
 import com.octopmobile.app.data.remote.dto.ThreadDto
+import com.octopmobile.app.data.remote.dto.TodayCardDto
+import com.octopmobile.app.data.remote.dto.TodayCardActionBody
+import com.octopmobile.app.data.remote.dto.TodayCardPatchBody
+import com.octopmobile.app.data.remote.dto.TodayCardFeedbackBody
+import com.octopmobile.app.data.remote.dto.TodayCoverageDto
+import com.octopmobile.app.data.remote.dto.TodayGoalCreateBody
+import com.octopmobile.app.data.remote.dto.TodayGoalDto
+import com.octopmobile.app.data.remote.dto.TodayGoalPatchBody
 import com.octopmobile.app.data.remote.dto.TrajectoryHistoryDto
 import com.octopmobile.app.data.remote.dto.UploadResponse
 import com.octopmobile.app.data.remote.dto.UserDto
@@ -397,6 +411,130 @@ class OctopApi(
                 .build(),
         )
 
+    /** 手机事件批量入仓。只有响应中逐条确认的 id 才能从本地 outbox 删除。 */
+    suspend fun ingestMobileEvents(
+        agentId: String,
+        body: MobileIngestBatchBody,
+    ): ApiResult<MobileIngestBatchResponse> = execute(
+        request = Request.Builder()
+            .url(url(API, AGENTS, agentId, MOBILE, INGEST))
+            .post(json.encodeToString(MobileIngestBatchBody.serializer(), body).toRequestBody(JSON_MEDIA_TYPE))
+            .build(),
+        deserializer = MobileIngestBatchResponse.serializer(),
+    )
+
+    suspend fun todayCards(agentId: String): ApiResult<List<TodayCardDto>> = execute(
+        request = Request.Builder().url(url(API, AGENTS, agentId, TODAY, CARDS)).build(),
+        deserializer = ListSerializer(TodayCardDto.serializer()),
+    )
+
+    suspend fun todayCoverage(agentId: String): ApiResult<TodayCoverageDto> = execute(
+        request = Request.Builder().url(url(API, AGENTS, agentId, TODAY, "sources")).build(),
+        deserializer = TodayCoverageDto.serializer(),
+    )
+
+    suspend fun patchTodayCard(
+        agentId: String,
+        cardId: String,
+        body: TodayCardPatchBody,
+    ): ApiResult<TodayCardDto> = execute(
+        request = Request.Builder()
+            .url(url(API, AGENTS, agentId, TODAY, CARDS, cardId))
+            .patch(json.encodeToString(TodayCardPatchBody.serializer(), body).toRequestBody(JSON_MEDIA_TYPE))
+            .build(),
+        deserializer = TodayCardDto.serializer(),
+    )
+
+    suspend fun sendTodayCardFeedback(
+        agentId: String,
+        cardId: String,
+        body: TodayCardFeedbackBody,
+    ): ApiResult<TodayCardDto> = execute(
+        request = Request.Builder()
+            .url(url(API, AGENTS, agentId, TODAY, CARDS, cardId, "feedback"))
+            .post(json.encodeToString(TodayCardFeedbackBody.serializer(), body).toRequestBody(JSON_MEDIA_TYPE))
+            .build(),
+        deserializer = TodayCardDto.serializer(),
+    )
+
+    suspend fun patchTodayCardAction(
+        agentId: String,
+        cardId: String,
+        body: TodayCardActionBody,
+    ): ApiResult<TodayCardDto> = execute(
+        request = Request.Builder()
+            .url(url(API, AGENTS, agentId, TODAY, CARDS, cardId, "action"))
+            .patch(json.encodeToString(TodayCardActionBody.serializer(), body).toRequestBody(JSON_MEDIA_TYPE))
+            .build(),
+        deserializer = TodayCardDto.serializer(),
+    )
+
+    suspend fun todayGoals(agentId: String): ApiResult<List<TodayGoalDto>> = execute(
+        request = Request.Builder().url(url(API, AGENTS, agentId, TODAY, "goals")).build(),
+        deserializer = ListSerializer(TodayGoalDto.serializer()),
+    )
+
+    suspend fun createTodayGoal(agentId: String, body: TodayGoalCreateBody): ApiResult<TodayGoalDto> = execute(
+        request = Request.Builder()
+            .url(url(API, AGENTS, agentId, TODAY, "goals"))
+            .post(json.encodeToString(TodayGoalCreateBody.serializer(), body).toRequestBody(JSON_MEDIA_TYPE))
+            .build(),
+        deserializer = TodayGoalDto.serializer(),
+    )
+
+    suspend fun patchTodayGoal(
+        agentId: String,
+        goalId: String,
+        body: TodayGoalPatchBody,
+    ): ApiResult<TodayGoalDto> = execute(
+        request = Request.Builder()
+            .url(url(API, AGENTS, agentId, TODAY, "goals", goalId))
+            .patch(json.encodeToString(TodayGoalPatchBody.serializer(), body).toRequestBody(JSON_MEDIA_TYPE))
+            .build(),
+        deserializer = TodayGoalDto.serializer(),
+    )
+
+    suspend fun interestMonitors(agentId: String): ApiResult<List<InterestMonitorDto>> = execute(
+        request = Request.Builder().url(url(API, AGENTS, agentId, INTEREST_MONITORS)).build(),
+        deserializer = ListSerializer(InterestMonitorDto.serializer()),
+    )
+
+    suspend fun createInterestMonitor(
+        agentId: String,
+        body: InterestMonitorCreateBody,
+    ): ApiResult<InterestMonitorDto> = execute(
+        request = Request.Builder()
+            .url(url(API, AGENTS, agentId, INTEREST_MONITORS))
+            .post(json.encodeToString(InterestMonitorCreateBody.serializer(), body).toRequestBody(JSON_MEDIA_TYPE))
+            .build(),
+        deserializer = InterestMonitorDto.serializer(),
+    )
+
+    suspend fun patchInterestMonitor(
+        agentId: String,
+        monitorId: String,
+        body: InterestMonitorPatchBody,
+    ): ApiResult<InterestMonitorDto> = execute(
+        request = Request.Builder()
+            .url(url(API, AGENTS, agentId, INTEREST_MONITORS, monitorId))
+            .patch(json.encodeToString(InterestMonitorPatchBody.serializer(), body).toRequestBody(JSON_MEDIA_TYPE))
+            .build(),
+        deserializer = InterestMonitorDto.serializer(),
+    )
+
+    suspend fun runInterestMonitor(agentId: String, monitorId: String): ApiResult<InterestMonitorRunResponse> =
+        execute(
+            request = Request.Builder()
+                .url(url(API, AGENTS, agentId, INTEREST_MONITORS, monitorId, RUN))
+                .post(EMPTY_BODY)
+                .build(),
+            deserializer = InterestMonitorRunResponse.serializer(),
+        )
+
+    suspend fun deleteInterestMonitor(agentId: String, monitorId: String): ApiResult<Unit> = executeUnit(
+        Request.Builder().url(url(API, AGENTS, agentId, INTEREST_MONITORS, monitorId)).delete().build(),
+    )
+
     /**
      * 附件上传（`POST /api/agents/{agent_id}/upload`）。
      * multipart 字段名固定 `file`（`routers/uploads.py:59-83`）。返回的
@@ -598,6 +736,12 @@ class OctopApi(
         private const val UPLOAD = "upload"
         private const val CRON = "cron"
         private const val RUN_NOW = "run-now"
+        private const val MOBILE = "mobile"
+        private const val INGEST = "ingest"
+        private const val TODAY = "today"
+        private const val CARDS = "cards"
+        private const val INTEREST_MONITORS = "interest-monitors"
+        private const val RUN = "run"
         private const val CHAT = "chat"
         private const val HITL = "hitl"
         private const val RESUME = "resume"

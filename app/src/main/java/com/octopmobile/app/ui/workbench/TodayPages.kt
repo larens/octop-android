@@ -1,5 +1,8 @@
 package com.octopmobile.app.ui.workbench
 
+import android.text.format.DateUtils
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -16,9 +19,8 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.Refresh
-import androidx.compose.material3.Card
-import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -29,9 +31,15 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -39,124 +47,340 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import com.octopmobile.app.R
 import com.octopmobile.app.data.db.MemoryItemEntity
 import com.octopmobile.app.data.db.ThreadEntity
+import com.octopmobile.app.data.db.TodayCardEntity
+import com.octopmobile.app.data.db.TodayCardLifecycle
+import com.octopmobile.app.data.remote.dto.TodayFeedbackType
 import com.octopmobile.app.ui.asText
+import com.octopmobile.app.ui.PendingTodayCard
 import com.octopmobile.app.ui.threads.ThreadsViewModel
 
 /**
  * Today 页（docs/spec.md §23.4）。
  *
- * 不做成普通列表：先给「等你确认 / 正在执行 / 最近推进」三个分组，再把最近沉淀的记忆摆一行。
+ * 主动事项以统一卡片流呈现，日程只保留今日完成和未来 3 天的摘要。
  * 页面本身不带顶部栏 —— 它只是工作台的一栏（见 [WorkbenchScreen]）。
  */
 @Composable
 fun TodayPane(
     onOpenThread: (agentId: String, threadId: String) -> Unit,
     onOpenMemory: () -> Unit,
+    onProcessMobileSignal: (String, String?) -> Unit,
     onNeedsLogin: () -> Unit,
 ) {
     val viewModel: ThreadsViewModel = viewModel(factory = ThreadsViewModel.Factory)
     val memoryViewModel: MemoryViewModel = viewModel(factory = MemoryViewModel.Factory)
+    val todayViewModel: TodayViewModel = viewModel(factory = TodayViewModel.Factory)
     val state = viewModel.uiState
     val threads by viewModel.threads.collectAsStateWithLifecycle()
     val memories by memoryViewModel.items.collectAsStateWithLifecycle()
+    val todayCards by todayViewModel.cards.collectAsStateWithLifecycle()
+    val todayState = todayViewModel.uiState
+    val pendingTodayCard by PendingTodayCard.pending.collectAsStateWithLifecycle()
+    var selectedCardId by rememberSaveable { mutableStateOf<String?>(null) }
 
     LaunchedEffect(state.needsLogin) {
         if (state.needsLogin) onNeedsLogin()
     }
+    LaunchedEffect(todayState.needsLogin) {
+        if (todayState.needsLogin) onNeedsLogin()
+    }
+    LaunchedEffect(pendingTodayCard, todayCards) {
+        val cardId = pendingTodayCard?.todayCardId ?: return@LaunchedEffect
+        val card = todayCards.firstOrNull { it.id == cardId } ?: return@LaunchedEffect
+        PendingTodayCard.takeCardId()
+        selectedCardId = card.id
+        if (card.lifecycle == TodayCardLifecycle.UNREAD) todayViewModel.markRead(card)
+    }
+    LaunchedEffect(todayCards, selectedCardId) {
+        if (selectedCardId != null && todayCards.none { it.id == selectedCardId }) {
+            selectedCardId = null
+        }
+    }
 
     val active = threads.filter { it.turnActive }
     val awaiting = threads.filter { it.awaitingUser }
-    val recent = threads.take(5)
     val recentMemory = memories.take(TODAY_MEMORY_LIMIT)
     val agentId = state.selectedAgentId
+    val nowMillis = remember(todayCards) { System.currentTimeMillis() }
+    val groups = remember(todayCards) {
+        groupTodayCards(todayCards, nowMillis)
+    }
+    val currentCards = groups.current
+    val upcomingCards = groups.upcoming
+    val pastCards = groups.past
+    val completedToday = remember(pastCards) { calendarItemSummaries(pastCards) }
+    val conversationHighlights = remember(threads, nowMillis) {
+        todayConversationHighlights(threads, nowMillis)
+    }
+    val updateHighlights = remember(currentCards) {
+        todayUpdateHighlights(currentCards)
+    }
+    val upcomingSummary = remember(upcomingCards) {
+        upcomingCalendarSummary(upcomingCards, nowMillis)
+    }
+    val renderTodayCard: @Composable (TodayCardEntity, Boolean) -> Unit = { card, isPast ->
+        TodayRecommendationCard(
+            card = card,
+            isPast = isPast,
+            onOpenDetail = {
+                if (card.lifecycle == TodayCardLifecycle.UNREAD) todayViewModel.markRead(card)
+                selectedCardId = card.id
+            },
+            onSnooze = { todayViewModel.snooze(card) },
+            onFeedback = { todayViewModel.sendFeedback(card, it) },
+            onOpenExecution = card.executionThreadId?.let { threadId ->
+                { onOpenThread(card.agentId, threadId) }
+            },
+            onProcess = {
+                todayViewModel.markRead(card)
+                onProcessMobileSignal(card.actionPrompt, card.id)
+            },
+        )
+    }
 
-    LazyColumn(
-        modifier = Modifier.fillMaxSize(),
-        contentPadding = PaddingValues(16.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp),
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(
+                Brush.verticalGradient(
+                    listOf(
+                        MaterialTheme.colorScheme.primary.copy(alpha = 0.17f),
+                        MaterialTheme.colorScheme.background,
+                    ),
+                ),
+            ),
     ) {
-        item {
-            TodayHeroCard(
-                title = stringResource(R.string.today_hero_title),
-                body = stringResource(R.string.today_hero_body),
-            )
-        }
-
-        if (awaiting.isNotEmpty()) {
+        LazyColumn(
+            modifier = Modifier.fillMaxSize(),
+            contentPadding = PaddingValues(start = 16.dp, top = 10.dp, end = 16.dp, bottom = 24.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
             item {
-                SectionTitle(stringResource(R.string.today_waiting_title))
-            }
-            items(awaiting, key = { it.threadId }) { thread ->
-                ThreadSummaryCard(
-                    thread = thread,
-                    subtitle = stringResource(R.string.today_waiting_subtitle),
-                    onClick = {
-                        if (agentId != null) onOpenThread(agentId, thread.threadId)
-                    },
+                TodayPageHeader(
+                    currentCount = currentCards.size,
+                    upcomingCount = upcomingCards.size,
+                    refreshing = todayState.refreshing,
+                    onRefresh = todayViewModel::refresh,
                 )
             }
-        }
 
-        if (active.isNotEmpty()) {
-            item {
-                SectionTitle(stringResource(R.string.today_running_title))
+            if (todayState.error != null && todayCards.isNotEmpty()) {
+                item {
+                    TodaySyncNotice(
+                        message = todayState.error.asText(),
+                        onRetry = todayViewModel::refresh,
+                    )
+                }
             }
-            items(active, key = { it.threadId }) { thread ->
-                ThreadSummaryCard(
-                    thread = thread,
-                    subtitle = stringResource(R.string.today_running_subtitle),
-                    onClick = {
-                        if (agentId != null) onOpenThread(agentId, thread.threadId)
-                    },
-                )
+            if (todayState.error != null && todayCards.isEmpty()) {
+                item {
+                    EmptyCard(
+                        title = stringResource(R.string.today_agent_cards_unavailable),
+                        body = todayState.error.asText(),
+                    )
+                }
             }
-        }
 
-        item {
-            SectionTitle(stringResource(R.string.today_recent_title))
-        }
-        if (recent.isEmpty()) {
-            item {
-                EmptyCard(
-                    title = stringResource(R.string.today_empty_title),
-                    body = state.error?.asText() ?: stringResource(R.string.today_empty_body),
-                )
+            if (currentCards.isNotEmpty()) {
+                item {
+                    TodaySectionTitle(
+                        title = stringResource(R.string.today_current_cards_title),
+                        body = stringResource(R.string.today_current_cards_body),
+                    )
+                }
+                items(currentCards, key = { "today-card-${it.id}" }) { card ->
+                    renderTodayCard(card, false)
+                }
             }
-        } else {
-            items(recent, key = { it.threadId }) { thread ->
-                ThreadSummaryCard(
-                    thread = thread,
-                    subtitle = thread.lastMessage ?: stringResource(R.string.today_recent_subtitle),
-                    onClick = {
-                        if (agentId != null) onOpenThread(agentId, thread.threadId)
-                    },
-                )
-            }
-        }
 
-        item {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically,
+            if (
+                completedToday.isNotEmpty() ||
+                conversationHighlights.isNotEmpty() ||
+                updateHighlights.isNotEmpty()
             ) {
-                SectionTitle(stringResource(R.string.today_memory_title))
-                TextButton(onClick = onOpenMemory) {
-                    Text(stringResource(R.string.today_memory_more))
+                item {
+                    TodayDailyReviewCard(
+                        completedSchedules = completedToday,
+                        conversations = conversationHighlights,
+                        updates = updateHighlights,
+                    )
+                }
+            }
+
+            if (upcomingCards.isNotEmpty()) {
+                item {
+                    TodayUpcomingScheduleCard(upcomingSummary)
+                }
+            }
+
+            if (awaiting.isNotEmpty()) {
+                item {
+                    SectionTitle(stringResource(R.string.today_waiting_title))
+                }
+                items(awaiting, key = { it.threadId }) { thread ->
+                    ThreadSummaryCard(
+                        thread = thread,
+                        subtitle = stringResource(R.string.today_waiting_subtitle),
+                        onClick = {
+                            if (agentId != null) onOpenThread(agentId, thread.threadId)
+                        },
+                    )
+                }
+            }
+
+            if (active.isNotEmpty()) {
+                item {
+                    SectionTitle(stringResource(R.string.today_running_title))
+                }
+                items(active, key = { it.threadId }) { thread ->
+                    ThreadSummaryCard(
+                        thread = thread,
+                        subtitle = stringResource(R.string.today_running_subtitle),
+                        onClick = {
+                            if (agentId != null) onOpenThread(agentId, thread.threadId)
+                        },
+                    )
+                }
+            }
+
+            if (recentMemory.isNotEmpty()) {
+                item {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        SectionTitle(stringResource(R.string.today_memory_title))
+                        TextButton(onClick = onOpenMemory) {
+                            Text(stringResource(R.string.today_memory_more))
+                        }
+                    }
+                }
+                items(recentMemory, key = { "memory-${it.id}" }) { memory ->
+                    TodayMemoryCard(memory = memory, onClick = onOpenMemory)
                 }
             }
         }
-        if (recentMemory.isEmpty()) {
-            item {
-                Text(
-                    text = stringResource(R.string.today_memory_empty),
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+    }
+
+    todayCards.firstOrNull { it.id == selectedCardId }?.let { card ->
+        TodayRecommendationDetail(
+            card = card,
+            isPast = pastCards.any { it.id == card.id },
+            onDismiss = { selectedCardId = null },
+            onSnooze = {
+                todayViewModel.snooze(card)
+                selectedCardId = null
+            },
+            onFeedback = { feedbackType ->
+                todayViewModel.sendFeedback(card, feedbackType)
+                if (feedbackType == TodayFeedbackType.IRRELEVANT) selectedCardId = null
+            },
+            onOpenEvidenceThread = { threadId ->
+                selectedCardId = null
+                onOpenThread(card.agentId, threadId)
+            },
+            onOpenExecution = card.executionThreadId?.let { threadId ->
+                {
+                    selectedCardId = null
+                    onOpenThread(card.agentId, threadId)
+                }
+            },
+            onProcess = {
+                selectedCardId = null
+                todayViewModel.markRead(card)
+                onProcessMobileSignal(card.actionPrompt, card.id)
+            },
+        )
+    }
+}
+
+@Composable
+private fun TodayPageHeader(
+    currentCount: Int,
+    upcomingCount: Int,
+    refreshing: Boolean,
+    onRefresh: () -> Unit,
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(top = 6.dp, bottom = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                text = stringResource(R.string.today_title),
+                style = MaterialTheme.typography.headlineMedium.copy(fontWeight = FontWeight.Medium),
+            )
+            Spacer(Modifier.height(3.dp))
+            Text(
+                text = if (currentCount > 0 || upcomingCount > 0) {
+                    stringResource(R.string.today_header_summary, currentCount, upcomingCount)
+                } else {
+                    stringResource(R.string.today_header_clear)
+                },
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        Surface(
+            shape = RoundedCornerShape(50),
+            color = MaterialTheme.colorScheme.surface.copy(alpha = 0.78f),
+        ) {
+            if (refreshing) {
+                CircularProgressIndicator(
+                    modifier = Modifier.padding(14.dp).size(20.dp),
+                    strokeWidth = 2.dp,
                 )
+            } else {
+                IconButton(onClick = onRefresh) {
+                    Icon(
+                        Icons.Filled.Refresh,
+                        contentDescription = stringResource(R.string.today_refresh),
+                    )
+                }
             }
-        } else {
-            items(recentMemory, key = { "memory-${it.id}" }) { memory ->
-                MemorySummaryCard(memory = memory)
+        }
+    }
+}
+
+@Composable
+private fun TodaySectionTitle(title: String, body: String) {
+    Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
+        Text(
+            text = title,
+            style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.SemiBold),
+        )
+        Text(
+            text = body,
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    }
+}
+
+@Composable
+private fun TodaySyncNotice(message: String, onRetry: () -> Unit) {
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(16.dp),
+        color = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.72f),
+    ) {
+        Row(
+            modifier = Modifier.padding(start = 14.dp, end = 6.dp, top = 8.dp, bottom = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                text = message,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onErrorContainer,
+                modifier = Modifier.weight(1f),
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+            )
+            TextButton(onClick = onRetry) {
+                Text(stringResource(R.string.today_retry))
             }
         }
     }
@@ -213,23 +437,10 @@ fun PaneHeader(
 }
 
 @Composable
-private fun TodayHeroCard(title: String, body: String) {
-    Card(
-        shape = RoundedCornerShape(20.dp),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer),
-    ) {
-        Column(modifier = Modifier.padding(16.dp)) {
-            Text(title, style = MaterialTheme.typography.titleMedium)
-            Spacer(Modifier.height(6.dp))
-            Text(body, style = MaterialTheme.typography.bodyMedium)
-        }
-    }
-}
-
-@Composable
-fun SectionTitle(text: String) {
+fun SectionTitle(text: String, modifier: Modifier = Modifier) {
     Text(
         text = text,
+        modifier = modifier,
         style = MaterialTheme.typography.titleSmall,
         color = MaterialTheme.colorScheme.onSurfaceVariant,
     )
@@ -277,28 +488,71 @@ private fun ThreadSummaryCard(
     }
 }
 
-/** Today 上的记忆摘要：只给标题与一行正文，整理动作留在记忆页（[MemoryPane]）。 */
+/** Today 上的记忆提炼卡：与主动建议使用同一套信息层级，整理动作留在记忆页。 */
 @Composable
-private fun MemorySummaryCard(memory: MemoryItemEntity) {
+private fun TodayMemoryCard(memory: MemoryItemEntity, onClick: () -> Unit) {
+    val accent = MaterialTheme.colorScheme.primary
     Surface(
-        modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(16.dp),
-        tonalElevation = 1.dp,
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick),
+        shape = RoundedCornerShape(20.dp),
+        color = MaterialTheme.colorScheme.surface,
+        tonalElevation = 0.dp,
+        border = BorderStroke(1.dp, accent.copy(alpha = 0.14f)),
     ) {
         Column(modifier = Modifier.padding(16.dp)) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Surface(
+                    shape = RoundedCornerShape(50),
+                    color = accent.copy(alpha = 0.11f),
+                ) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 9.dp, vertical = 5.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Icon(
+                            imageVector = Icons.Filled.AutoAwesome,
+                            contentDescription = null,
+                            tint = accent,
+                            modifier = Modifier.size(14.dp),
+                        )
+                        Spacer(Modifier.size(5.dp))
+                        Text(
+                            text = memoryKindLabel(memory.kind),
+                            style = MaterialTheme.typography.labelMedium,
+                            color = accent,
+                        )
+                    }
+                }
+                Spacer(Modifier.weight(1f))
+                Text(
+                    text = DateUtils.getRelativeTimeSpanString(
+                        memory.updatedAt,
+                        System.currentTimeMillis(),
+                        DateUtils.MINUTE_IN_MILLIS,
+                    ).toString(),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            Spacer(Modifier.height(9.dp))
             Text(
                 text = memory.title,
-                style = MaterialTheme.typography.titleSmall,
-                maxLines = 1,
+                style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.SemiBold),
+                maxLines = 2,
                 overflow = TextOverflow.Ellipsis,
             )
             if (memory.summary.isNotBlank()) {
-                Spacer(Modifier.height(6.dp))
+                Spacer(Modifier.height(5.dp))
                 Text(
                     text = memory.summary,
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 1,
+                    maxLines = 3,
                     overflow = TextOverflow.Ellipsis,
                 )
             }
