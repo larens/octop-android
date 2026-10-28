@@ -32,4 +32,30 @@ class MobileSignalPromptTest {
         assertFalse(prompt.contains("SECRET"))
         assertFalse(prompt.contains("content_base64"))
     }
+
+    @Test
+    fun `health prompts expose daily metrics without inventing unavailable data`() {
+        val heart = mobileSignalPrompt(
+            eventType = "health.heart_rate_daily",
+            summary = "heart",
+            payloadJson = """{"date":"2026-10-28","average_bpm":72,"min_bpm":52,"max_bpm":148,"measurements":96}""",
+        )
+        val oxygen = mobileSignalPrompt(
+            eventType = "health.oxygen_saturation_daily",
+            summary = "oxygen",
+            payloadJson = """{"average_percent":96.5,"min_percent":94,"measurements":12}""",
+        )
+        val hrv = mobileSignalPrompt(
+            eventType = "health.hrv_daily",
+            summary = "hrv",
+            payloadJson = """{"average_ms":41.6,"measurements":4}""",
+        )
+
+        assertTrue(heart.contains("平均心率：72 bpm"))
+        assertTrue(heart.contains("最高心率：148 bpm"))
+        assertTrue(oxygen.contains("平均血氧：97%"))
+        assertTrue(oxygen.contains("最低血氧：94%"))
+        assertTrue(hrv.contains("HRV（压力参考）：42 ms"))
+        assertFalse(hrv.contains("压力："))
+    }
 }

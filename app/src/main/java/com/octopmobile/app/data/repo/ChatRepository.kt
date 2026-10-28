@@ -14,11 +14,13 @@ import com.octopmobile.app.data.db.PendingOpDao
 import com.octopmobile.app.data.db.PendingOpEntity
 import com.octopmobile.app.data.db.ThreadDao
 import com.octopmobile.app.data.db.ThreadEntity
+import com.octopmobile.app.data.model.ASK_USER_TOOL
 import com.octopmobile.app.data.model.HitlPending
 import com.octopmobile.app.data.model.Part
 import com.octopmobile.app.data.model.PartType
 import com.octopmobile.app.data.model.PartsCodec
 import com.octopmobile.app.data.model.UploadedAttachment
+import com.octopmobile.app.data.model.hitlQuestionFromToolCall
 import com.octopmobile.app.data.model.parseHitlPending
 import com.octopmobile.app.data.remote.ApiError
 import com.octopmobile.app.data.remote.ApiResult
@@ -55,6 +57,7 @@ import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
 import java.io.IOException
 import java.util.UUID
 
@@ -301,8 +304,14 @@ class ChatRepository(
     suspend fun resolveHitl(
         decisions: List<HitlDecision>,
         pendingId: String? = null,
+        fallbackMessage: String? = null,
     ) {
         if (decisions.isEmpty()) return
+        if (fallbackMessage != null) {
+            _hitl.value = null
+            sendTurn(fallbackMessage)
+            return
+        }
         val previous = _hitl.value
         _hitl.value = null
         _turnActive.value = true
@@ -443,6 +452,16 @@ class ChatRepository(
                         }
                         delay(page.historyRetryAfterMs.takeIf { it > 0 } ?: DEFAULT_RETRY_MS)
                         continue
+                    }
+
+                    // 重开会话时，最新一轮可能正停在 ask_user_question。历史接口会带回
+                    // hitl_pending，不能只恢复消息而丢掉这张待答卡，否则界面会停在
+                    // 一段「思考过程」上，用户看不到也无法回答真正等待的问题。
+                    if (offset == 0) {
+                        if (page.turnActive) _turnActive.value = true
+                        val pending = parseHitlPending(page.hitlPending)
+                            ?: orphanQuestionFromHistory(page.messages)
+                        pending?.let { _hitl.value = it }
                     }
 
                     val entities = page.messages.mapIndexed { index, dto ->
@@ -963,6 +982,37 @@ class ChatRepository(
         /** 压缩标记的翻页上限。压缩是稀疏事件，正常一页就到底。 */
         const val MAX_MARKER_PAGES = 4
     }
+}
+
+/**
+ * 最后一轮里如果有未完成的 `ask_user_question`，从历史工具调用恢复问题卡。
+ *
+ * 只向上找到最近一条用户消息为止；若遇到同名工具结果，说明问题已经回答过，不再恢复。
+ */
+internal fun orphanQuestionFromHistory(messages: List<MessageDto>): HitlPending? {
+    val answeredCallIds = mutableSetOf<String>()
+    for (message in messages.asReversed()) {
+        if (message.role == "user") return null
+        for (block in message.content.asReversed()) {
+            when {
+                block.type == BlockType.TOOL_RESULT -> {
+                    if (block.name == ASK_USER_TOOL) return null
+                    block.id?.let(answeredCallIds::add)
+                }
+
+                block.type == BlockType.TOOL_USE && block.name == ASK_USER_TOOL -> {
+                    if (block.id != null && block.id in answeredCallIds) continue
+                    val args = when (val input = block.input) {
+                        null, JsonNull -> null
+                        is JsonPrimitive -> input.content
+                        else -> input.toString()
+                    }
+                    return hitlQuestionFromToolCall(ASK_USER_TOOL, args)
+                }
+            }
+        }
+    }
+    return null
 }
 
 /**

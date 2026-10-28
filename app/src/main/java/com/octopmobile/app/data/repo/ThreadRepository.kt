@@ -8,6 +8,9 @@ import com.octopmobile.app.data.remote.dto.ConversationMode
 import com.octopmobile.app.data.remote.dto.ResolvedModelDto
 import com.octopmobile.app.data.remote.dto.RenameThreadBody
 import com.octopmobile.app.data.remote.dto.ThreadDto
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.Flow
 import java.util.UUID
 
@@ -55,6 +58,9 @@ class ThreadRepository(
                         threadDao.deleteMissing(agentId, keepIds)
                     }
                 }
+                // 服务端 `has_messages` 是比本地乐观消息更可靠的「真空」判据。新会话仍在
+                // 发送首条消息时保留 `is_active`；其余没有消息的历史项从列表隐藏并清掉。
+                cleanupEmptyServerThreads(result.value.filter(::shouldDeleteEmptyServerThread))
                 ApiResult.Ok(entities.size)
             }
 
@@ -203,6 +209,23 @@ class ThreadRepository(
         threadDao.markRead(threadId)
         api.markThreadRead(agentId, threadId)
     }
+
+    /**
+     * 清掉历史遗留的服务端空会话。
+     *
+     * 删除是尽力而为：失败不影响列表同步，下次刷新还会再见到并重试。并发限制为 6，
+     * 避免一次同步向一个较慢的实例打出几十个写请求。
+     */
+    private suspend fun cleanupEmptyServerThreads(threads: List<ThreadDto>) {
+        if (threads.isEmpty()) return
+        threads.chunked(EMPTY_THREAD_DELETE_CONCURRENCY).forEach { batch ->
+            coroutineScope {
+                batch.map { thread ->
+                    async { api.deleteThread(agentId, thread.threadId) }
+                }.awaitAll()
+            }
+        }
+    }
 }
 
 /**
@@ -245,14 +268,36 @@ private fun ThreadDto.toEntity(agentId: String, local: ThreadEntity?): ThreadEnt
     )
 }
 
-internal fun isVisibleConversation(thread: ThreadDto): Boolean =
-    (
-        thread.channelType == null ||
-            thread.channelType == "dashboard" ||
-            thread.channelType == "cron"
-    ) &&
+/**
+ * 会话列表只展示用户能感知的线程，并且不再把服务端空记录当成“新会话”。
+ *
+ * `is_active` / `turn_active` / `awaiting_user` 的空会话要保留：首条消息可能刚发出或仍在
+ * 等待人工处理，这时删掉它会把正在进行的工作一起抹掉。
+ */
+internal fun isVisibleConversation(thread: ThreadDto): Boolean {
+    val isConversation = thread.channelType == null ||
+        thread.channelType == "dashboard" ||
+        thread.channelType == "cron"
+    val userRelevant = thread.hasMessages ||
+        thread.isActive ||
+        thread.turnActive ||
+        thread.awaitingUser
+    return isConversation && userRelevant &&
         thread.sessionKey?.contains(":dashboard:android-task-") != true
+}
+
+/** 只删除确定无消息、且不属于当前活动/待处理回合的普通 dashboard 会话。 */
+internal fun shouldDeleteEmptyServerThread(thread: ThreadDto): Boolean =
+    (thread.channelType == null || thread.channelType == "dashboard") &&
+        thread.sessionKey?.contains(":dashboard:android-task-") != true &&
+        !thread.hasMessages &&
+        !thread.isActive &&
+        !thread.turnActive &&
+        !thread.awaitingUser &&
+        !thread.pinned
 
 /** 角标显示上限，防止 `unreadCount` 无限累加（也避免徽标被撑成一条）。 */
 private const val UNREAD_CAP = 99
+
+private const val EMPTY_THREAD_DELETE_CONCURRENCY = 6
 

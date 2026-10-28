@@ -87,15 +87,36 @@ internal fun TodayRecommendationCard(
     onFeedback: (String) -> Unit,
 ) {
     val uriHandler = LocalUriHandler.current
-    val accent = todayCardAccent(card.kind, isPast)
     val shape = RoundedCornerShape(22.dp)
     val calendar = remember(card.summary) {
         if (card.kind == "calendar") parseCalendarCardSummary(card.summary) else null
     }
+    val summarySections = remember(card.summary) { parseTodayCardSummary(card.summary) }
+    val healthVisualization = remember(card.kind, card.summary) {
+        if (card.kind == "health") parseHealthVisualization(card.summary) else null
+    }
+    val summaryPreview = remember(card.summary) { todayCardSummaryPreview(card.summary) }
+    val structuredAdvice = summarySections.firstOrNull {
+        it.heading == "处理建议" || it.heading == "改善建议"
+    }
+    val hasStructuredAdvice = structuredAdvice != null
+    val structuredHealthAdvice = structuredAdvice?.takeIf { card.kind == "health" }
+    val structuredEmail = card.kind == "inbox" && hasStructuredAdvice
+    val hasPendingMail = structuredEmail && summarySections.any { it.heading == "待处理邮件" }
+    val pendingPreview = summarySections
+        .firstOrNull { it.heading == "待处理邮件" }
+        ?.body
+        .orEmpty()
+    val accent = if (hasPendingMail) PendingMailAccent else todayCardAccent(card.kind, isPast)
+    val executionCompleted = card.actionState == TodayCardActionState.COMPLETED
     val evidence = remember(card.evidenceJson) { decodeTodayCardEvidence(card.evidenceJson) }
     val newsFacts = remember(card.evidenceJson) { todayNewsFacts(evidence) }
     val facts = remember(card.kind, card.evidenceJson) {
-        if (card.kind.isNewsCard()) newsFacts.take(3) else todayCardFacts(evidence)
+        when {
+            card.kind == "health" -> emptyList()
+            card.kind.isNewsCard() -> newsFacts.take(3)
+            else -> todayCardFacts(evidence)
+        }
     }
     val isUpcoming = remember(card.occurredAt) {
         Instant.ofEpochMilli(card.occurredAt)
@@ -126,7 +147,15 @@ internal fun TodayRecommendationCard(
                 modifier = Modifier.fillMaxWidth(),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                CategoryPill(card.kind, accent)
+                CategoryPill(
+                    kind = card.kind,
+                    accent = accent,
+                    label = if (hasPendingMail) {
+                        stringResource(R.string.today_card_pending_mail)
+                    } else {
+                        null
+                    },
+                )
                 Spacer(Modifier.width(8.dp))
                 if (card.lifecycle == "unread") {
                     Box(
@@ -174,19 +203,29 @@ internal fun TodayRecommendationCard(
                 color = MaterialTheme.colorScheme.onSurface,
             )
 
-            if (calendar == null && card.summary.isNotBlank()) {
+            if (calendar == null && summaryPreview.isNotBlank()) {
                 Spacer(Modifier.height(5.dp))
                 Text(
-                    text = card.summary,
+                    text = summaryPreview,
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = if (card.kind == "health") 12 else 4,
+                    overflow = TextOverflow.Ellipsis,
                 )
+            }
+
+            if (healthVisualization != null) {
+                Spacer(Modifier.height(12.dp))
+                HealthVisualPanel(healthVisualization, accent)
             }
 
             if (calendar != null) {
                 Spacer(Modifier.height(12.dp))
                 CalendarFocusPanel(calendar, accent)
-            } else if (facts.isNotEmpty()) {
+            } else if (hasPendingMail) {
+                Spacer(Modifier.height(12.dp))
+                PendingMailPanel(pendingPreview, accent)
+            } else if (facts.isNotEmpty() && !structuredEmail && card.kind != "health") {
                 Spacer(Modifier.height(12.dp))
                 Column(verticalArrangement = Arrangement.spacedBy(7.dp)) {
                     facts.forEachIndexed { index, fact ->
@@ -200,82 +239,107 @@ internal fun TodayRecommendationCard(
                 }
             }
 
-            Spacer(Modifier.height(12.dp))
-            AdvicePanel(
-                text = todayCardAdvice(card, isPast, isUpcoming),
-                accent = accent,
-            )
+            if (!hasStructuredAdvice) {
+                Spacer(Modifier.height(12.dp))
+                AdvicePanel(
+                    text = todayCardAdvice(card, isPast, isUpcoming),
+                    accent = accent,
+                )
+            } else if (structuredHealthAdvice != null) {
+                Spacer(Modifier.height(12.dp))
+                AdvicePanel(
+                    text = structuredHealthAdvice.body,
+                    accent = accent,
+                )
+            }
 
-            card.actionState?.let { state ->
-                Spacer(Modifier.height(10.dp))
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Box(
-                        modifier = Modifier
-                            .size(7.dp)
-                            .clip(CircleShape)
-                            .background(todayActionStateColor(state)),
-                    )
-                    Spacer(Modifier.width(7.dp))
-                    Text(
-                        text = todayActionStateName(state),
-                        style = MaterialTheme.typography.labelMedium,
-                        color = todayActionStateColor(state),
-                    )
-                }
-                card.actionError?.takeIf(String::isNotBlank)?.let { error ->
-                    Spacer(Modifier.height(4.dp))
-                    Text(
-                        text = error,
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.error,
-                        maxLines = 2,
-                        overflow = TextOverflow.Ellipsis,
-                    )
+            if (!hasStructuredAdvice && !executionCompleted) {
+                card.actionState?.let { state ->
+                    Spacer(Modifier.height(10.dp))
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Box(
+                            modifier = Modifier
+                                .size(7.dp)
+                                .clip(CircleShape)
+                                .background(todayActionStateColor(state)),
+                        )
+                        Spacer(Modifier.width(7.dp))
+                        Text(
+                            text = todayActionStateName(state),
+                            style = MaterialTheme.typography.labelMedium,
+                            color = todayActionStateColor(state),
+                        )
+                    }
+                    card.actionError?.takeIf(String::isNotBlank)?.let { error ->
+                        Spacer(Modifier.height(4.dp))
+                        Text(
+                            text = error,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.error,
+                            maxLines = 2,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
                 }
             }
 
-            Spacer(Modifier.height(12.dp))
             val primaryAction = when {
                 opensFullNewsList -> onOpenDetail
+                structuredEmail -> onOpenDetail
                 onOpenExecution != null -> onOpenExecution
                 isPast -> onOpenDetail
                 else -> onProcess
             }
-            Button(
-                onClick = primaryAction,
-                shape = RoundedCornerShape(50),
-                colors = ButtonDefaults.buttonColors(
-                    containerColor = if (isPast) {
-                        MaterialTheme.colorScheme.surfaceVariant
-                    } else {
-                        accent
-                    },
-                    contentColor = if (isPast) {
-                        MaterialTheme.colorScheme.onSurfaceVariant
-                    } else {
-                        Color.White
-                    },
-                ),
-                contentPadding = PaddingValues(horizontal = 16.dp, vertical = 9.dp),
-            ) {
-                Icon(
-                    imageVector = if (isPast) Icons.Filled.History else Icons.Filled.AutoAwesome,
-                    contentDescription = null,
-                    modifier = Modifier.size(17.dp),
-                )
-                Spacer(Modifier.width(7.dp))
-                Text(
-                    text = if (opensFullNewsList) {
-                        stringResource(R.string.today_card_view_all_news, newsFacts.size)
-                    } else {
-                        todayCardActionLabel(
-                            card = card,
-                            isPast = isPast,
-                            isUpcoming = isUpcoming,
-                            hasExecution = onOpenExecution != null,
-                        )
-                    },
-                )
+            if (structuredEmail || !executionCompleted) {
+                Spacer(Modifier.height(12.dp))
+                Button(
+                    onClick = primaryAction,
+                    shape = RoundedCornerShape(50),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = if (isPast) {
+                            MaterialTheme.colorScheme.surfaceVariant
+                        } else {
+                            accent
+                        },
+                        contentColor = if (isPast) {
+                            MaterialTheme.colorScheme.onSurfaceVariant
+                        } else {
+                            Color.White
+                        },
+                    ),
+                    contentPadding = PaddingValues(horizontal = 16.dp, vertical = 9.dp),
+                ) {
+                    Icon(
+                        imageVector = when {
+                            structuredEmail -> Icons.Filled.ChevronRight
+                            isPast -> Icons.Filled.History
+                            else -> Icons.Filled.AutoAwesome
+                        },
+                        contentDescription = null,
+                        modifier = Modifier.size(17.dp),
+                    )
+                    Spacer(Modifier.width(7.dp))
+                    Text(
+                        text = if (opensFullNewsList) {
+                            stringResource(R.string.today_card_view_all_news, newsFacts.size)
+                        } else if (structuredEmail) {
+                            stringResource(
+                                if (hasPendingMail) {
+                                    R.string.today_card_action_view_pending
+                                } else {
+                                    R.string.today_card_action_view_details
+                                },
+                            )
+                        } else {
+                            todayCardActionLabel(
+                                card = card,
+                                isPast = isPast,
+                                isUpcoming = isUpcoming,
+                                hasExecution = onOpenExecution != null,
+                            )
+                        },
+                    )
+                }
             }
         }
     }
@@ -541,17 +605,44 @@ internal fun TodayRecommendationDetail(
     onProcess: () -> Unit,
 ) {
     val uriHandler = LocalUriHandler.current
-    val accent = todayCardAccent(card.kind, isPast)
     val calendar = remember(card.summary) {
         if (card.kind == "calendar") parseCalendarCardSummary(card.summary) else null
     }
+    val summarySections = remember(card.summary) {
+        parseTodayCardSummary(card.summary).filterNot { it.heading == "健康可视化" }
+    }
+    val healthVisualization = remember(card.kind, card.summary) {
+        if (card.kind == "health") parseHealthVisualization(card.summary) else null
+    }
+    val hasStructuredAdvice = summarySections.any {
+        it.heading == "处理建议" || it.heading == "改善建议"
+    }
+    val structuredEmail = card.kind == "inbox" && hasStructuredAdvice
+    val hasPendingMail = structuredEmail && summarySections.any { it.heading == "待处理邮件" }
+    val accent = if (hasPendingMail) PendingMailAccent else todayCardAccent(card.kind, isPast)
+    val executionCompleted = card.actionState == TodayCardActionState.COMPLETED
+    val sectionsBeforeFacts = if (structuredEmail) {
+        summarySections.filter { it.heading == "收件概览" }
+    } else {
+        summarySections
+    }
+    val sectionsAfterFacts = if (structuredEmail) {
+        summarySections.filterNot { it.heading == "收件概览" }
+    } else {
+        emptyList()
+    }
     val evidence = remember(card.evidenceJson) { decodeTodayCardEvidence(card.evidenceJson) }
     val facts = remember(card.kind, card.evidenceJson) {
-        if (card.kind.isNewsCard()) {
-            todayNewsFacts(evidence)
-        } else {
-            todayCardFacts(evidence, limit = 6)
+        when {
+            card.kind == "health" -> emptyList()
+            card.kind.isNewsCard() -> todayNewsFacts(evidence)
+            else -> todayCardFacts(evidence, limit = 6)
         }
+    }
+    val contactFacts = if (structuredEmail) {
+        facts.filterNot { it.title == "邮件汇总结果" }
+    } else {
+        facts
     }
     val isUpcoming = remember(card.occurredAt) {
         Instant.ofEpochMilli(card.occurredAt)
@@ -592,7 +683,15 @@ internal fun TodayRecommendationDetail(
                             .padding(start = 20.dp, top = 10.dp, end = 8.dp),
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
-                        CategoryPill(card.kind, accent)
+                        CategoryPill(
+                            kind = card.kind,
+                            accent = accent,
+                            label = if (hasPendingMail) {
+                                stringResource(R.string.today_card_pending_mail)
+                            } else {
+                                null
+                            },
+                        )
                         Spacer(Modifier.weight(1f))
                         IconButton(onClick = onDismiss) {
                             Icon(
@@ -613,72 +712,99 @@ internal fun TodayRecommendationDetail(
                             text = card.title,
                             style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.SemiBold),
                         )
-                        if (calendar == null && card.summary.isNotBlank()) {
-                            Spacer(Modifier.height(10.dp))
-                            Text(
-                                text = card.summary,
-                                style = MaterialTheme.typography.bodyMedium,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
+                        if (healthVisualization != null) {
+                            Spacer(Modifier.height(12.dp))
+                            HealthVisualPanel(healthVisualization, accent)
+                        }
+                        if (calendar == null && sectionsBeforeFacts.isNotEmpty()) {
+                            SummarySectionList(sectionsBeforeFacts)
                         }
                         if (calendar != null) {
                             Spacer(Modifier.height(14.dp))
                             CalendarFocusPanel(calendar, accent)
                         }
 
-                        if (calendar == null && facts.isNotEmpty()) {
+                        if (
+                            calendar == null &&
+                            contactFacts.isNotEmpty() &&
+                            (!structuredEmail || hasPendingMail)
+                        ) {
                             Spacer(Modifier.height(16.dp))
                             SectionTitle(
                                 if (card.kind.isNewsCard()) {
-                                    stringResource(R.string.today_card_news_list_title, facts.size)
+                                    stringResource(
+                                        R.string.today_card_news_list_title,
+                                        contactFacts.size,
+                                    )
+                                } else if (structuredEmail && hasPendingMail) {
+                                    stringResource(R.string.today_card_pending_contacts)
+                                } else if (structuredEmail) {
+                                    stringResource(R.string.today_card_important_contacts)
                                 } else {
                                     stringResource(R.string.today_card_related_content)
                                 },
                             )
                             Spacer(Modifier.height(9.dp))
                             Column(verticalArrangement = Arrangement.spacedBy(7.dp)) {
-                                facts.forEachIndexed { index, fact ->
-                                    FactCard(
-                                        index = index,
-                                        fact = fact,
-                                        accent = accent,
-                                        onOpen = when {
-                                            fact.url != null -> {
-                                                { uriHandler.openUri(requireNotNull(fact.url)) }
-                                            }
-                                            fact.sourceType == "conversation" &&
-                                                !fact.sourceRecordId.isNullOrBlank() -> {
-                                                { onOpenEvidenceThread(requireNotNull(fact.sourceRecordId)) }
-                                            }
-                                            else -> null
-                                        },
-                                    )
+                                contactFacts.forEachIndexed { index, fact ->
+                                    val onOpen = when {
+                                        fact.url != null -> {
+                                            { uriHandler.openUri(requireNotNull(fact.url)) }
+                                        }
+                                        fact.sourceType == "conversation" &&
+                                            !fact.sourceRecordId.isNullOrBlank() -> {
+                                            { onOpenEvidenceThread(requireNotNull(fact.sourceRecordId)) }
+                                        }
+                                        else -> null
+                                    }
+                                    if (structuredEmail) {
+                                        ContactHighlightCard(
+                                            fact = fact,
+                                            accent = accent,
+                                            onOpen = onOpen,
+                                        )
+                                    } else {
+                                        FactCard(
+                                            index = index,
+                                            fact = fact,
+                                            accent = accent,
+                                            onOpen = onOpen,
+                                        )
+                                    }
                                 }
                             }
                         }
 
-                        Spacer(Modifier.height(16.dp))
-                        AdvicePanel(
-                            text = todayCardAdvice(card, isPast, isUpcoming),
-                            accent = accent,
-                        )
+                        if (calendar == null && sectionsAfterFacts.isNotEmpty()) {
+                            SummarySectionList(sectionsAfterFacts)
+                        }
 
-                        card.actionState?.let { state ->
-                            Spacer(Modifier.height(20.dp))
-                            SectionTitle(stringResource(R.string.today_card_detail_execution))
-                            Spacer(Modifier.height(7.dp))
-                            Text(
-                                text = todayActionStateName(state),
-                                style = MaterialTheme.typography.titleSmall,
-                                color = todayActionStateColor(state),
+                        if (!hasStructuredAdvice) {
+                            Spacer(Modifier.height(16.dp))
+                            AdvicePanel(
+                                text = todayCardAdvice(card, isPast, isUpcoming),
+                                accent = accent,
                             )
-                            card.actionError?.takeIf(String::isNotBlank)?.let { error ->
-                                Spacer(Modifier.height(5.dp))
+                        }
+
+                        if (!hasStructuredAdvice && !executionCompleted) {
+                            card.actionState?.let { state ->
+                                Spacer(Modifier.height(20.dp))
+                                SectionTitle(stringResource(R.string.today_card_detail_execution))
+                                Spacer(Modifier.height(7.dp))
                                 Text(
-                                    text = error,
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.error,
+                                    text = todayActionStateName(state),
+                                    style = MaterialTheme.typography.titleSmall,
+                                    color = todayActionStateColor(state),
                                 )
+                                card.actionError?.takeIf(String::isNotBlank)?.let { error ->
+                                    Spacer(Modifier.height(5.dp))
+                                    Text(
+                                        text = error,
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.error,
+                                    )
+                                }
                             }
                         }
 
@@ -720,7 +846,7 @@ internal fun TodayRecommendationDetail(
                             )
                         }
                         Spacer(Modifier.weight(1f))
-                        if (!isPast) {
+                        if (!isPast && !structuredEmail && !executionCompleted) {
                             Button(
                                 onClick = onOpenExecution ?: onProcess,
                                 shape = RoundedCornerShape(50),
@@ -753,7 +879,7 @@ internal fun TodayRecommendationDetail(
 }
 
 @Composable
-private fun CategoryPill(kind: String, accent: Color) {
+private fun CategoryPill(kind: String, accent: Color, label: String? = null) {
     Surface(
         shape = RoundedCornerShape(50),
         color = accent.copy(alpha = 0.12f),
@@ -770,7 +896,7 @@ private fun CategoryPill(kind: String, accent: Color) {
             )
             Spacer(Modifier.width(6.dp))
             Text(
-                text = todayCardCategoryName(kind),
+                text = label ?: todayCardCategoryName(kind),
                 style = MaterialTheme.typography.labelMedium,
                 color = accent,
             )
@@ -840,6 +966,143 @@ private fun CalendarFocusPanel(
                         )
                     }
                 }
+            }
+        }
+    }
+}
+
+@Composable
+private fun PendingMailPanel(text: String, accent: Color) {
+    Surface(
+        modifier = Modifier
+            .fillMaxWidth()
+            .border(1.dp, accent.copy(alpha = 0.30f), RoundedCornerShape(16.dp)),
+        shape = RoundedCornerShape(16.dp),
+        color = accent.copy(alpha = 0.10f),
+    ) {
+        Row(modifier = Modifier.padding(horizontal = 13.dp, vertical = 12.dp)) {
+            Icon(
+                imageVector = Icons.Filled.Inbox,
+                contentDescription = null,
+                tint = accent,
+                modifier = Modifier.size(20.dp),
+            )
+            Spacer(Modifier.width(10.dp))
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = stringResource(R.string.today_card_pending_mail),
+                    style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.SemiBold),
+                    color = accent,
+                )
+                if (text.isNotBlank()) {
+                    Spacer(Modifier.height(4.dp))
+                    Text(
+                        text = text,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurface,
+                        maxLines = 4,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun SummarySectionList(sections: List<TodayCardSummarySection>) {
+    sections.forEach { section ->
+        Spacer(Modifier.height(10.dp))
+        section.heading?.let { heading ->
+            SectionTitle(heading)
+            Spacer(Modifier.height(5.dp))
+        }
+        Text(
+            text = section.body,
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    }
+}
+
+@Composable
+private fun ContactHighlightCard(
+    fact: TodayCardFact,
+    accent: Color,
+    onOpen: (() -> Unit)?,
+) {
+    val titleParts = fact.title.split("：", limit = 2)
+    val contactName = titleParts.first().trim()
+    val topic = titleParts.getOrNull(1)?.trim().orEmpty()
+    val modifier = if (onOpen != null) {
+        Modifier.fillMaxWidth().clickable(onClick = onOpen)
+    } else {
+        Modifier.fillMaxWidth()
+    }
+    Surface(
+        modifier = modifier.border(
+            width = 1.dp,
+            color = accent.copy(alpha = 0.28f),
+            shape = RoundedCornerShape(16.dp),
+        ),
+        shape = RoundedCornerShape(16.dp),
+        color = accent.copy(alpha = 0.09f),
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 13.dp, vertical = 12.dp),
+            verticalAlignment = Alignment.Top,
+        ) {
+            Surface(
+                modifier = Modifier.size(38.dp),
+                shape = CircleShape,
+                color = accent,
+            ) {
+                Box(contentAlignment = Alignment.Center) {
+                    Text(
+                        text = contactName.firstOrNull()?.uppercaseChar()?.toString() ?: "?",
+                        style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
+                        color = Color.White,
+                    )
+                }
+            }
+            Spacer(Modifier.width(11.dp))
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = contactName,
+                    style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.SemiBold),
+                    color = accent,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                if (topic.isNotBlank()) {
+                    Spacer(Modifier.height(3.dp))
+                    Text(
+                        text = topic,
+                        style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Medium),
+                        color = MaterialTheme.colorScheme.onSurface,
+                        maxLines = 3,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+                fact.excerpt?.let { excerpt ->
+                    Spacer(Modifier.height(5.dp))
+                    Text(
+                        text = excerpt,
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 3,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+            }
+            if (onOpen != null) {
+                Spacer(Modifier.width(6.dp))
+                Icon(
+                    imageVector = Icons.Filled.ChevronRight,
+                    contentDescription = null,
+                    tint = accent,
+                    modifier = Modifier.size(18.dp),
+                )
             }
         }
     }
@@ -1040,6 +1303,8 @@ private fun todayCardAccent(kind: String, isPast: Boolean): Color = when {
     kind == "news" -> Color(0xFF188C78)
     else -> Color(0xFF5B8DEF)
 }
+
+private val PendingMailAccent = Color(0xFFC64D35)
 
 @Composable
 private fun todayCardActionLabel(

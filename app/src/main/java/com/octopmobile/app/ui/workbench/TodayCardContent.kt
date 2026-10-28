@@ -2,6 +2,7 @@ package com.octopmobile.app.ui.workbench
 
 import com.octopmobile.app.data.db.TodayCardEntity
 import com.octopmobile.app.data.db.ThreadEntity
+import com.octopmobile.app.data.remote.dto.TodayCardActionState
 import com.octopmobile.app.data.remote.dto.TodayEvidenceDto
 import java.time.Instant
 import java.time.LocalDate
@@ -38,17 +39,88 @@ internal fun groupTodayCards(
     val outsideWindow = cards.filter { card ->
         card.kind == "calendar" && card.localDate(zoneId).isAfter(upcomingWindowEnd)
     }
-    val excluded = upcoming.toSet() + past.toSet() + outsideWindow.toSet()
+    val previousDays = cards.filter { card ->
+        card.kind == "calendar" && card.localDate(zoneId).isBefore(today)
+    }
+    val excluded = upcoming.toSet() + past.toSet() + outsideWindow.toSet() + previousDays.toSet()
     val current = cards
         .filterNot { it in excluded }
         .sortedWith(
-            compareBy<TodayCardEntity>(
-                { if (it.kind == "calendar") 0 else 1 },
-                { if (it.kind == "calendar") it.occurredAt else Long.MAX_VALUE },
-                { -it.updatedAt },
-            ),
+            compareByDescending<TodayCardEntity> { it.currentPriority(nowMillis) }
+                .thenByDescending(TodayCardEntity::updatedAt)
+                .thenBy(TodayCardEntity::title),
         )
     return TodayCardGroups(current = current, upcoming = upcoming, past = past)
+}
+
+private fun TodayCardEntity.currentPriority(nowMillis: Long): Int {
+    if (kind == "health") return healthPriority(nowMillis)
+    val pendingMail = kind == "inbox" && todayCardHasPendingMail(summary)
+    val base = if (kind == "calendar") {
+        val minutesUntilStart =
+            ((occurredAt - nowMillis) / MINUTE_MILLIS).coerceAtLeast(0)
+        when {
+            minutesUntilStart <= 15 -> 100
+            minutesUntilStart <= 30 -> 92
+            minutesUntilStart <= 60 -> 84
+            minutesUntilStart <= 120 -> 72
+            minutesUntilStart <= 240 -> 58
+            minutesUntilStart <= 480 -> 42
+            minutesUntilStart <= 720 -> 30
+            else -> 18
+        }
+    } else {
+        val ageMinutes = ((nowMillis - updatedAt) / MINUTE_MILLIS).coerceAtLeast(0)
+        val freshness = when {
+            ageMinutes <= 10 -> 88
+            ageMinutes <= 30 -> 78
+            ageMinutes <= 60 -> 68
+            ageMinutes <= 120 -> 54
+            ageMinutes <= 240 -> 40
+            ageMinutes <= 480 -> 26
+            ageMinutes <= 720 -> 16
+            else -> 8
+        }
+        freshness -
+            if (actionState == TodayCardActionState.COMPLETED && !pendingMail) 12 else 0
+    }
+    val needsConfirmation =
+        actionState == TodayCardActionState.WAITING_CONFIRMATION ||
+            riskLevel == "A3" ||
+            riskLevel == "A4"
+    return base +
+        (if (needsConfirmation) 30 else 0) +
+        (if (lifecycle == "unread") 4 else 0) +
+        (if (pendingMail) 10 else 0)
+}
+
+private fun TodayCardEntity.healthPriority(nowMillis: Long): Int {
+    val localNow = Instant.ofEpochMilli(nowMillis)
+        .atZone(ZoneId.systemDefault())
+    val window = parseHealthVisualization(summary)?.window
+    val base = when (window) {
+        "morning" -> when (localNow.hour) {
+            in 5..8 -> 94
+            in 9..11 -> 78
+            in 12..14 -> 46
+            in 15..17 -> 30
+            else -> 12
+        }
+        "evening" -> when (localNow.hour) {
+            in 18..20 -> 94
+            in 21..22 -> 78
+            23, 0, 1, 2, 3, 4 -> 34
+            else -> 12
+        }
+        "alert" -> if (localNow.hour in 9..17) {
+            val ageMinutes = ((nowMillis - updatedAt) / MINUTE_MILLIS).coerceAtLeast(0)
+            if (ageMinutes <= 90) 88 else 66
+        } else {
+            8
+        }
+        else -> 40
+    }
+    return base + (if (lifecycle == "unread") 4 else 0)
 }
 
 internal data class TodayCalendarItemSummary(
@@ -131,7 +203,7 @@ internal fun todayUpdateHighlights(
     limit: Int = 4,
 ): List<TodayReviewItem> =
     cards.asSequence()
-        .filter { it.kind != "calendar" && it.kind != "conversation" }
+        .filter { it.kind != "calendar" && it.kind != "conversation" && it.kind != "health" }
         .flatMap { card ->
             val facts = todayCardFacts(decodeTodayCardEvidence(card.evidenceJson), limit = 2)
             if (facts.isEmpty()) {
@@ -162,6 +234,53 @@ internal data class CalendarCardDetails(
     val eventType: String?,
     val location: String?,
 )
+
+internal data class TodayCardSummarySection(
+    val heading: String?,
+    val body: String,
+)
+
+internal fun todayCardHasPendingMail(summary: String): Boolean =
+    parseTodayCardSummary(summary).any { it.heading == "待处理邮件" }
+
+internal fun parseTodayCardSummary(summary: String): List<TodayCardSummarySection> {
+    val normalized = summary.trim()
+    if (normalized.isEmpty()) return emptyList()
+    val headings = SummaryHeadingPattern.findAll(normalized).toList()
+    if (headings.isEmpty()) {
+        return listOf(TodayCardSummarySection(heading = null, body = normalized))
+    }
+    return buildList {
+        val preface = normalized.substring(0, headings.first().range.first).trim()
+        if (preface.isNotEmpty()) add(TodayCardSummarySection(heading = null, body = preface))
+        headings.forEachIndexed { index, match ->
+            val bodyStart = match.range.last + 1
+            val bodyEnd = headings.getOrNull(index + 1)?.range?.first ?: normalized.length
+            add(
+                TodayCardSummarySection(
+                    heading = match.groupValues[1].trim(),
+                    body = normalized.substring(bodyStart, bodyEnd).trim(),
+                ),
+            )
+        }
+    }
+}
+
+internal fun todayCardSummaryPreview(summary: String): String {
+    val sections = parseTodayCardSummary(summary)
+        .filterNot { it.heading == "健康可视化" }
+    val preferredHeadings = setOf(
+        "收件概览",
+        "联系概览",
+        "睡眠概览",
+        "昨晚睡眠",
+        "今日概览",
+        "需要留意",
+    )
+    return sections.firstOrNull { it.heading in preferredHeadings }?.body
+        ?: sections.firstOrNull()?.body
+        ?: summary.trim()
+}
 
 internal fun parseCalendarCardSummary(summary: String): CalendarCardDetails {
     val parts = summary.split("·").map(String::trim).filter(String::isNotEmpty)
@@ -237,5 +356,9 @@ private fun String.isInternalThreadId(): Boolean =
 
 private val InternalThreadIdPattern =
     Regex("(?i)^(?:draft-)?[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
+
+private val SummaryHeadingPattern = Regex("(?m)^【([^】]+)】\\s*$")
+
+private const val MINUTE_MILLIS = 60_000L
 
 private val TodayEvidenceJson = Json { ignoreUnknownKeys = true }

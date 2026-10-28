@@ -22,6 +22,7 @@ import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.gestures.animateScrollBy
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
@@ -45,9 +46,13 @@ import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.selection.selectable
+import androidx.compose.foundation.selection.selectableGroup
+import androidx.compose.foundation.gestures.scrollBy
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.gestures.detectTapGestures
@@ -95,6 +100,7 @@ import androidx.compose.material3.ModalNavigationDrawer
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.RadioButton
 import androidx.compose.material3.rememberDrawerState
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
@@ -125,6 +131,7 @@ import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontStyle
@@ -165,10 +172,14 @@ import com.octopmobile.app.data.db.MessageEntity
 import com.octopmobile.app.data.db.MessageStatus
 import com.octopmobile.app.data.db.ThreadEntity
 import com.octopmobile.app.data.model.HitlPending
+import com.octopmobile.app.data.model.HitlQuestion
+import com.octopmobile.app.data.model.HitlQuestionAnswer
+import com.octopmobile.app.data.model.HitlQuestionOption
 import com.octopmobile.app.data.model.Part
 import com.octopmobile.app.data.model.PartType
 import com.octopmobile.app.data.model.PartsCodec
 import com.octopmobile.app.data.model.UploadedAttachment
+import com.octopmobile.app.data.model.formatQuestionAnswers
 import com.octopmobile.app.data.remote.dto.AgentDto
 import com.octopmobile.app.data.remote.dto.HitlDecision
 import com.octopmobile.app.data.repo.ConversationTurn
@@ -181,6 +192,7 @@ import com.octopmobile.app.ui.threads.ThreadsViewModel
 import com.octopmobile.app.ui.workbench.WorkbenchBottomBar
 import com.octopmobile.app.ui.workbench.WorkbenchTab
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.flow.first
 import kotlinx.serialization.json.Json
 import java.io.File
 
@@ -387,10 +399,13 @@ fun ChatScreen(
         derivedStateOf {
             val info = listState.layoutInfo
             val last = info.visibleItemsInfo.lastOrNull() ?: return@derivedStateOf true
-            // 第二个条件是「消息比一屏还短」的情况：那时最后一项不是 total-1（旧内容仍在下标里），
-            // 但它就贴在底部，同样应该继续跟随。
-            last.index >= info.totalItemsCount - 1 ||
-                last.offset + last.size >= info.viewportEndOffset - deadZone
+            // 长回复本身就是一个很高的 item：只看见它的顶部时，最后一项虽然“可见”，
+            // 用户离真正的最新内容还很远。这里要求末项的底边进入死区，才继续自动跟随。
+            if (!listState.canScrollForward) return@derivedStateOf true
+            val remaining = info.viewportEndOffset - (last.offset + last.size)
+            last.index == info.totalItemsCount - 1 &&
+                remaining >= 0 &&
+                remaining <= deadZone
         }
     }
 
@@ -401,8 +416,21 @@ fun ChatScreen(
     // 新内容到达时才滚动，且只在用户仍处于死区内时。这里读 atBottom 的当前值（不是在
     // 组合期捕获）—— 用 snapshotFlow 监听它会变成「用户滑到底就强制贴底」，反而抢滚动。
     val stickKey = messages.size to (messages.lastOrNull()?.partsJson?.length ?: 0)
-    LaunchedEffect(stickKey) {
-        if (atBottom && messages.isNotEmpty()) listState.scrollToItem(lastItemIndex)
+    var positionedOnEntry by remember(threadId) { mutableStateOf(false) }
+
+    // 首次进入必须主动落到最新：LazyColumn 默认从第 0 项开始，历史页一长就会停在旧消息。
+    LaunchedEffect(lastItemIndex, messages.isNotEmpty()) {
+        if (positionedOnEntry || messages.isEmpty()) return@LaunchedEffect
+        snapshotFlow { listState.layoutInfo.totalItemsCount }
+            .first { it > lastItemIndex }
+        listState.scrollToLatest(lastItemIndex, animate = false)
+        positionedOnEntry = true
+    }
+
+    LaunchedEffect(stickKey, positionedOnEntry) {
+        if (positionedOnEntry && atBottom && messages.isNotEmpty()) {
+            listState.scrollToLatest(lastItemIndex, animate = false)
+        }
     }
 
     // 滑到顶部自动续拉更早的一页。这里读 viewModel.uiState 而不是捕获的 state ——
@@ -587,7 +615,11 @@ fun ChatScreen(
             // 用户上滑离开死区后就不再自动贴底，这时给出回到最新的入口。
             if (!atBottom && messages.isNotEmpty()) {
                 FilledTonalIconButton(
-                    onClick = { scope.launch { listState.animateScrollToItem(lastItemIndex) } },
+                    onClick = {
+                        scope.launch {
+                            listState.scrollToLatest(lastItemIndex, animate = true)
+                        }
+                    },
                     modifier = Modifier
                         .align(Alignment.BottomEnd)
                         .padding(end = 16.dp, bottom = 16.dp),
@@ -983,43 +1015,42 @@ private fun ChatBottomBar(
         ) {
             if (pending != null) {
                 HitlCard(pending = pending, onResolve = onResolve)
-                Spacer(Modifier.height(6.dp))
-            }
+            } else {
+                // 候选面板紧贴输入框上方：它认的是「正在打的那个 `@`」，弹窗会把它和输入框隔开一屏。
+                if (mentionSuggestions.isNotEmpty()) {
+                    MentionSuggestions(agents = mentionSuggestions, onPick = onPickMention)
+                    Spacer(Modifier.height(6.dp))
+                }
 
-            // 候选面板紧贴输入框上方：它认的是「正在打的那个 `@`」，弹窗会把它和输入框隔开一屏。
-            if (mentionSuggestions.isNotEmpty()) {
-                MentionSuggestions(agents = mentionSuggestions, onPick = onPickMention)
-                Spacer(Modifier.height(6.dp))
-            }
+                if (busy || attachments.isNotEmpty()) {
+                    AttachmentRow(
+                        attachments = attachments,
+                        busy = busy,
+                        onRemove = onRemove,
+                    )
+                    Spacer(Modifier.height(6.dp))
+                }
 
-            if (busy || attachments.isNotEmpty()) {
-                AttachmentRow(
-                    attachments = attachments,
-                    busy = busy,
-                    onRemove = onRemove,
+                InputRow(
+                    blocked = blocked,
+                    canSend = attachments.isNotEmpty(),
+                    canMention = canMention,
+                    modelOptions = modelOptions,
+                    selectedModel = selectedModel,
+                    modelsLoading = modelsLoading,
+                    onSelectModel = onSelectModel,
+                    onSend = onSend,
+                    onCancel = onCancel,
+                    onUploadFile = onUploadFile,
+                    onUploadImage = onUploadImage,
+                    onTakePhoto = onTakePhoto,
+                    onRecordVoiceNote = onRecordVoiceNote,
+                    onMention = { onInputChange(input.withMentionTrigger()) },
+                    input = input,
+                    onInputChange = onInputChange,
+                    onInputFocusChange = onInputFocusChange,
                 )
-                Spacer(Modifier.height(6.dp))
             }
-
-            InputRow(
-                blocked = blocked,
-                canSend = attachments.isNotEmpty(),
-                canMention = canMention,
-                modelOptions = modelOptions,
-                selectedModel = selectedModel,
-                modelsLoading = modelsLoading,
-                onSelectModel = onSelectModel,
-                onSend = onSend,
-                onCancel = onCancel,
-                onUploadFile = onUploadFile,
-                onUploadImage = onUploadImage,
-                onTakePhoto = onTakePhoto,
-                onRecordVoiceNote = onRecordVoiceNote,
-                onMention = { onInputChange(input.withMentionTrigger()) },
-                input = input,
-                onInputChange = onInputChange,
-                onInputFocusChange = onInputFocusChange,
-            )
         }
     }
 }
@@ -1658,14 +1689,325 @@ private fun AttachmentBubble(
  */
 @Composable
 private fun HitlCard(pending: HitlPending, onResolve: (String, String?) -> Unit) {
+    if (pending.isQuestion && pending.questions.isNotEmpty()) {
+        QuestionHitlCard(questions = pending.questions, onResolve = onResolve)
+    } else {
+        ApprovalHitlCard(pending = pending, onResolve = onResolve)
+    }
+}
+
+/**
+ * `ask_user_question` 的结构化选择卡。
+ *
+ * 手机屏幕不适合把问题、选项说明和自由输入堆成一坨 JSON。这里一次只呈现一道题，
+ * 选项是整行可点的大触控目标；多题时用「上一题 / 下一题」组织，最后统一提交。
+ */
+@Composable
+private fun QuestionHitlCard(
+    questions: List<HitlQuestion>,
+    onResolve: (String, String?) -> Unit,
+) {
+    var currentIndex by remember(questions) { mutableStateOf(0) }
+    var answers by remember(questions) {
+        mutableStateOf<Map<String, HitlQuestionAnswer>>(emptyMap())
+    }
+    val index = currentIndex.coerceIn(questions.indices)
+    val question = questions[index]
+    val answer = answers[question.id] ?: HitlQuestionAnswer()
+    val answerPrefix = stringResource(R.string.chat_hitl_answer_prefix)
+    val isLast = index == questions.lastIndex
+    val canContinue = !answer.isEmpty
+
+    fun updateAnswer(updated: HitlQuestionAnswer) {
+        answers = answers + (question.id to updated)
+    }
+
+    Surface(
+        color = MaterialTheme.colorScheme.surfaceContainerHigh,
+        shape = RoundedCornerShape(20.dp),
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        Column(modifier = Modifier.padding(14.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Surface(
+                    shape = CircleShape,
+                    color = MaterialTheme.colorScheme.primary,
+                    contentColor = MaterialTheme.colorScheme.onPrimary,
+                    modifier = Modifier.size(28.dp),
+                ) {
+                    Box(contentAlignment = Alignment.Center) {
+                        Text(
+                            text = (index + 1).toString(),
+                            style = MaterialTheme.typography.labelMedium,
+                            fontWeight = FontWeight.Bold,
+                        )
+                    }
+                }
+                Spacer(Modifier.width(10.dp))
+                Text(
+                    text = stringResource(R.string.chat_hitl_question_title),
+                    style = MaterialTheme.typography.titleSmall,
+                    modifier = Modifier.weight(1f),
+                )
+                if (questions.size > 1) {
+                    Text(
+                        text = stringResource(
+                            R.string.chat_hitl_question_progress,
+                            index + 1,
+                            questions.size,
+                        ),
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+
+            Spacer(Modifier.height(12.dp))
+            Column(
+                modifier = Modifier
+                    .heightIn(max = 360.dp)
+                    .verticalScroll(rememberScrollState()),
+            ) {
+                question.header?.takeIf { it.isNotBlank() }?.let { header ->
+                    Text(
+                        text = header,
+                        style = MaterialTheme.typography.labelLarge,
+                        color = MaterialTheme.colorScheme.primary,
+                    )
+                    Spacer(Modifier.height(4.dp))
+                }
+                Text(
+                    text = question.question,
+                    style = MaterialTheme.typography.titleMedium,
+                )
+
+                if (question.options.isNotEmpty()) {
+                    Spacer(Modifier.height(6.dp))
+                    Text(
+                        text = stringResource(
+                            if (question.multiSelect) {
+                                R.string.chat_hitl_question_multi_hint
+                            } else {
+                                R.string.chat_hitl_question_single_hint
+                            },
+                        ),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    Column(
+                        modifier = Modifier.selectableGroup(),
+                        verticalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        question.options.forEach { option ->
+                            QuestionOptionRow(
+                                option = option,
+                                selected = option.label in answer.selectedLabels,
+                                multiSelect = question.multiSelect,
+                                onClick = {
+                                    val selected = if (question.multiSelect) {
+                                        if (option.label in answer.selectedLabels) {
+                                            answer.selectedLabels - option.label
+                                        } else {
+                                            answer.selectedLabels + option.label
+                                        }
+                                    } else {
+                                        listOf(option.label)
+                                    }
+                                    updateAnswer(answer.copy(selectedLabels = selected))
+                                },
+                            )
+                        }
+                    }
+                }
+
+                Spacer(Modifier.height(12.dp))
+                OutlinedTextField(
+                    value = answer.custom,
+                    onValueChange = { updateAnswer(answer.copy(custom = it)) },
+                    modifier = Modifier.fillMaxWidth(),
+                    label = {
+                        Text(
+                            stringResource(
+                                if (question.options.isEmpty()) {
+                                    R.string.chat_hitl_question_answer_hint
+                                } else {
+                                    R.string.chat_hitl_question_note_hint
+                                },
+                            ),
+                        )
+                    },
+                    minLines = if (question.options.isEmpty()) 3 else 1,
+                    maxLines = 4,
+                )
+            }
+
+            Spacer(Modifier.height(12.dp))
+            if (index == 0) {
+                Button(
+                    onClick = {
+                        if (isLast) {
+                            val formatted = formatQuestionAnswers(questions, answers)
+                            if (formatted.isNotBlank()) {
+                                onResolve(
+                                    HitlDecision.RESPOND,
+                                    answerPrefix + "\n" + formatted,
+                                )
+                            }
+                        } else {
+                            currentIndex = index + 1
+                        }
+                    },
+                    enabled = canContinue,
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Text(
+                        stringResource(
+                            if (isLast) {
+                                R.string.chat_hitl_question_submit
+                            } else {
+                                R.string.chat_hitl_question_next
+                            },
+                        ),
+                    )
+                }
+            } else {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    OutlinedButton(
+                        onClick = { currentIndex = index - 1 },
+                        modifier = Modifier.weight(1f),
+                    ) {
+                        Text(stringResource(R.string.chat_hitl_question_back))
+                    }
+                    Button(
+                        onClick = {
+                            if (isLast) {
+                                val formatted = formatQuestionAnswers(questions, answers)
+                                if (formatted.isNotBlank()) {
+                                    onResolve(
+                                        HitlDecision.RESPOND,
+                                        answerPrefix + "\n" + formatted,
+                                    )
+                                }
+                            } else {
+                                currentIndex = index + 1
+                            }
+                        },
+                        enabled = canContinue,
+                        modifier = Modifier.weight(1f),
+                    ) {
+                        Text(
+                            stringResource(
+                                if (isLast) {
+                                    R.string.chat_hitl_question_submit
+                                } else {
+                                    R.string.chat_hitl_question_next
+                                },
+                            ),
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun QuestionOptionRow(
+    option: HitlQuestionOption,
+    selected: Boolean,
+    multiSelect: Boolean,
+    onClick: () -> Unit,
+) {
+    val display = remember(option.label) { displayOptionLabel(option.label) }
+    Surface(
+        modifier = Modifier
+            .fillMaxWidth()
+            .selectable(
+                selected = selected,
+                role = if (multiSelect) Role.Checkbox else Role.RadioButton,
+                onClick = onClick,
+            ),
+        shape = RoundedCornerShape(14.dp),
+        color = if (selected) {
+            MaterialTheme.colorScheme.primaryContainer
+        } else {
+            MaterialTheme.colorScheme.surface
+        },
+        border = BorderStroke(
+            width = if (selected) 1.5.dp else 1.dp,
+            color = if (selected) {
+                MaterialTheme.colorScheme.primary
+            } else {
+                MaterialTheme.colorScheme.outlineVariant
+            },
+        ),
+    ) {
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            modifier = Modifier
+                .fillMaxWidth()
+                .heightIn(min = 56.dp)
+                .padding(horizontal = 8.dp, vertical = 8.dp),
+        ) {
+            if (multiSelect) {
+                Checkbox(checked = selected, onCheckedChange = null)
+            } else {
+                RadioButton(selected = selected, onClick = null)
+            }
+            Spacer(Modifier.width(6.dp))
+            Column(modifier = Modifier.weight(1f)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        text = display.text,
+                        style = MaterialTheme.typography.bodyLarge,
+                        fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
+                        modifier = Modifier.weight(1f, fill = false),
+                    )
+                    if (display.recommended) {
+                        Spacer(Modifier.width(8.dp))
+                        Surface(
+                            shape = RoundedCornerShape(50),
+                            color = MaterialTheme.colorScheme.secondaryContainer,
+                            contentColor = MaterialTheme.colorScheme.onSecondaryContainer,
+                        ) {
+                            Text(
+                                text = stringResource(R.string.chat_hitl_option_recommended),
+                                style = MaterialTheme.typography.labelSmall,
+                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
+                            )
+                        }
+                    }
+                }
+                option.description?.takeIf { it.isNotBlank() }?.let { description ->
+                    Spacer(Modifier.height(3.dp))
+                    Text(
+                        text = description,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ApprovalHitlCard(
+    pending: HitlPending,
+    onResolve: (String, String?) -> Unit,
+) {
     var text by remember(pending) { mutableStateOf("") }
 
     Surface(
-        color = MaterialTheme.colorScheme.tertiaryContainer,
-        shape = RoundedCornerShape(12.dp),
+        color = MaterialTheme.colorScheme.surfaceContainerHigh,
+        shape = RoundedCornerShape(20.dp),
         modifier = Modifier.fillMaxWidth(),
     ) {
-        Column(modifier = Modifier.padding(12.dp)) {
+        Column(modifier = Modifier.padding(14.dp)) {
             Text(
                 text = stringResource(
                     if (pending.isQuestion) R.string.chat_hitl_question_title else R.string.chat_hitl_title,
@@ -1706,23 +2048,31 @@ private fun HitlCard(pending: HitlPending, onResolve: (String, String?) -> Unit)
             )
 
             Spacer(Modifier.height(8.dp))
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                if (pending.isQuestion) {
-                    Button(
-                        onClick = { onResolve(HitlDecision.RESPOND, text.trim()) },
-                        enabled = text.isNotBlank(),
-                    ) {
-                        Text(stringResource(R.string.chat_hitl_reply))
-                    }
-                } else {
+            if (pending.isQuestion) {
+                Button(
+                    onClick = { onResolve(HitlDecision.RESPOND, text.trim()) },
+                    enabled = text.isNotBlank(),
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Text(stringResource(R.string.chat_hitl_reply))
+                }
+            } else {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
                     OutlinedButton(
                         onClick = { onResolve(HitlDecision.REJECT, text.trim()) },
                         enabled = text.isNotBlank(),
+                        modifier = Modifier.weight(1f),
                     ) {
                         Text(stringResource(R.string.chat_hitl_reject))
                     }
                     if (pending.canApprove) {
-                        Button(onClick = { onResolve(HitlDecision.APPROVE, null) }) {
+                        Button(
+                            onClick = { onResolve(HitlDecision.APPROVE, null) },
+                            modifier = Modifier.weight(1f),
+                        ) {
                             Text(stringResource(R.string.chat_hitl_approve))
                         }
                     }
@@ -2562,6 +2912,40 @@ private fun buildChatRows(
     flush()
     while (next < markers.size) rows += ChatRow.Compact(markers[next++].createdAt)
     return rows
+}
+
+/**
+ * 滚到最后一项的底部，而不是最后一项的顶部。
+ *
+ * 一轮回复在界面上是一个合并后的高 item；`scrollToItem(last)` 只把气泡开头对齐到顶部，
+ * 长回复的最终正文仍在屏幕下方。先定位末项，再补上它超出视口的高度。
+ */
+private suspend fun LazyListState.scrollToLatest(itemIndex: Int, animate: Boolean) {
+    if (itemIndex < 0) return
+    if (animate) animateScrollToItem(itemIndex) else scrollToItem(itemIndex)
+
+    val info = layoutInfo
+    val last = info.visibleItemsInfo.lastOrNull { it.index == itemIndex } ?: return
+    val overflow = last.offset + last.size - info.viewportEndOffset
+    if (overflow > 0) {
+        if (animate) animateScrollBy(overflow.toFloat()) else scrollBy(overflow.toFloat())
+    }
+}
+
+private data class DisplayOptionLabel(
+    val text: String,
+    val recommended: Boolean,
+)
+
+private val RECOMMENDED_SUFFIX =
+    Regex("""\s*[（(]\s*(?:recommended|推荐)\s*[）)]\s*$""", RegexOption.IGNORE_CASE)
+
+private fun displayOptionLabel(label: String): DisplayOptionLabel {
+    val recommended = RECOMMENDED_SUFFIX.containsMatchIn(label)
+    return DisplayOptionLabel(
+        text = label.replace(RECOMMENDED_SUFFIX, "").trim().ifBlank { label },
+        recommended = recommended,
+    )
 }
 
 private const val ROLE_USER = "user"

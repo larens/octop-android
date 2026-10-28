@@ -13,8 +13,11 @@ cards_path = site / "infra/today/cards.py"
 mobile_ingest_path = site / "api/routers/mobile_ingest.py"
 runtime_source = Path(__file__).with_name("cron_today_cards.py")
 runtime_target = site / "infra/today/cron_cards.py"
+health_source = Path(__file__).with_name("health_today_cards.py")
+health_target = site / "infra/today/health_cards.py"
 
 shutil.copyfile(runtime_source, runtime_target)
+shutil.copyfile(health_source, health_target)
 
 source = delivery_path.read_text()
 time_anchor = "import logging\n"
@@ -233,6 +236,19 @@ if "if mail_owned:\n                _dismiss_all_automatic(" not in source:
 automatic_path.write_text(source)
 
 source = mobile_ingest_path.read_text()
+source_type_old = (
+    '    source_type: Literal["share_inbox", "system_calendar", "health_connect"]\n'
+)
+source_type_new = (
+    '    source_type: Literal[\n'
+    '        "share_inbox", "system_calendar", "health_connect", "xiaomi_health"\n'
+    '    ]\n'
+)
+if source_type_new not in source:
+    if source_type_old not in source:
+        raise SystemExit("Octop 1.0.2 mobile ingest source type anchor not found")
+    source = source.replace(source_type_old, source_type_new, 1)
+
 import_anchor = "from octop.infra.today.automatic import refresh_automatic_today_cards\n"
 import_new = (
     import_anchor
@@ -242,6 +258,11 @@ if "from octop.infra.today.cron_cards import sync_completed_cron_today_cards" no
     if import_anchor not in source:
         raise SystemExit("Octop 1.0.2 mobile ingest import anchor not found")
     source = source.replace(import_anchor, import_new, 1)
+health_import = "from octop.infra.today.health_cards import publish_health_today_cards\n"
+if health_import not in source:
+    if import_anchor not in source:
+        raise SystemExit("Octop 1.0.2 mobile ingest import anchor not found")
+    source = source.replace(import_anchor, import_anchor + health_import, 1)
 
 sync_anchor = '''    await refresh_automatic_today_cards(
         server.services.db,
@@ -250,7 +271,7 @@ sync_anchor = '''    await refresh_automatic_today_cards(
         now=now,
     )
 '''
-sync_fixed = '''    sync_completed_cron_today_cards(
+sync_without_health = '''    sync_completed_cron_today_cards(
         server.services.db,
         agent_id=agent_id,
         user_id=user.id,
@@ -262,10 +283,22 @@ sync_fixed = '''    sync_completed_cron_today_cards(
         now=now,
     )
 '''
-if sync_fixed not in source:
+if sync_without_health not in source:
     if sync_anchor not in source:
         raise SystemExit("Octop 1.0.2 mobile ingest Today anchor not found")
-    source = source.replace(sync_anchor, sync_fixed, 1)
+    source = source.replace(sync_anchor, sync_without_health, 1)
+
+health_call = '''    publish_health_today_cards(
+        server.services.db,
+        agent_id=agent_id,
+        user_id=user.id,
+        now=now,
+    )
+'''
+if health_call not in source:
+    if sync_without_health not in source:
+        raise SystemExit("Octop 1.0.2 mobile ingest health card anchor not found")
+    source = source.replace(sync_without_health, sync_without_health + health_call, 1)
 
 evidence_order_old = '''        "ORDER BY created_at DESC",
 '''

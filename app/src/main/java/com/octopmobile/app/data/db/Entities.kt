@@ -207,6 +207,7 @@ object MobileSourceType {
     const val SHARE_INBOX = "share_inbox"
     const val SYSTEM_CALENDAR = "system_calendar"
     const val HEALTH_CONNECT = "health_connect"
+    const val XIAMI_HEALTH = "xiaomi_health"
 }
 
 object MobileUploadState {

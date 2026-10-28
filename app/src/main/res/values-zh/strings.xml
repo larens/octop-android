@@ -110,7 +110,7 @@
     <string name="settings_web_fallback_summary">当原生界面缺少某个功能时，回退到内置的浏览器视图。</string>
     <string name="settings_data_sources">数据来源</string>
     <string name="settings_mobile_data_title">手机数据</string>
-    <string name="settings_mobile_data_summary">管理系统日历、Health Connect 和分享收集箱。</string>
+    <string name="settings_mobile_data_summary">管理日历与分享收集箱；健康数据由服务端小米云端同步，手机仅保留晨晚提醒。</string>
     <string name="settings_account">账户</string>
 
     <!-- Attachment cache (docs/spec.md §13, §19) -->
@@ -148,7 +148,7 @@
     <string name="chat_tool_result">结果</string>
     <string name="chat_tool_failed">工具执行失败</string>
     <string name="chat_hitl_title">需要你确认</string>
-    <string name="chat_hitl_question_title">智能体在问你</string>
+    <string name="chat_hitl_question_title">请选择回答</string>
     <string name="chat_hitl_approve">同意</string>
     <string name="chat_hitl_reject">拒绝</string>
     <string name="chat_history_title">历史会话</string>
@@ -159,11 +159,23 @@
     <string name="chat_delete_selected_confirm">删除选中的 %1$d 个历史会话？其消息也会从服务端移除。</string>
     <string name="chat_hitl_reply">提交回答</string>
     <string name="chat_hitl_reason_hint">拒绝原因 / 回答（必填）</string>
+    <string name="chat_hitl_question_progress">第 %1$d / %2$d 题</string>
+    <string name="chat_hitl_question_single_hint">请选择一项。</string>
+    <string name="chat_hitl_question_multi_hint">可选择多项。</string>
+    <string name="chat_hitl_question_note_hint">补充说明（可选）</string>
+    <string name="chat_hitl_question_answer_hint">输入你的回答（必填）</string>
+    <string name="chat_hitl_question_next">下一题</string>
+    <string name="chat_hitl_question_back">上一题</string>
+    <string name="chat_hitl_question_submit">提交回答</string>
+    <string name="chat_hitl_option_recommended">推荐</string>
+    <string name="chat_hitl_answer_prefix">用户回答：</string>
 
     <!-- System integration (docs/spec.md §14, §18 M4) -->
     <string name="notif_channel_name">任务进度</string>
     <string name="notif_channel_desc">任务在后台继续执行时显示。</string>
     <string name="notif_turn_text">任务正在后台执行</string>
+    <string name="notif_health_channel_name">健康提醒</string>
+    <string name="notif_health_channel_desc">晨间睡眠回顾与晚间健康总结</string>
 
     <string name="shortcut_new_thread_short">新建任务</string>
     <string name="shortcut_new_thread_long">开始一个新任务</string>
@@ -192,7 +204,7 @@
 
     <!-- 手机数据入口 -->
     <string name="mobile_data_entry_title">手机数据</string>
-    <string name="mobile_data_entry_body">连接系统日历、Health Connect 和分享收集箱，为主动建议提供真实依据。</string>
+    <string name="mobile_data_entry_body">连接系统日历和分享收集箱；健康数据由服务端同步，手机不再重复采集。</string>
     <string name="today_mobile_pending">有 %1$d 条手机线索等待服务端聚合。</string>
     <string name="today_mobile_signals_title">手机线索</string>
     <string name="today_mobile_signals_all">查看全部</string>
@@ -239,6 +251,9 @@
     <string name="today_card_more_actions">更多操作</string>
     <string name="today_card_advice">建议</string>
     <string name="today_card_related_content">相关内容</string>
+    <string name="today_card_important_contacts">重要联系</string>
+    <string name="today_card_pending_contacts">待处理联系人</string>
+    <string name="today_card_pending_mail">待处理</string>
     <string name="today_card_news_list_title">完整新闻清单 · %1$d 条</string>
     <string name="today_card_view_all_news">查看全部 %1$d 条新闻</string>
     <string name="today_card_snooze">明天再提醒</string>
@@ -330,6 +345,8 @@
     <string name="today_card_action_view_progress">查看进度</string>
     <string name="today_card_action_confirm">去确认</string>
     <string name="today_card_action_view_result">查看结果</string>
+    <string name="today_card_action_view_details">查看详情</string>
+    <string name="today_card_action_view_pending">查看待处理</string>
     <string name="today_card_action_view_error">查看原因</string>
     <string name="today_card_action_view_record">查看记录</string>
     <string name="today_card_action_review_and_confirm">查看并确认</string>
@@ -356,16 +373,17 @@
     <string name="today_card_advice_review">花几分钟收尾，别让回顾继续堆积。</string>
     <string name="today_card_advice_default">把它交给 Agent 处理，有结果会回到这里。</string>
     <string name="mobile_data_title">手机数据</string>
-    <string name="mobile_data_subtitle">逐项授权、先预览，再同步到你的 Octop 实例。</string>
+    <string name="mobile_data_subtitle">日历和分享数据可在此管理；健康数据以服务端小米云端为准。</string>
     <string name="mobile_data_privacy_title">数据仍由你控制</string>
-    <string name="mobile_data_privacy_body">原始内容在本机加密暂存。只有服务端逐条确认接收后才清理待同步队列；关闭来源会停止继续读取。</string>
+    <string name="mobile_data_privacy_body">原始内容在本机加密暂存。只有服务端逐条确认接收后才清理待同步队列；健康数据不在手机端采集，由服务端统一同步并生成晨晚提醒。</string>
     <string name="mobile_data_sync">同步 %1$d 条</string>
     <string name="mobile_data_sources_title">数据来源</string>
     <string name="mobile_data_preview_title">最近采集预览</string>
     <string name="mobile_data_preview_empty_title">还没有手机数据</string>
     <string name="mobile_data_preview_empty_body">开启一个来源，或从微信、浏览器和其他应用分享到 Octop。</string>
     <string name="mobile_source_calendar">系统日历</string>
-    <string name="mobile_source_health">Health Connect</string>
+    <string name="mobile_source_health">Health Connect · 已由服务端接管</string>
+    <string name="mobile_source_xiaomi_health">小米运动健康 · 服务端云端同步</string>
     <string name="mobile_source_share">分享收集箱</string>
     <string name="share_destination_title">如何使用这次分享？</string>
     <string name="share_destination_body">你可以立即问 Agent，也可以先存入收集箱，由 Today 后续聚合和跟进。</string>
@@ -449,7 +467,7 @@
     <string name="action_back">返回</string>
     <string name="action_close">关闭</string>
     <string name="health_permissions_rationale_title">Octop 如何使用健康数据</string>
-    <string name="health_permissions_rationale_body">经你授权后，Octop 会从 Health Connect 读取每日步数、睡眠记录和运动记录，帮助智能体理解你的生活规律，提供更相关的提醒和建议。Octop 不会写入或删除 Health Connect 数据。采集内容会在本机加密，并仅在你配置的服务端明确接收后从待同步队列移除。你可以随时在 Health Connect 中撤销授权。</string>
+    <string name="health_permissions_rationale_body">经你授权后，Octop 会从 Health Connect 读取步数、睡眠、运动、心率、静息心率、血氧、HRV、活动热量、距离和爬楼数据，用于生成晨间睡眠回顾与晚间健康总结。后台读取权限用于在 App 未打开时执行晨晚同步。压力仅以 HRV 作为参考，不会伪装成压力测量；当前 Health Connect 标准没有站立记录，缺少时会如实显示“设备未提供”。Octop 不会写入或删除 Health Connect 数据。采集内容会在本机加密，并仅在你配置的服务端明确接收后从待同步队列移除。你可以随时在 Health Connect 中撤销授权。</string>
 
     <!-- Automations (server cron, docs/spec.md §23.3, protocol §5.5) -->
     <string name="tasks_refresh">刷新任务和推荐</string>

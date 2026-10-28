@@ -367,7 +367,13 @@ class ChatViewModel(
         val repo = repository ?: return
         val pending = _hitl.value ?: return
         val decisions = pending.actions.map { HitlDecision(type = decisionType, message = message) }
-        viewModelScope.launch { repo.resolveHitl(decisions, pending.pendingId) }
+        viewModelScope.launch {
+            repo.resolveHitl(
+                decisions = decisions,
+                pendingId = pending.pendingId,
+                fallbackMessage = message.takeUnless { pending.canResume },
+            )
+        }
     }
 
     /** 读取选中的文件并上传。`uri` 来自系统文件选择器，读完即用，不落盘。 */

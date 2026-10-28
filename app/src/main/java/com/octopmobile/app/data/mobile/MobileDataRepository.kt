@@ -36,9 +36,29 @@ class MobileDataRepository(
 
     suspend fun ensureSources() {
         val now = System.currentTimeMillis()
-        listOf(MobileSourceType.SHARE_INBOX, MobileSourceType.SYSTEM_CALENDAR, MobileSourceType.HEALTH_CONNECT)
+        listOf(
+            MobileSourceType.SHARE_INBOX,
+            MobileSourceType.SYSTEM_CALENDAR,
+            MobileSourceType.HEALTH_CONNECT,
+            MobileSourceType.XIAMI_HEALTH,
+        )
             .forEach { source ->
-                if (database.mobileSources().find(source) == null) {
+                val existing = database.mobileSources().find(source)
+                if (
+                    source == MobileSourceType.HEALTH_CONNECT ||
+                    source == MobileSourceType.XIAMI_HEALTH
+                ) {
+                    database.mobileSources().upsert(
+                        MobileSourceEntity(
+                            sourceType = source,
+                            enabled = false,
+                            permissionState = "server_managed",
+                            lastSyncAt = existing?.lastSyncAt,
+                            lastError = null,
+                            updatedAt = now,
+                        ),
+                    )
+                } else if (existing == null) {
                     database.mobileSources().upsert(
                         MobileSourceEntity(
                             sourceType = source,

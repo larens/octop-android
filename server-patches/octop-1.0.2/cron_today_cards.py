@@ -23,7 +23,15 @@ logger = logging.getLogger(__name__)
 _URL_RE = re.compile(r"https?://[^\s<>\]\)\}]+")
 _ITEM_RE = re.compile(r"^(?:[-*+]\s+|\d+[.)、]\s*|\*\*\d+[.、]\s*)")
 _MARKDOWN_LINK_RE = re.compile(r"\[([^\]]+)\]\((https?://[^)]+)\)")
+_MAILTO_LINK_RE = re.compile(r"\[([^\]]+)\]\(mailto:[^)]+\)")
 _SENTENCE_SPLIT_RE = re.compile(r"(?<=[。；;])")
+_SECTION_HEADING_RE = re.compile(r"(?m)^\s*(?:\*\*)?【([^】]+)】(?:\*\*)?[ \t]*(.*)$")
+_CONTACT_LINE_RE = re.compile(
+    r"(?m)^\s*(?:\d+[.)、]\s*)?([^（(｜\n]{1,80})[（(]([^）)\s]+@[^）)\s]+)[）)](.*)$"
+)
+_DATE_TIME_RE = re.compile(r"\d{1,2}-\d{1,2}\s+\d{1,2}:\d{2}")
+_QUOTED_RE = re.compile(r'"([^"]+)"')
+_PENDING_COUNT_RE = re.compile(r"待处理私人邮件\s*(\d+)\s*封")
 _TRAILING_URL_PUNCTUATION = ".,;:!?，。；：！？、）)]}>'\"*`"
 _TODAY_KIND_BY_TASK_KIND = {"news": "briefing"}
 _AUTO_KIND_BY_TODAY_KIND = {"briefing": "news", "inbox": "mail"}
@@ -80,10 +88,202 @@ def _summary_candidates(text: str) -> list[str]:
     return candidates
 
 
-def task_result_summary(text: str, *, task_name: str, status: str, error: str | None) -> str:
+def _section_body(text: str, keyword: str) -> str:
+    matches = list(_SECTION_HEADING_RE.finditer(text))
+    for index, match in enumerate(matches):
+        if keyword not in match.group(1):
+            continue
+        end = matches[index + 1].start() if index + 1 < len(matches) else len(text)
+        inline_body = match.group(2).strip()
+        block_body = text[match.end() : end].strip()
+        return "\n".join(part for part in (inline_body, block_body) if part)
+    return ""
+
+
+def _clean_mail_detail(value: str) -> str:
+    text = _MAILTO_LINK_RE.sub(r"\1", value)
+    text = _MARKDOWN_LINK_RE.sub(r"\1", text)
+    text = _URL_RE.sub("", text)
+    text = text.replace("**", "").replace("__", "").replace("`", "")
+    text = re.sub(r"(?m)^\s*[#>]+\s*", "", text)
+    lines = [" ".join(line.split()) for line in text.splitlines()]
+    return "\n".join(line for line in lines if line)
+
+
+def _mail_pending_detail(text: str) -> str:
+    body = _section_body(text, "私人邮件 · 待处理") or _section_body(text, "待处理")
+    detail = _clean_mail_detail(body)
+    if not detail:
+        return ""
+    if re.search(r"(?:没有|暂无|无).{0,10}(?:需要|待处理|待回复|需处理)", detail):
+        return ""
+    if "无需处理" in detail:
+        return ""
+    return detail
+
+
+def _mail_pending_count(text: str) -> int:
+    match = _PENDING_COUNT_RE.search(text)
+    return int(match.group(1)) if match else 0
+
+
+def _mail_contacts(text: str) -> list[tuple[str, str, list[str], list[str]]]:
+    contacts: list[tuple[str, str, list[str], list[str]]] = []
+    seen: set[tuple[str, str]] = set()
+    for match in _CONTACT_LINE_RE.finditer(text):
+        name = _compact(match.group(1).strip(" -—*"), 60)
+        email = match.group(2).strip()
+        if not name or (name.lower(), email.lower()) in seen:
+            continue
+        seen.add((name.lower(), email.lower()))
+        detail = match.group(3)
+        times = _DATE_TIME_RE.findall(detail)
+        subjects = [
+            _compact(subject, 100)
+            for subject in _QUOTED_RE.findall(detail)
+            if subject.strip()
+        ]
+        contacts.append((name, email, times, subjects))
+        if len(contacts) >= 5:
+            break
+    return contacts
+
+
+def _mail_contact_evidence(
+    text: str,
+    *,
+    thread_id: str,
+    occurred_at: int,
+) -> list[TodayEvidenceInput]:
+    contacts = _mail_contacts(text)
+    evidence: list[TodayEvidenceInput] = []
+    for name, email, times, subjects in contacts:
+        topic = subjects[0] if subjects else ""
+        title = f"{name}：{topic}" if topic else f"{name} 联系你"
+        details = [email]
+        if times:
+            details.append(f"{times[0]} 联系你")
+        if len(times) > 1:
+            details.append(f"{times[-1]} 有回信")
+        evidence.append(
+            TodayEvidenceInput(
+                source_type="conversation",
+                reference=thread_id,
+                title=title,
+                excerpt=" · ".join(details),
+                occurred_at=occurred_at,
+            )
+        )
+    return evidence
+
+
+def _mail_risk_lines(text: str) -> list[str]:
+    lines: list[str] = []
+    coverage = re.search(r"本次(?:只|仅)覆盖(?:了)?\s*([^。；\n]+)", text)
+    if coverage:
+        lines.append(f"本次仅覆盖 {coverage.group(1).strip()}，其他邮件可能遗漏。")
+    connector = re.search(
+        r"([A-Za-z][A-Za-z0-9 ._-]{1,40}?)\s*那个连接器[^。\n]*"
+        r"(?:授权失败|check authorization)",
+        text,
+        re.IGNORECASE,
+    )
+    if connector:
+        lines.append(
+            f"{connector.group(1).strip()} 授权失败，可能有邮件遗漏；重新授权后可补查。"
+        )
+    if lines:
+        return list(dict.fromkeys(lines))
+    risk_words = ("失败", "未覆盖", "不在这份", "遗漏", "范围提醒", "风险")
+    return list(
+        dict.fromkeys(
+            _compact(_clean_inline(line), 260)
+            for line in text.splitlines()
+            if any(word in line for word in risk_words) and _clean_inline(line)
+        )
+    ) or ["未发现额外风险。"]
+
+
+def _mail_result_summary(text: str) -> str:
+    raw_overview = next(
+        (
+            _clean_inline(line)
+            for line in text.splitlines()
+            if "共收到" in line and "封" in line
+        ),
+        "",
+    )
+    raw_overview = re.sub(r"^昨日\s*[（(][^）)]*[）)]\s*", "昨日", raw_overview)
+    pending_detail = _mail_pending_detail(text)
+    pending_count = _mail_pending_count(text)
+    has_pending = bool(pending_detail) or pending_count > 0
+    total_match = re.search(r"共收到\s*(\d+)\s*封", raw_overview)
+    total_count = int(total_match.group(1)) if total_match else 0
+    if total_count and has_pending:
+        overview = (
+            f"昨日共收到 {total_count} 封新邮件，其中待处理私人邮件 "
+            f"{pending_count if pending_count else '若干'} 封。"
+        )
+    elif total_count:
+        overview = f"昨日共收到 {total_count} 封新邮件，没有需要回复或跟进的邮件。"
+    else:
+        overview = raw_overview or "昨日没有需要回复或跟进的邮件。"
+
+    advice: list[str] = []
+    if has_pending:
+        advice.append("先处理待处理邮件，其余邮件归档即可。")
+    else:
+        advice.append("没有需要回复或跟进的邮件。")
+
+    risk_words = ("失败", "未覆盖", "不在这份", "遗漏", "范围提醒", "风险")
+    note_lines = [
+        _clean_inline(line)
+        for line in text.splitlines()
+        if line.strip().startswith(("-", "*", "•"))
+    ]
+    for line in note_lines:
+        if any(word in line for word in risk_words):
+            continue
+        check = re.search(r"想核对(.+?)，比如", line)
+        if check:
+            advice.append(f"如需核对{check.group(1)}，可查看公开来源后再决定是否跟进。")
+        elif any(word in line for word in ("可以", "建议", "需要我")):
+            advice.append(_compact(line, 220))
+    if not advice:
+        advice.append("按联系人和紧急程度处理待办，其余邮件归档即可。")
+
+    risk_lines = _mail_risk_lines(text)
+    detail_blocks: list[str] = []
+    for heading in ("私人邮件 · 无需处理", "广告邮件", "通知邮件"):
+        raw_body = _section_body(text, heading)
+        raw_body = re.split(r"(?m)^\s*两点说明[：:]\s*$", raw_body, maxsplit=1)[0]
+        body = _clean_mail_detail(raw_body)
+        if body:
+            detail_blocks.append(f"{heading}\n{body}")
+
+    sections = [f"【收件概览】\n{overview}"]
+    if pending_detail:
+        sections.append(f"【待处理邮件】\n{pending_detail}")
+    if detail_blocks:
+        sections.append("【邮件明细】\n" + "\n\n".join(detail_blocks))
+    sections.append("【处理建议】\n" + "\n".join(advice[:3]))
+    sections.append("【其他风险】\n" + "\n".join(risk_lines[:3]))
+    return "\n\n".join(sections)
+
+
+def task_result_summary(
+    text: str,
+    *,
+    task_name: str,
+    status: str,
+    error: str | None,
+    kind: str | None = None,
+) -> str:
     if status == "error":
         reason = _compact(error or "未返回具体错误", 220)
         return f"本次执行失败：{reason}"
+    if kind == "inbox":
+        return _mail_result_summary(text)
     candidates = _summary_candidates(text)
     if candidates:
         return "\n".join(f"• {item}" for item in candidates)
@@ -292,17 +492,37 @@ def publish_cron_task_card(
         task_name=title,
         status=status,
         error=error,
+        kind=task_kind,
     )
-    evidence = [
-        *_web_evidence(text, occurred_at=last_run_at),
-        TodayEvidenceInput(
-            source_type="conversation",
-            reference=thread_id,
-            title="定时任务结果",
-            excerpt="完整执行记录、过程与来源保留在会话中。",
+    web_evidence = _web_evidence(text, occurred_at=last_run_at)
+    if task_kind == "inbox":
+        pending_detail = _mail_pending_detail(text)
+        evidence = _mail_contact_evidence(
+            pending_detail,
+            thread_id=thread_id,
             occurred_at=last_run_at,
-        ),
-    ]
+        )
+        if not evidence:
+            evidence = [
+                TodayEvidenceInput(
+                    source_type="conversation",
+                    reference=thread_id,
+                    title="邮件汇总结果",
+                    excerpt="完整邮件明细已整理到卡片详情。",
+                    occurred_at=last_run_at,
+                )
+            ]
+    else:
+        evidence = [
+            *web_evidence,
+            TodayEvidenceInput(
+                source_type="conversation",
+                reference=thread_id,
+                title="定时任务结果",
+                excerpt="完整执行记录、过程与来源保留在会话中。",
+                occurred_at=last_run_at,
+            ),
+        ]
     draft = TodayCardDraft(
         dedupe_key=f"cron:{cron_id}",
         kind=kind,

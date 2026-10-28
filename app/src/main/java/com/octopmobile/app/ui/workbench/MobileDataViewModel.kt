@@ -4,12 +4,6 @@ import android.Manifest
 import android.content.Context
 import android.content.pm.PackageManager
 import androidx.core.content.ContextCompat
-import androidx.health.connect.client.HealthConnectClient
-import androidx.health.connect.client.PermissionController
-import androidx.health.connect.client.permission.HealthPermission
-import androidx.health.connect.client.records.ExerciseSessionRecord
-import androidx.health.connect.client.records.SleepSessionRecord
-import androidx.health.connect.client.records.StepsRecord
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
@@ -20,7 +14,6 @@ import com.octopmobile.app.data.db.MobileEventEntity
 import com.octopmobile.app.data.db.MobileSourceEntity
 import com.octopmobile.app.data.db.MobileSourceType
 import com.octopmobile.app.data.mobile.CalendarSourceAdapter
-import com.octopmobile.app.data.mobile.HealthConnectSourceAdapter
 import com.octopmobile.app.data.mobile.ShareInboxSourceAdapter
 import com.octopmobile.app.data.remote.ApiResult
 import com.octopmobile.app.ui.Handoff
@@ -29,6 +22,7 @@ import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 
@@ -46,7 +40,12 @@ class MobileDataViewModel(private val container: AppContainer) : ViewModel() {
 
     val uiState: StateFlow<MobileDataUiState> = combine(
         repository.observeSources(),
-        repository.observeRecent(),
+        repository.observeRecent().map { events ->
+            events.filterNot {
+                it.sourceType == MobileSourceType.HEALTH_CONNECT ||
+                    it.sourceType == MobileSourceType.XIAMI_HEALTH
+            }
+        },
         repository.observePendingCount(),
         transient,
     ) { sources, events, pending, local ->
@@ -95,44 +94,6 @@ class MobileDataViewModel(private val container: AppContainer) : ViewModel() {
         runCollection("正在读取系统日历") {
             repository.collect(MobileSourceType.SYSTEM_CALENDAR) {
                 CalendarSourceAdapter(context.contentResolver).readWindow()
-            }
-        }
-    }
-
-    fun healthPermissions(): Set<String> = setOf(
-        HealthPermission.getReadPermission(StepsRecord::class),
-        HealthPermission.getReadPermission(SleepSessionRecord::class),
-        HealthPermission.getReadPermission(ExerciseSessionRecord::class),
-    )
-
-    fun healthPermissionContract() = PermissionController.createRequestPermissionResultContract()
-
-    fun onHealthPermissions(context: Context, granted: Set<String>) {
-        val enabled = granted.isNotEmpty()
-        viewModelScope.launch {
-            repository.setSourceState(
-                MobileSourceType.HEALTH_CONNECT,
-                enabled,
-                when {
-                    granted.containsAll(healthPermissions()) -> "granted"
-                    enabled -> "partial"
-                    else -> "denied"
-                },
-            )
-            if (enabled) collectHealth(context)
-        }
-    }
-
-    fun collectHealth(context: Context) {
-        if (HealthConnectClient.getSdkStatus(context) != HealthConnectClient.SDK_AVAILABLE) {
-            transient.value = transient.value.copy(notice = "此设备尚不可使用 Health Connect")
-            return
-        }
-        runCollection("正在读取 Health Connect") {
-            repository.collect(MobileSourceType.HEALTH_CONNECT) {
-                val client = HealthConnectClient.getOrCreate(context)
-                val granted = client.permissionController.getGrantedPermissions()
-                HealthConnectSourceAdapter(client).readRecent(granted)
             }
         }
     }

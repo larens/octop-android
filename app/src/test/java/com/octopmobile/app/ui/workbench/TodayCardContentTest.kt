@@ -18,6 +18,7 @@ class TodayCardContentTest {
     @Test
     fun groupsTodayUpcomingAndPastWithoutUnreadBias() {
         val cards = listOf(
+            card("yesterday", occurredAt = at(2026, 10, 26, 10, 0)),
             card("evening", occurredAt = at(2026, 10, 27, 19, 30), lifecycle = "read"),
             card("past", occurredAt = at(2026, 10, 27, 10, 0)),
             card("tomorrow", occurredAt = at(2026, 10, 28, 9, 0)),
@@ -61,6 +62,70 @@ class TodayCardContentTest {
         )
 
         assertEquals(listOf("morning", "afternoon"), items.map { it.title })
+    }
+
+    @Test
+    fun mixesRecentUpdatesWithUpcomingMeetingsAndDemotesCompletedTasks() {
+        val cards = listOf(
+            card(
+                "completed-mail",
+                kind = "inbox",
+                occurredAt = at(2026, 10, 27, 7, 0),
+                actionState = "completed",
+            ),
+            card("afternoon-meeting", occurredAt = at(2026, 10, 27, 13, 30)),
+            card("fresh-briefing", kind = "briefing", occurredAt = at(2026, 10, 27, 9, 29)),
+            card("morning-meeting", occurredAt = at(2026, 10, 27, 10, 0)),
+        )
+
+        val groups = groupTodayCards(cards, at(2026, 10, 27, 9, 30), zone)
+
+        assertEquals(
+            listOf("morning-meeting", "fresh-briefing", "afternoon-meeting", "completed-mail"),
+            groups.current.map { it.id },
+        )
+
+        val later = groupTodayCards(cards, at(2026, 10, 27, 12, 30), zone)
+        assertEquals(
+            listOf("afternoon-meeting", "fresh-briefing", "completed-mail"),
+            later.current.map { it.id },
+        )
+    }
+
+    @Test
+    fun pendingMailStaysVisibleButUrgentMeetingComesFirst() {
+        val pendingSummary = """
+            【收件概览】
+            昨日共收到 3 封新邮件，其中待处理私人邮件 1 封。
+
+            【待处理邮件】
+            Taylor Reed：Review request
+        """.trimIndent()
+        val cards = listOf(
+            card(
+                "pending-mail",
+                kind = "inbox",
+                occurredAt = at(2026, 10, 27, 9, 29),
+                summary = pendingSummary,
+                actionState = "completed",
+            ),
+            card(
+                "normal-mail",
+                kind = "inbox",
+                occurredAt = at(2026, 10, 27, 9, 29),
+                summary = "昨日共收到 2 封新邮件，没有需要回复或跟进的邮件。",
+                actionState = "completed",
+            ),
+            card("urgent-meeting", occurredAt = at(2026, 10, 27, 9, 45)),
+        )
+
+        val groups = groupTodayCards(cards, at(2026, 10, 27, 9, 30), zone)
+
+        assertTrue(todayCardHasPendingMail(pendingSummary))
+        assertEquals(
+            listOf("urgent-meeting", "pending-mail", "normal-mail"),
+            groups.current.map { it.id },
+        )
     }
 
     @Test
@@ -172,6 +237,110 @@ class TodayCardContentTest {
         assertTrue(facts.all { it.url != null })
     }
 
+    @Test
+    fun structuredCardSummarySplitsContactAdviceAndRiskSections() {
+        val summary = """
+            【收件概览】
+            昨日共收到 5 封新邮件，其中 2 封直接联系你。
+
+            【处理建议】
+            没有需要回复或跟进的事项。
+
+            【其他风险】
+            Agent Mail 授权失败，可能遗漏邮件。
+        """.trimIndent()
+
+        val sections = parseTodayCardSummary(summary)
+
+        assertEquals(listOf("收件概览", "处理建议", "其他风险"), sections.map { it.heading })
+        assertTrue(sections.first().body.startsWith("昨日共收到"))
+        assertEquals(sections.first().body, todayCardSummaryPreview(summary))
+    }
+
+    @Test
+    fun healthCardsRiseInTheirWindowAndDecayLater() {
+        val morningSummary = """
+            【睡眠概览】
+            昨晚睡眠 7 小时 30 分。
+
+            【健康可视化】
+            {"w":"morning","m":[{"k":"sleep","v":450,"d":"7 小时 30 分","u":"小时","t":480,"c":"ring"}]}
+        """.trimIndent()
+        val eveningSummary = """
+            【今日概览】
+            步数 7,240 步。
+
+            【健康可视化】
+            {"w":"evening","m":[{"k":"steps","v":7240,"d":"7,240","u":"步","t":8000,"c":"ring"}]}
+        """.trimIndent()
+
+        val early = groupTodayCards(
+            listOf(
+                card(
+                    "morning-health",
+                    kind = "health",
+                    occurredAt = at(2026, 10, 27, 7, 0),
+                    summary = morningSummary,
+                ),
+                card(
+                    "morning-briefing",
+                    kind = "briefing",
+                    occurredAt = at(2026, 10, 27, 7, 20),
+                ),
+            ),
+            at(2026, 10, 27, 7, 30),
+            zone,
+        )
+        assertEquals(
+            listOf("morning-health", "morning-briefing"),
+            early.current.map { it.id },
+        )
+
+        val late = groupTodayCards(
+            listOf(
+                card(
+                    "morning-health",
+                    kind = "health",
+                    occurredAt = at(2026, 10, 27, 7, 0),
+                    summary = morningSummary,
+                ),
+                card(
+                    "afternoon-briefing",
+                    kind = "briefing",
+                    occurredAt = at(2026, 10, 27, 15, 20),
+                ),
+            ),
+            at(2026, 10, 27, 15, 30),
+            zone,
+        )
+        assertEquals(
+            listOf("afternoon-briefing", "morning-health"),
+            late.current.map { it.id },
+        )
+
+        val evening = groupTodayCards(
+            listOf(
+                card(
+                    "evening-health",
+                    kind = "health",
+                    occurredAt = at(2026, 10, 27, 19, 0),
+                    summary = eveningSummary,
+                ),
+                card(
+                    "evening-briefing",
+                    kind = "briefing",
+                    occurredAt = at(2026, 10, 27, 19, 20),
+                ),
+            ),
+            at(2026, 10, 27, 19, 30),
+            zone,
+        )
+        assertEquals(
+            listOf("evening-health", "evening-briefing"),
+            evening.current.map { it.id },
+        )
+    }
+
     private fun at(year: Int, month: Int, day: Int, hour: Int, minute: Int): Long =
         LocalDateTime.of(year, month, day, hour, minute)
             .atZone(zone)
@@ -185,6 +354,7 @@ class TodayCardContentTest {
         lifecycle: String = "unread",
         summary: String = "summary",
         evidenceJson: String = "[]",
+        actionState: String? = null,
     ) = TodayCardEntity(
         id = id,
         agentId = "agent",
@@ -207,7 +377,7 @@ class TodayCardContentTest {
         goalNeedsReview = false,
         executionThreadId = null,
         executionTurnId = null,
-        actionState = null,
+        actionState = actionState,
         actionError = null,
         actionUpdatedAt = null,
         createdAt = occurredAt,

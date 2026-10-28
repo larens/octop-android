@@ -31,6 +31,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -53,6 +54,7 @@ import com.octopmobile.app.data.remote.dto.TodayFeedbackType
 import com.octopmobile.app.ui.asText
 import com.octopmobile.app.ui.PendingTodayCard
 import com.octopmobile.app.ui.threads.ThreadsViewModel
+import kotlinx.coroutines.delay
 
 /**
  * Today 页（docs/spec.md §23.4）。
@@ -101,8 +103,14 @@ fun TodayPane(
     val awaiting = threads.filter { it.awaitingUser }
     val recentMemory = memories.take(TODAY_MEMORY_LIMIT)
     val agentId = state.selectedAgentId
-    val nowMillis = remember(todayCards) { System.currentTimeMillis() }
-    val groups = remember(todayCards) {
+    var nowMillis by remember { mutableLongStateOf(System.currentTimeMillis()) }
+    LaunchedEffect(Unit) {
+        while (true) {
+            delay(60_000)
+            nowMillis = System.currentTimeMillis()
+        }
+    }
+    val groups = remember(todayCards, nowMillis) {
         groupTodayCards(todayCards, nowMillis)
     }
     val currentCards = groups.current
@@ -115,7 +123,7 @@ fun TodayPane(
     val updateHighlights = remember(currentCards) {
         todayUpdateHighlights(currentCards)
     }
-    val upcomingSummary = remember(upcomingCards) {
+    val upcomingSummary = remember(upcomingCards, nowMillis) {
         upcomingCalendarSummary(upcomingCards, nowMillis)
     }
     val renderTodayCard: @Composable (TodayCardEntity, Boolean) -> Unit = { card, isPast ->

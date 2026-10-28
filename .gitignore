@@ -33,5 +33,21 @@ Thumbs.db
 # 日志
 *.log
 
+# 设计过程与内部文档只保留在本地，不发布到仓库
+/docs/
+
+# 本地服务端配置与同步凭据 —— 绝不入库
+.env
+.env.*
+!.env.example
+*.cookie
+*.token
+*credentials*.json
+xiaomi_health*.json
+
+# Python 生成文件
+__pycache__/
+*.py[cod]
+
 # 本地代码索引（codegraph 生成，不入库）
 .codegraph/

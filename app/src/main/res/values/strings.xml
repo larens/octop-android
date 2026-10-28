@@ -110,7 +110,7 @@
     <string name="settings_web_fallback_summary">Fall back to the built-in browser view when a feature is missing from the native UI.</string>
     <string name="settings_data_sources">Data sources</string>
     <string name="settings_mobile_data_title">Phone data</string>
-    <string name="settings_mobile_data_summary">Manage system calendar, Health Connect, and the share inbox.</string>
+    <string name="settings_mobile_data_summary">Manage calendar and the share inbox; health data syncs on the server and the phone keeps only morning/evening reminders.</string>
     <string name="settings_account">Account</string>
 
     <!-- Attachment cache (docs/spec.md §13, §19) -->
@@ -148,7 +148,7 @@
     <string name="chat_tool_result">Result</string>
     <string name="chat_tool_failed">Tool failed</string>
     <string name="chat_hitl_title">Confirmation required</string>
-    <string name="chat_hitl_question_title">The agent is asking</string>
+    <string name="chat_hitl_question_title">Choose an answer</string>
     <string name="chat_hitl_approve">Approve</string>
     <string name="chat_hitl_reject">Reject</string>
     <string name="chat_history_title">History</string>
@@ -159,11 +159,23 @@
     <string name="chat_delete_selected_confirm">Delete %1$d selected conversations? Their messages will also be removed from the server.</string>
     <string name="chat_hitl_reply">Send answer</string>
     <string name="chat_hitl_reason_hint">Reason / answer (required)</string>
+    <string name="chat_hitl_question_progress">%1$d of %2$d</string>
+    <string name="chat_hitl_question_single_hint">Select one option.</string>
+    <string name="chat_hitl_question_multi_hint">Select one or more options.</string>
+    <string name="chat_hitl_question_note_hint">Add a note (optional)</string>
+    <string name="chat_hitl_question_answer_hint">Type your answer (required)</string>
+    <string name="chat_hitl_question_next">Next</string>
+    <string name="chat_hitl_question_back">Back</string>
+    <string name="chat_hitl_question_submit">Submit answer</string>
+    <string name="chat_hitl_option_recommended">Recommended</string>
+    <string name="chat_hitl_answer_prefix">User answers:</string>
 
     <!-- System integration (docs/spec.md §14, §18 M4) -->
     <string name="notif_channel_name">Task progress</string>
     <string name="notif_channel_desc">Shown while a task keeps running in the background.</string>
     <string name="notif_turn_text">Task running in the background</string>
+    <string name="notif_health_channel_name">Health reminders</string>
+    <string name="notif_health_channel_desc">Morning sleep review and evening health summary</string>
 
     <string name="shortcut_new_thread_short">New task</string>
     <string name="shortcut_new_thread_long">Start a new task</string>
@@ -192,7 +204,7 @@
 
     <!-- Mobile data sources -->
     <string name="mobile_data_entry_title">Phone data</string>
-    <string name="mobile_data_entry_body">Connect system calendar, Health Connect, and the share inbox to ground proactive suggestions.</string>
+    <string name="mobile_data_entry_body">Connect system calendar and the share inbox. Health data is server-managed and is no longer collected twice on the phone.</string>
     <string name="today_mobile_pending">%1$d phone signals are waiting for server aggregation.</string>
     <string name="today_mobile_signals_title">Phone signals</string>
     <string name="today_mobile_signals_all">View all</string>
@@ -239,6 +251,9 @@
     <string name="today_card_more_actions">More actions</string>
     <string name="today_card_advice">Suggestion</string>
     <string name="today_card_related_content">Related content</string>
+    <string name="today_card_important_contacts">Important contacts</string>
+    <string name="today_card_pending_contacts">Pending contacts</string>
+    <string name="today_card_pending_mail">Pending</string>
     <string name="today_card_news_list_title">All news · %1$d items</string>
     <string name="today_card_view_all_news">View all %1$d news items</string>
     <string name="today_card_snooze">Remind me tomorrow</string>
@@ -330,6 +345,8 @@
     <string name="today_card_action_view_progress">View progress</string>
     <string name="today_card_action_confirm">Review now</string>
     <string name="today_card_action_view_result">View result</string>
+    <string name="today_card_action_view_details">View details</string>
+    <string name="today_card_action_view_pending">Review pending</string>
     <string name="today_card_action_view_error">View reason</string>
     <string name="today_card_action_view_record">View record</string>
     <string name="today_card_action_review_and_confirm">Review and confirm</string>
@@ -356,16 +373,17 @@
     <string name="today_card_advice_review">Spend a few minutes closing the loop.</string>
     <string name="today_card_advice_default">Ask Agent to handle it. Results will return here.</string>
     <string name="mobile_data_title">Phone data</string>
-    <string name="mobile_data_subtitle">Authorize each source, preview it locally, then sync to your Octop instance.</string>
+    <string name="mobile_data_subtitle">Manage calendar and shared content here. Xiaomi cloud remains the health source of truth.</string>
     <string name="mobile_data_privacy_title">You stay in control</string>
-    <string name="mobile_data_privacy_body">Raw content is encrypted on this device. Pending items are cleared only after the server explicitly accepts them. Disabling a source stops future reads.</string>
+    <string name="mobile_data_privacy_body">Raw content is encrypted on this device. Pending items are cleared only after the server explicitly accepts them. Health data is collected on the server, not on the phone, and powers the morning/evening reminders.</string>
     <string name="mobile_data_sync">Sync %1$d items</string>
     <string name="mobile_data_sources_title">Data sources</string>
     <string name="mobile_data_preview_title">Recent collection preview</string>
     <string name="mobile_data_preview_empty_title">No phone data yet</string>
     <string name="mobile_data_preview_empty_body">Enable a source, or share something to Octop from WeChat, a browser, or another app.</string>
     <string name="mobile_source_calendar">System calendar</string>
-    <string name="mobile_source_health">Health Connect</string>
+    <string name="mobile_source_health">Health Connect · server managed</string>
+    <string name="mobile_source_xiaomi_health">Xiaomi Health · server cloud sync</string>
     <string name="mobile_source_share">Share inbox</string>
     <string name="share_destination_title">How should this share be used?</string>
     <string name="share_destination_body">Ask the Agent now, or save it to the inbox so Today can aggregate and follow up later.</string>
@@ -449,7 +467,7 @@
     <string name="action_back">Back</string>
     <string name="action_close">Close</string>
     <string name="health_permissions_rationale_title">How Octop uses health data</string>
-    <string name="health_permissions_rationale_body">With your permission, Octop reads daily steps, sleep sessions, and exercise sessions from Health Connect to help your agent understand routines and prepare more relevant reminders and suggestions. Octop does not write or delete Health Connect data. Collected items are encrypted on this device and remain here until your configured server explicitly accepts them. You can revoke access at any time in Health Connect.</string>
+    <string name="health_permissions_rationale_body">With your permission, Octop reads steps, sleep, exercise, heart rate, resting heart rate, oxygen saturation, HRV, active calories, distance, and floors climbed from Health Connect to prepare a morning sleep review and an evening health summary. Background read access lets the scheduled morning and evening sync run while Octop is not open. Stress is only shown as an HRV reference, never as a direct stress measurement. Health Connect has no standard standing record, so missing standing data is shown as unavailable instead of zero. Octop does not write or delete Health Connect data. Collected items are encrypted on this device and remain here until your configured server explicitly accepts them. You can revoke access at any time in Health Connect.</string>
 
     <!-- Automations (server cron, docs/spec.md §23.3, protocol §5.5) -->
     <string name="tasks_refresh">Refresh tasks and recommendations</string>

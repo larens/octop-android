@@ -53,9 +53,6 @@ fun MobileDataPane(onBack: () -> Unit) {
     val calendarPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) {
         viewModel.onCalendarPermission(context, it)
     }
-    val healthPermissions = rememberLauncherForActivityResult(viewModel.healthPermissionContract()) {
-        viewModel.onHealthPermissions(context, it)
-    }
 
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
@@ -110,22 +107,12 @@ fun MobileDataPane(onBack: () -> Unit) {
                 onEnable = {
                     when (source.sourceType) {
                         MobileSourceType.SYSTEM_CALENDAR -> calendarPermission.launch(Manifest.permission.READ_CALENDAR)
-                        MobileSourceType.HEALTH_CONNECT -> {
-                            if (androidx.health.connect.client.HealthConnectClient.getSdkStatus(context) ==
-                                androidx.health.connect.client.HealthConnectClient.SDK_AVAILABLE
-                            ) {
-                                healthPermissions.launch(viewModel.healthPermissions())
-                            } else {
-                                viewModel.collectHealth(context)
-                            }
-                        }
                     }
                 },
                 onDisable = { viewModel.setDisabled(source.sourceType) },
                 onRefresh = {
                     when (source.sourceType) {
                         MobileSourceType.SYSTEM_CALENDAR -> viewModel.collectCalendar(context)
-                        MobileSourceType.HEALTH_CONNECT -> viewModel.collectHealth(context)
                     }
                 },
             )
@@ -154,6 +141,8 @@ private fun MobileSourceCard(
     onDisable: () -> Unit,
     onRefresh: () -> Unit,
 ) {
+    val serverManaged = source.sourceType == MobileSourceType.HEALTH_CONNECT ||
+        source.sourceType == MobileSourceType.XIAMI_HEALTH
     Card(modifier = Modifier.padding(horizontal = 16.dp).fillMaxWidth(), shape = RoundedCornerShape(16.dp)) {
         Row(Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
             Column(Modifier.weight(1f)) {
@@ -164,13 +153,13 @@ private fun MobileSourceCard(
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
-            if (source.sourceType != MobileSourceType.SHARE_INBOX && source.enabled) {
+            if (!serverManaged && source.sourceType != MobileSourceType.SHARE_INBOX && source.enabled) {
                 IconButton(onClick = onRefresh) { Icon(Icons.Filled.Refresh, contentDescription = null) }
             }
             Switch(
                 checked = source.enabled,
                 onCheckedChange = { enabled -> if (enabled) onEnable() else onDisable() },
-                enabled = source.sourceType != MobileSourceType.SHARE_INBOX,
+                enabled = !serverManaged && source.sourceType != MobileSourceType.SHARE_INBOX,
             )
         }
     }
@@ -202,10 +191,12 @@ private fun MobileEventCard(event: MobileEventEntity, onDelete: () -> Unit) {
 private fun sourceName(sourceType: String): String = when (sourceType) {
     MobileSourceType.SYSTEM_CALENDAR -> stringResource(R.string.mobile_source_calendar)
     MobileSourceType.HEALTH_CONNECT -> stringResource(R.string.mobile_source_health)
+    MobileSourceType.XIAMI_HEALTH -> stringResource(R.string.mobile_source_xiaomi_health)
     else -> stringResource(R.string.mobile_source_share)
 }
 
 private fun sourceStatus(source: MobileSourceEntity): String = when {
+    source.permissionState == "server_managed" -> "由服务端同步；手机仅负责每日晨晚提醒"
     source.lastError != null -> source.lastError
     source.lastSyncAt != null -> DateFormat.getDateTimeInstance(DateFormat.SHORT, DateFormat.SHORT).format(Date(source.lastSyncAt))
     source.enabled -> "已开启，尚未采集"
