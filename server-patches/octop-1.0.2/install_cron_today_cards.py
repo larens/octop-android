@@ -311,6 +311,26 @@ if evidence_order_new not in source:
 mobile_ingest_path.write_text(source)
 
 source = cards_path.read_text()
+kind_old = (
+    'TodayCardKind = Literal["briefing", "research", "task", "calendar", '
+    '"health", "inbox", "review"]'
+)
+kind_new = (
+    'TodayCardKind = Literal["briefing", "research", "task", "calendar", '
+    '"health", "inbox", "review", "signal"]'
+)
+if kind_new not in source:
+    if kind_old not in source:
+        raise SystemExit("Octop 1.0.2 Today card kind anchor not found")
+    source = source.replace(kind_old, kind_new, 1)
+
+summary_old = "summary: str = Field(min_length=1, max_length=1000)"
+summary_new = "summary: str = Field(min_length=1, max_length=5200)"
+if summary_new not in source:
+    if summary_old not in source:
+        raise SystemExit("Octop 1.0.2 Today summary limit anchor not found")
+    source = source.replace(summary_old, summary_new, 1)
+
 old_limit = "_MAX_EVIDENCE = 20"
 new_limit = "_MAX_EVIDENCE = 100"
 if new_limit not in source:

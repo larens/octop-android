@@ -1,5 +1,6 @@
 package com.octopmobile.app.ui.workbench
 
+import androidx.compose.ui.unit.dp
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotEquals
@@ -37,5 +38,12 @@ class HealthCardVisualTest {
         assertNotEquals(healthMetricColor("steps"), healthMetricColor("sleep"))
         assertNotEquals(healthMetricColor("heart"), healthMetricColor("oxygen"))
         assertNotEquals(healthMetricColor("stress"), healthMetricColor("standing"))
+    }
+
+    @Test
+    fun keepsPrimaryRatioBarsCompact() {
+        assertEquals(14.dp, healthPrimaryTrendHeight("ratio"))
+        assertEquals(46.dp, healthPrimaryTrendHeight("line"))
+        assertEquals(46.dp, healthPrimaryTrendHeight("columns"))
     }
 }

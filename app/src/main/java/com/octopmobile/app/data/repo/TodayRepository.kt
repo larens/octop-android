@@ -3,12 +3,14 @@ package com.octopmobile.app.data.repo
 import androidx.room.withTransaction
 import com.octopmobile.app.data.db.OctopDatabase
 import com.octopmobile.app.data.db.TodayCardEntity
+import com.octopmobile.app.data.db.TodayCardLifecycle
 import com.octopmobile.app.data.remote.ApiResult
 import com.octopmobile.app.data.remote.OctopApi
 import com.octopmobile.app.data.remote.dto.TodayCardDto
 import com.octopmobile.app.data.remote.dto.TodayCardActionBody
 import com.octopmobile.app.data.remote.dto.TodayCardPatchBody
 import com.octopmobile.app.data.remote.dto.TodayCardFeedbackBody
+import com.octopmobile.app.data.remote.dto.TodayFeedbackType
 import com.octopmobile.app.data.remote.dto.TodaySourceCoverageDto
 import kotlinx.coroutines.flow.Flow
 import kotlinx.serialization.builtins.ListSerializer
@@ -46,30 +48,62 @@ class TodayRepository(
         }
 
     suspend fun setLifecycle(
-        cardId: String,
+        card: TodayCardEntity,
         lifecycle: String,
         snoozedUntilMillis: Long? = null,
-    ): ApiResult<Unit> = when (
-        val result = api.patchTodayCard(
-            agentId,
-            cardId,
-            TodayCardPatchBody(lifecycle, snoozedUntilMillis?.div(1000)),
+    ): ApiResult<Unit> {
+        val optimistic = card.copy(
+            lifecycle = lifecycle,
+            snoozedUntil = snoozedUntilMillis,
+            updatedAt = System.currentTimeMillis(),
         )
-    ) {
-        is ApiResult.Failure -> result
-        is ApiResult.Ok -> {
-            dao.upsert(toEntity(result.value))
-            ApiResult.Ok(Unit)
+        dao.upsert(optimistic)
+        return when (
+            val result = api.patchTodayCard(
+                agentId,
+                card.id,
+                TodayCardPatchBody(lifecycle, snoozedUntilMillis?.div(1000)),
+            )
+        ) {
+            is ApiResult.Failure -> {
+                dao.upsert(card)
+                result
+            }
+            is ApiResult.Ok -> {
+                dao.upsert(toEntity(result.value))
+                ApiResult.Ok(Unit)
+            }
         }
     }
 
-    suspend fun sendFeedback(cardId: String, feedbackType: String): ApiResult<Unit> = when (
-        val result = api.sendTodayCardFeedback(agentId, cardId, TodayCardFeedbackBody(feedbackType))
-    ) {
-        is ApiResult.Failure -> result
-        is ApiResult.Ok -> {
-            dao.upsert(toEntity(result.value))
-            ApiResult.Ok(Unit)
+    suspend fun sendFeedback(card: TodayCardEntity, feedbackType: String): ApiResult<Unit> {
+        val optimistic = when (feedbackType) {
+            TodayFeedbackType.IRRELEVANT -> card.copy(
+                lifecycle = TodayCardLifecycle.DISMISSED,
+                snoozedUntil = null,
+            )
+            TodayFeedbackType.TOO_FREQUENT -> card.copy(
+                lifecycle = TodayCardLifecycle.SNOOZED,
+                snoozedUntil = System.currentTimeMillis() + FEEDBACK_SNOOZE_MILLIS,
+            )
+            else -> null
+        }
+        optimistic?.let { dao.upsert(it) }
+        return when (
+            val result = api.sendTodayCardFeedback(
+                agentId,
+                card.id,
+                TodayCardFeedbackBody(feedbackType),
+            )
+        ) {
+            is ApiResult.Failure -> {
+                if (optimistic != null) dao.upsert(card)
+                result
+            }
+            is ApiResult.Ok -> {
+                dao.upsert(toEntity(result.value))
+                ApiResult.Ok(Unit)
+            }
         }
     }
 
@@ -123,5 +157,7 @@ class TodayRepository(
         updatedAt = dto.updatedAt.toMillis(),
     )
 }
+
+private const val FEEDBACK_SNOOZE_MILLIS = 3L * 24 * 60 * 60 * 1000
 
 private fun Long.toMillis(): Long = if (this > 100_000_000_000) this else this * 1000

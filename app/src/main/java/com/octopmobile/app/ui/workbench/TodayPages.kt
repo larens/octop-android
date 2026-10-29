@@ -5,6 +5,7 @@ import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -25,6 +26,8 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -116,26 +119,41 @@ fun TodayPane(
     val currentCards = groups.current
     val upcomingCards = groups.upcoming
     val pastCards = groups.past
-    val completedToday = remember(pastCards) { calendarItemSummaries(pastCards) }
+    val historyCards = groups.history
+    val reviewPeriod = remember(nowMillis) { todayReviewPeriod(nowMillis) }
+    val completedReview = remember(todayCards, reviewPeriod.date) {
+        completedScheduleHighlights(todayCards, nowMillis)
+    }
     val conversationHighlights = remember(threads, nowMillis) {
         todayConversationHighlights(threads, nowMillis)
     }
-    val updateHighlights = remember(currentCards) {
-        todayUpdateHighlights(currentCards)
+    val updateHighlights = remember(todayCards, reviewPeriod.date) {
+        todayUpdateHighlights(todayCards, nowMillis)
     }
     val upcomingSummary = remember(upcomingCards, nowMillis) {
         upcomingCalendarSummary(upcomingCards, nowMillis)
+    }
+    val snackbarHostState = remember { SnackbarHostState() }
+    val feedbackMessage = feedbackMessage(todayState.feedbackType)?.let { stringResource(it) }
+    LaunchedEffect(todayState.feedbackRevision) {
+        if (todayState.feedbackRevision > 0 && feedbackMessage != null) {
+            snackbarHostState.showSnackbar(feedbackMessage)
+            todayViewModel.clearFeedbackNotice(todayState.feedbackRevision)
+        }
     }
     val renderTodayCard: @Composable (TodayCardEntity, Boolean) -> Unit = { card, isPast ->
         TodayRecommendationCard(
             card = card,
             isPast = isPast,
+            nowMillis = nowMillis,
+            phoneScheduleCards = todayCards,
             onOpenDetail = {
                 if (card.lifecycle == TodayCardLifecycle.UNREAD) todayViewModel.markRead(card)
                 selectedCardId = card.id
             },
             onSnooze = { todayViewModel.snooze(card) },
             onFeedback = { todayViewModel.sendFeedback(card, it) },
+            onClose = { todayViewModel.dismiss(card) },
             onOpenExecution = card.executionThreadId?.let { threadId ->
                 { onOpenThread(card.agentId, threadId) }
             },
@@ -146,135 +164,158 @@ fun TodayPane(
         )
     }
 
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .background(
-                Brush.verticalGradient(
-                    listOf(
-                        MaterialTheme.colorScheme.primary.copy(alpha = 0.17f),
-                        MaterialTheme.colorScheme.background,
+    Box(modifier = Modifier.fillMaxSize()) {
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(
+                    Brush.verticalGradient(
+                        listOf(
+                            MaterialTheme.colorScheme.primary.copy(alpha = 0.17f),
+                            MaterialTheme.colorScheme.background,
+                        ),
                     ),
                 ),
-            ),
-    ) {
-        LazyColumn(
-            modifier = Modifier.fillMaxSize(),
-            contentPadding = PaddingValues(start = 16.dp, top = 10.dp, end = 16.dp, bottom = 24.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
-            item {
-                TodayPageHeader(
-                    currentCount = currentCards.size,
-                    upcomingCount = upcomingCards.size,
-                    refreshing = todayState.refreshing,
-                    onRefresh = todayViewModel::refresh,
-                )
-            }
-
-            if (todayState.error != null && todayCards.isNotEmpty()) {
-                item {
-                    TodaySyncNotice(
-                        message = todayState.error.asText(),
-                        onRetry = todayViewModel::refresh,
-                    )
-                }
-            }
-            if (todayState.error != null && todayCards.isEmpty()) {
-                item {
-                    EmptyCard(
-                        title = stringResource(R.string.today_agent_cards_unavailable),
-                        body = todayState.error.asText(),
-                    )
-                }
-            }
-
-            if (currentCards.isNotEmpty()) {
-                item {
-                    TodaySectionTitle(
-                        title = stringResource(R.string.today_current_cards_title),
-                        body = stringResource(R.string.today_current_cards_body),
-                    )
-                }
-                items(currentCards, key = { "today-card-${it.id}" }) { card ->
-                    renderTodayCard(card, false)
-                }
-            }
-
-            if (
-                completedToday.isNotEmpty() ||
-                conversationHighlights.isNotEmpty() ||
-                updateHighlights.isNotEmpty()
+            LazyColumn(
+                modifier = Modifier.fillMaxSize(),
+                contentPadding = PaddingValues(start = 16.dp, top = 10.dp, end = 16.dp, bottom = 24.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp),
             ) {
                 item {
-                    TodayDailyReviewCard(
-                        completedSchedules = completedToday,
-                        conversations = conversationHighlights,
-                        updates = updateHighlights,
+                    TodayPageHeader(
+                        currentCount = currentCards.size,
+                        upcomingCount = upcomingCards.size,
+                        refreshing = todayState.refreshing,
+                        onRefresh = todayViewModel::refresh,
                     )
                 }
-            }
 
-            if (upcomingCards.isNotEmpty()) {
-                item {
-                    TodayUpcomingScheduleCard(upcomingSummary)
-                }
-            }
-
-            if (awaiting.isNotEmpty()) {
-                item {
-                    SectionTitle(stringResource(R.string.today_waiting_title))
-                }
-                items(awaiting, key = { it.threadId }) { thread ->
-                    ThreadSummaryCard(
-                        thread = thread,
-                        subtitle = stringResource(R.string.today_waiting_subtitle),
-                        onClick = {
-                            if (agentId != null) onOpenThread(agentId, thread.threadId)
-                        },
-                    )
-                }
-            }
-
-            if (active.isNotEmpty()) {
-                item {
-                    SectionTitle(stringResource(R.string.today_running_title))
-                }
-                items(active, key = { it.threadId }) { thread ->
-                    ThreadSummaryCard(
-                        thread = thread,
-                        subtitle = stringResource(R.string.today_running_subtitle),
-                        onClick = {
-                            if (agentId != null) onOpenThread(agentId, thread.threadId)
-                        },
-                    )
-                }
-            }
-
-            if (recentMemory.isNotEmpty()) {
-                item {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        SectionTitle(stringResource(R.string.today_memory_title))
-                        TextButton(onClick = onOpenMemory) {
-                            Text(stringResource(R.string.today_memory_more))
-                        }
+                if (todayState.error != null && todayCards.isNotEmpty()) {
+                    item {
+                        TodaySyncNotice(
+                            message = todayState.error.asText(),
+                            onRetry = todayViewModel::refresh,
+                        )
                     }
                 }
-                items(recentMemory, key = { "memory-${it.id}" }) { memory ->
-                    TodayMemoryCard(memory = memory, onClick = onOpenMemory)
+                if (todayState.error != null && todayCards.isEmpty()) {
+                    item {
+                        EmptyCard(
+                            title = stringResource(R.string.today_agent_cards_unavailable),
+                            body = todayState.error.asText(),
+                        )
+                    }
+                }
+
+                if (currentCards.isNotEmpty()) {
+                    item {
+                        TodaySectionTitle(
+                            title = stringResource(R.string.today_current_cards_title),
+                            body = stringResource(R.string.today_current_cards_body),
+                        )
+                    }
+                    items(currentCards, key = { "today-card-${it.id}" }) { card ->
+                        renderTodayCard(card, false)
+                    }
+                }
+
+                if (
+                    completedReview.isNotEmpty() ||
+                    conversationHighlights.isNotEmpty() ||
+                    updateHighlights.isNotEmpty()
+                ) {
+                    item {
+                        TodayDailyReviewCard(
+                            completedSchedules = completedReview,
+                            conversations = conversationHighlights,
+                            updates = updateHighlights,
+                            isYesterday = reviewPeriod.isYesterday,
+                        )
+                    }
+                }
+
+                if (upcomingCards.isNotEmpty()) {
+                    item {
+                        TodayUpcomingScheduleCard(upcomingSummary)
+                    }
+                }
+
+                if (historyCards.isNotEmpty()) {
+                    item {
+                        TodaySectionTitle(
+                            title = stringResource(R.string.today_history_cards_title),
+                            body = stringResource(R.string.today_history_cards_body),
+                        )
+                    }
+                    items(historyCards, key = { "today-history-${it.id}" }) { card ->
+                        renderTodayCard(card, true)
+                    }
+                }
+
+                if (awaiting.isNotEmpty()) {
+                    item {
+                        SectionTitle(stringResource(R.string.today_waiting_title))
+                    }
+                    items(awaiting, key = { it.threadId }) { thread ->
+                        ThreadSummaryCard(
+                            thread = thread,
+                            subtitle = stringResource(R.string.today_waiting_subtitle),
+                            onClick = {
+                                if (agentId != null) onOpenThread(agentId, thread.threadId)
+                            },
+                        )
+                    }
+                }
+
+                if (active.isNotEmpty()) {
+                    item {
+                        SectionTitle(stringResource(R.string.today_running_title))
+                    }
+                    items(active, key = { it.threadId }) { thread ->
+                        ThreadSummaryCard(
+                            thread = thread,
+                            subtitle = stringResource(R.string.today_running_subtitle),
+                            onClick = {
+                                if (agentId != null) onOpenThread(agentId, thread.threadId)
+                            },
+                        )
+                    }
+                }
+
+                if (recentMemory.isNotEmpty()) {
+                    item {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            SectionTitle(stringResource(R.string.today_memory_title))
+                            TextButton(onClick = onOpenMemory) {
+                                Text(stringResource(R.string.today_memory_more))
+                            }
+                        }
+                    }
+                    items(recentMemory, key = { "memory-${it.id}" }) { memory ->
+                        TodayMemoryCard(memory = memory, onClick = onOpenMemory)
+                    }
                 }
             }
         }
+        SnackbarHost(
+            hostState = snackbarHostState,
+            modifier = Modifier
+                .align(Alignment.BottomCenter)
+                .padding(16.dp),
+        )
     }
 
     todayCards.firstOrNull { it.id == selectedCardId }?.let { card ->
         TodayRecommendationDetail(
             card = card,
             isPast = pastCards.any { it.id == card.id },
+            nowMillis = nowMillis,
+            phoneScheduleCards = todayCards,
             onDismiss = { selectedCardId = null },
             onSnooze = {
                 todayViewModel.snooze(card)
@@ -282,7 +323,12 @@ fun TodayPane(
             },
             onFeedback = { feedbackType ->
                 todayViewModel.sendFeedback(card, feedbackType)
-                if (feedbackType == TodayFeedbackType.IRRELEVANT) selectedCardId = null
+                if (
+                    feedbackType == TodayFeedbackType.IRRELEVANT ||
+                    feedbackType == TodayFeedbackType.TOO_FREQUENT
+                ) {
+                    selectedCardId = null
+                }
             },
             onOpenEvidenceThread = { threadId ->
                 selectedCardId = null
@@ -301,6 +347,14 @@ fun TodayPane(
             },
         )
     }
+}
+
+private fun feedbackMessage(feedbackType: String?): Int? = when (feedbackType) {
+    TodayFeedbackType.USEFUL -> R.string.today_feedback_confirmation_useful
+    TodayFeedbackType.IRRELEVANT -> R.string.today_feedback_confirmation_irrelevant
+    TodayFeedbackType.TOO_FREQUENT -> R.string.today_feedback_confirmation_too_frequent
+    TodayFeedbackType.POOR_SOURCE -> R.string.today_feedback_confirmation_poor_source
+    else -> null
 }
 
 @Composable

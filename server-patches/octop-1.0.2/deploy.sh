@@ -17,6 +17,8 @@ cp turn_delete.py "$site/infra/agents/threads/turn_delete.py"
 /opt/octop/venv/bin/python install_cron_isolation.py
 /opt/octop/venv/bin/python install_cron_delivery_isolation.py
 /opt/octop/venv/bin/python install_cron_today_cards.py
+/opt/octop/venv/bin/python install_calendar_card_format.py
+/opt/octop/venv/bin/python install_today_feedback_semantics.py
 /opt/octop/venv/bin/python install_xiaomi_health_cloud.py
 /opt/octop/venv/bin/python migrate_existing_tasks.py
 /opt/octop/venv/bin/python -m py_compile \

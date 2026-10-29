@@ -169,5 +169,320 @@ class MailSummaryTest(unittest.TestCase):
         self.assertEqual(2, len({item.title for item in evidence}))
 
 
+class WeatherSummaryTest(unittest.TestCase):
+    def test_morning_weather_is_subordinate_to_today_arrangements(self) -> None:
+        text = """
+【今日天气】
+北京，晴转小雨，6~15°C，降雨概率 60%。
+
+【日程与准备】
+09:30 产品评审，需要准备原型和上一轮结论。
+
+【处理建议】
+今天有雨，带伞。早晚偏冷，多穿一件。
+"""
+
+        summary = cron_today_cards.task_result_summary(
+            text,
+            task_name="晨间天气与日程",
+            status="ok",
+            error=None,
+            kind="weather",
+        )
+
+        self.assertIn("【今日安排】", summary)
+        self.assertIn("【天气提醒】", summary)
+        self.assertIn("【行动建议】", summary)
+        self.assertIn("北京，晴转小雨", summary)
+        self.assertIn("09:30 产品评审", summary)
+        self.assertIn("带伞", summary)
+        self.assertLess(summary.index("【今日安排】"), summary.index("【天气提醒】"))
+        self.assertLess(summary.index("【天气提醒】"), summary.index("【行动建议】"))
+        self.assertLessEqual(len(summary), 1000)
+
+    def test_weather_card_title_describes_the_daily_plan_not_weather(self) -> None:
+        self.assertEqual(
+            "今日安排与建议",
+            cron_today_cards.cron_card_title(
+                "weather",
+                "晨间天气与日程",
+                "【今日安排】09:30 产品评审\n【天气提醒】有雨，带伞。",
+            ),
+        )
+
+    def test_weather_and_schedule_are_classified_as_weather(self) -> None:
+        self.assertEqual(
+            "weather",
+            cron_today_cards.classify_cron_kind(
+                "晨间天气与日程",
+                "先用 get_weather 查询天气，再整理今天的会议与日程",
+            ),
+        )
+
+    def test_evening_weather_task_keeps_tomorrow_preparation(self) -> None:
+        text = """
+【明日天气】
+北京，晴，6.8~19.4°C，降雨概率 0%。
+
+【明日准备】
+不用放折叠伞；早晚偏冷，备一件保暖衣物。
+
+【处理建议】
+明早按 6.8°C 穿着，出门不要只穿单件。
+"""
+
+        summary = cron_today_cards.task_result_summary(
+            text,
+            task_name="夜间天气与明日准备",
+            status="ok",
+            error=None,
+            kind="weather",
+        )
+
+        self.assertIn("【明日安排】", summary)
+        self.assertIn("【天气与穿着】", summary)
+        self.assertIn("【今晚准备】", summary)
+        self.assertIn("降雨概率 0%", summary)
+        self.assertIn("不用放折叠伞", summary)
+        self.assertIn("不要只穿单件", summary)
+        self.assertLess(summary.index("【明日安排】"), summary.index("【天气与穿着】"))
+
+    def test_evening_weather_card_title_is_forward_looking(self) -> None:
+        self.assertEqual(
+            "明日安排与准备",
+            cron_today_cards.cron_card_title(
+                "weather",
+                "夜间天气与明日准备",
+                "【明日安排】明早 09:00 评审\n【天气与穿着】有雨。",
+            ),
+        )
+
+    def test_weather_bullets_are_kept_out_of_the_primary_arrangement(self) -> None:
+        text = """
+【明日安排】
+- 折叠伞：不用放书包，降雨概率 0%。
+- 09:30 产品评审，需要准备原型。
+
+【天气与穿着】
+北京，晴，6.8~19.4°C。
+
+【今晚准备】
+明早多穿一件。
+"""
+
+        summary = cron_today_cards.task_result_summary(
+            text,
+            task_name="夜间天气与明日准备",
+            status="ok",
+            error=None,
+            kind="weather",
+        )
+        arrangement = summary.split("【天气与穿着】", 1)[0]
+
+        self.assertIn("09:30 产品评审", arrangement)
+        self.assertNotIn("折叠伞", arrangement)
+        self.assertIn("折叠伞", summary)
+
+    def test_weather_does_not_dismiss_automatic_news_cards(self) -> None:
+        self.assertNotIn("weather", cron_today_cards._AUTO_KIND_BY_TASK_KIND)
+        self.assertEqual({"news": "news", "inbox": "mail"}, cron_today_cards._AUTO_KIND_BY_TASK_KIND)
+
+
+class IndustrySignalSummaryTest(unittest.TestCase):
+    def test_signal_is_classified_before_news_and_keeps_a_stable_title(self) -> None:
+        self.assertEqual(
+            "signal",
+            cron_today_cards.classify_cron_kind(
+                "AI 与科技行业信号",
+                "整理今天值得关注的 AI 新闻与头部科技公司动态",
+            ),
+        )
+        self.assertEqual(
+            "signal",
+            cron_today_cards.classify_cron_kind(
+                "Afternoon AI and tech signals",
+                "Review leading AI and technology companies",
+            ),
+        )
+        self.assertEqual(
+            "AI 与科技行业信号",
+            cron_today_cards.cron_card_title(
+                "signal",
+                "AI 与科技行业信号",
+                "【关键信号】1. OpenAI｜GPT-6 Astra Pro",
+            ),
+        )
+
+    def test_signal_summary_keeps_the_cross_event_judgment_and_comparison(self) -> None:
+        text = """
+## 今日判断
+
+**【总判断】**
+形态已经清楚了，数字还只有发布方口径。
+
+**【关键信号】**
+1. OpenAI｜GPT-6 Astra Pro
+成熟度：可验证进展
+证据强度：3/3
+核心变化：同一任务拆给多个 agent 并行推进，过程实时可见。
+不确定性：Pro 档仍在灰度。
+对我的意义：今天就能对照现有交付流程试一次。
+来源：https://example.com/openai
+
+2. Anthropic｜企业交易 agent
+成熟度：仅发布方口径
+证据强度：1/3
+核心变化：agent 从聊天走向替企业做具体交易决策。
+不确定性：没有第三方验证、上线时间和收费标准。
+对我的意义：先观望，不纳入近期方案。
+
+**【行动建议】**
+先验证已经开放的能力，交易类进展等第三方证据。
+"""
+
+        summary = cron_today_cards.task_result_summary(
+            text,
+            task_name="AI 与科技行业信号",
+            status="ok",
+            error=None,
+            kind="signal",
+        )
+
+        self.assertIn("【总判断】", summary)
+        self.assertIn("形态已经清楚了", summary)
+        self.assertIn("【关键信号】", summary)
+        self.assertIn("OpenAI｜GPT-6 Astra Pro", summary)
+        self.assertIn("成熟度：可验证进展", summary)
+        self.assertIn("证据强度：3/3", summary)
+        self.assertIn("Anthropic｜企业交易 agent", summary)
+        self.assertIn("仅发布方口径", summary)
+        self.assertIn("【行动建议】", summary)
+        self.assertNotIn("https://example.com", summary)
+        self.assertLess(summary.index("【总判断】"), summary.index("【关键信号】"))
+        self.assertLess(summary.index("【关键信号】"), summary.index("【行动建议】"))
+
+    def test_signal_summary_is_silent_when_nothing_important_happened(self) -> None:
+        self.assertEqual(
+            "",
+            cron_today_cards.task_result_summary(
+                "NO_SIGNAL",
+                task_name="AI 与科技行业信号",
+                status="ok",
+                error=None,
+                kind="signal",
+            ),
+        )
+        self.assertEqual(
+            "",
+            cron_today_cards.task_result_summary(
+                "今天没有值得推荐的变化，只有重复发布会通稿。",
+                task_name="AI 与科技行业信号",
+                status="ok",
+                error=None,
+                kind="signal",
+            ),
+        )
+
+    def test_signal_summary_keeps_the_third_event_and_action_for_detail_view(self) -> None:
+        text = """
+【总判断】
+三个事件指向同一条边界：能力增长快于验证速度。
+
+【关键信号】
+1. OpenAI｜Computer use
+成熟度：已有第三方验证
+证据强度：3/3
+核心变化：这是第一条足够长的能力变化说明，用于确认摘要不会在第二个事件之前提前截断。
+不确定性：仅覆盖部分任务。
+对我的意义：先在低风险任务验证。
+来源：https://example.com/1
+2. Anthropic｜Safety disclosure
+成熟度：可验证进展
+证据强度：2/3
+核心变化：这是第二条足够长的能力变化说明，用于确认摘要会完整保留比较信息。
+不确定性：仍缺独立基准。
+对我的意义：先观望发布细节。
+来源：https://example.com/2
+3. NVIDIA｜Runtime guard
+成熟度：仅发布方口径
+证据强度：1/3
+核心变化：这是第三条足够长的能力变化说明，用于确认多事件对比不会丢失末尾信号。
+不确定性：尚未提供定价和上线时间。
+对我的意义：等第三方复现。
+来源：https://example.com/3
+
+【行动建议】
+先验证第一条，另外两条保持观察。
+"""
+
+        summary = cron_today_cards.task_result_summary(
+            text,
+            task_name="AI 与科技行业信号",
+            status="ok",
+            error=None,
+            kind="signal",
+        )
+
+        self.assertIn("3. NVIDIA｜Runtime guard", summary)
+        self.assertIn("【行动建议】", summary)
+        self.assertIn("先验证第一条", summary)
+        self.assertLessEqual(len(summary), 5200)
+
+    def test_signal_does_not_replace_automatic_news_cards(self) -> None:
+        self.assertEqual({"news": "news", "inbox": "mail"}, cron_today_cards._AUTO_KIND_BY_TASK_KIND)
+
+    def test_connector_json_keeps_titled_article_links_and_drops_images(self) -> None:
+        payload = {
+            "news_list": [
+                {
+                    "title": "Google DeepMind 发布新一代世界模型 Genie 4",
+                    "url": "https://view.inews.qq.com/a/example",
+                    "source": "每日经济新闻",
+                    "image": "https://inews.gtimg.com/example.jpg",
+                },
+                {
+                    "title": "示例图片",
+                    "url": "https://inews.gtimg.com/example.jpg",
+                },
+            ]
+        }
+
+        items = cron_today_cards._embedded_web_items(payload)
+
+        self.assertEqual(1, len(items))
+        self.assertIn("每日经济新闻", items[0][0])
+        self.assertEqual("https://view.inews.qq.com/a/example", items[0][1])
+
+
+class AnniversaryCardTest(unittest.TestCase):
+    def test_anniversary_is_schedule_related_before_inbox_matching(self) -> None:
+        self.assertEqual(
+            "calendar",
+            cron_today_cards.classify_cron_kind(
+                "纪念日提醒（统一入口）",
+                "每天发送纪念日和生日提醒消息",
+            ),
+        )
+
+    def test_card_title_hides_internal_entry_suffix(self) -> None:
+        self.assertEqual(
+            "纪念日提醒",
+            cron_today_cards.cron_card_title(
+                "calendar",
+                "纪念日提醒（统一入口）",
+                "今天是纪念日。",
+            ),
+        )
+
+    def test_anniversary_words_in_a_signal_prompt_do_not_change_its_kind(self) -> None:
+        self.assertEqual(
+            "signal",
+            cron_today_cards.classify_cron_kind(
+                "AI 与科技行业信号",
+                "整理 OpenAI 新模型与 Anthropic 周年发布动态",
+            ),
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

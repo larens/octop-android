@@ -16,7 +16,7 @@ const config = {
   iconUrl: `https://${process.env.TWA_HOST}/pwa-512.png`,
   maskableIconUrl: "",
   minSdkVersion: 26,
-  orientation: "default",
+  orientation: "portrait",
   enableNotifications: false,
 };
 

@@ -32,6 +32,8 @@ data class TodayUiState(
     val refreshing: Boolean = false,
     val error: ApiError? = null,
     val needsLogin: Boolean = false,
+    val feedbackType: String? = null,
+    val feedbackRevision: Int = 0,
 )
 
 @OptIn(ExperimentalCoroutinesApi::class)
@@ -116,8 +118,12 @@ class TodayViewModel(private val container: AppContainer) : ViewModel() {
         val baseUrl = host.value ?: return
         val id = agentId.value ?: return
         viewModelScope.launch {
-            when (val result = container.todayRepository(baseUrl, id).sendFeedback(card.id, feedbackType)) {
-                is ApiResult.Ok -> Unit
+            when (val result = container.todayRepository(baseUrl, id).sendFeedback(card, feedbackType)) {
+                is ApiResult.Ok -> uiState = uiState.copy(
+                    error = null,
+                    feedbackType = feedbackType,
+                    feedbackRevision = uiState.feedbackRevision + 1,
+                )
                 is ApiResult.Failure -> uiState = uiState.copy(
                     error = result.error,
                     needsLogin = result.error.isUnauthorized,
@@ -126,11 +132,17 @@ class TodayViewModel(private val container: AppContainer) : ViewModel() {
         }
     }
 
+    fun clearFeedbackNotice(revision: Int) {
+        if (uiState.feedbackRevision == revision) {
+            uiState = uiState.copy(feedbackType = null)
+        }
+    }
+
     private fun update(card: TodayCardEntity, lifecycle: String, snoozedUntil: Long? = null) {
         val baseUrl = host.value ?: return
         val id = agentId.value ?: return
         viewModelScope.launch {
-            when (val result = container.todayRepository(baseUrl, id).setLifecycle(card.id, lifecycle, snoozedUntil)) {
+            when (val result = container.todayRepository(baseUrl, id).setLifecycle(card, lifecycle, snoozedUntil)) {
                 is ApiResult.Ok -> Unit
                 is ApiResult.Failure -> uiState = uiState.copy(
                     error = result.error,

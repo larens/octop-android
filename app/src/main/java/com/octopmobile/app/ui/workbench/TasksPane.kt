@@ -26,12 +26,12 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.AutoStories
-import androidx.compose.material.icons.filled.CalendarMonth
 import androidx.compose.material.icons.filled.Email
 import androidx.compose.material.icons.filled.EventAvailable
 import androidx.compose.material.icons.filled.Newspaper
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.TaskAlt
+import androidx.compose.material.icons.filled.WbSunny
 import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.Celebration
 import androidx.compose.material.icons.filled.Close
@@ -83,7 +83,7 @@ import java.time.format.DateTimeFormatter
 
 private enum class TasksTab { ADDED, RECOMMENDED }
 
-private enum class RecommendationKind { NEWS, MAIL, READING, CALENDAR }
+private enum class RecommendationKind { NEWS, MAIL, READING, WEATHER }
 
 private data class TaskRecommendation(
     val id: String,
@@ -106,6 +106,15 @@ private val TASK_RECOMMENDATIONS = listOf(
         Icons.Filled.Newspaper,
     ),
     TaskRecommendation(
+        "industry-signal-afternoon",
+        RecommendationKind.NEWS,
+        R.string.tasks_rec_signal_title,
+        R.string.tasks_rec_signal_body,
+        R.string.tasks_rec_signal_natural,
+        setOf("tencent-news"),
+        Icons.Filled.AutoAwesome,
+    ),
+    TaskRecommendation(
         "mail-morning",
         RecommendationKind.MAIL,
         R.string.tasks_rec_mail_title,
@@ -125,12 +134,12 @@ private val TASK_RECOMMENDATIONS = listOf(
     ),
     TaskRecommendation(
         "calendar-morning",
-        RecommendationKind.CALENDAR,
+        RecommendationKind.WEATHER,
         R.string.tasks_rec_calendar_title,
         R.string.tasks_rec_calendar_body,
         R.string.tasks_rec_calendar_natural,
         setOf("feishu-cli"),
-        Icons.Filled.CalendarMonth,
+        Icons.Filled.WbSunny,
     ),
     TaskRecommendation(
         "news-weekly",
@@ -161,12 +170,12 @@ private val TASK_RECOMMENDATIONS = listOf(
     ),
     TaskRecommendation(
         "calendar-preview",
-        RecommendationKind.CALENDAR,
+        RecommendationKind.WEATHER,
         R.string.tasks_rec_calendar_preview_title,
         R.string.tasks_rec_calendar_preview_body,
         R.string.tasks_rec_calendar_preview_natural,
         setOf("feishu-cli"),
-        Icons.Filled.CalendarMonth,
+        Icons.Filled.WbSunny,
     ),
 )
 
@@ -552,7 +561,7 @@ private fun recommendationColor(kind: RecommendationKind): Color = when (kind) {
     RecommendationKind.NEWS -> MaterialTheme.colorScheme.primaryContainer
     RecommendationKind.MAIL -> MaterialTheme.colorScheme.secondaryContainer
     RecommendationKind.READING -> MaterialTheme.colorScheme.tertiaryContainer
-    RecommendationKind.CALENDAR -> MaterialTheme.colorScheme.surfaceVariant
+    RecommendationKind.WEATHER -> MaterialTheme.colorScheme.primaryContainer
 }
 
 @Composable

@@ -105,7 +105,7 @@ cat > "$BUILD_DIR/twa-manifest.json" <<EOF
   "isMetaQuest": false,
   "fullScopeUrl": "$PROBE_HOST/",
   "minSdkVersion": $MIN_SDK,
-  "orientation": "default",
+  "orientation": "portrait",
   "fingerprints": [],
   "additionalTrustedOrigins": [],
   "retainedBundles": [],

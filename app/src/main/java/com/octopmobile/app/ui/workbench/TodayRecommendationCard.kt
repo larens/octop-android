@@ -26,10 +26,12 @@ import androidx.compose.material.icons.automirrored.filled.Chat
 import androidx.compose.material.icons.automirrored.filled.OpenInNew
 import androidx.compose.material.icons.filled.AccessTime
 import androidx.compose.material.icons.filled.AutoAwesome
+import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Email
 import androidx.compose.material.icons.filled.Event
+import androidx.compose.material.icons.filled.EventAvailable
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Inbox
@@ -39,6 +41,8 @@ import androidx.compose.material.icons.filled.Place
 import androidx.compose.material.icons.filled.Schedule
 import androidx.compose.material.icons.filled.TaskAlt
 import androidx.compose.material.icons.filled.TravelExplore
+import androidx.compose.material.icons.filled.Umbrella
+import androidx.compose.material.icons.filled.WbSunny
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.DropdownMenu
@@ -47,6 +51,7 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -64,6 +69,7 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
@@ -80,11 +86,14 @@ import java.time.ZoneId
 internal fun TodayRecommendationCard(
     card: TodayCardEntity,
     isPast: Boolean,
+    nowMillis: Long,
+    phoneScheduleCards: List<TodayCardEntity> = emptyList(),
     onOpenDetail: () -> Unit,
     onProcess: () -> Unit,
     onOpenExecution: (() -> Unit)?,
     onSnooze: () -> Unit,
     onFeedback: (String) -> Unit,
+    onClose: () -> Unit,
 ) {
     val uriHandler = LocalUriHandler.current
     val shape = RoundedCornerShape(22.dp)
@@ -95,11 +104,24 @@ internal fun TodayRecommendationCard(
     val healthVisualization = remember(card.kind, card.summary) {
         if (card.kind == "health") parseHealthVisualization(card.summary) else null
     }
+    val dailyPlan = remember(card.kind, card.title, card.summary, phoneScheduleCards, nowMillis) {
+        resolveTodayDailyPlan(card, phoneScheduleCards, nowMillis)
+    }
+    val industrySignal = remember(card.kind, card.summary) {
+        parseTodaySignal(card)
+    }
+    val dailyWeatherWeight = remember(card.updatedAt, nowMillis) {
+        dailyWeatherVisualWeight(card.updatedAt, nowMillis)
+    }
     val summaryPreview = remember(card.summary) { todayCardSummaryPreview(card.summary) }
     val structuredAdvice = summarySections.firstOrNull {
-        it.heading == "处理建议" || it.heading == "改善建议"
+        it.heading == "处理建议" ||
+            it.heading == "改善建议" ||
+            it.heading == "行动建议" ||
+            it.heading == "今晚准备"
     }
-    val hasStructuredAdvice = structuredAdvice != null
+    val hasStructuredAdvice =
+        structuredAdvice != null || dailyPlan != null || industrySignal != null
     val structuredHealthAdvice = structuredAdvice?.takeIf { card.kind == "health" }
     val structuredEmail = card.kind == "inbox" && hasStructuredAdvice
     val hasPendingMail = structuredEmail && summarySections.any { it.heading == "待处理邮件" }
@@ -113,7 +135,7 @@ internal fun TodayRecommendationCard(
     val newsFacts = remember(card.evidenceJson) { todayNewsFacts(evidence) }
     val facts = remember(card.kind, card.evidenceJson) {
         when {
-            card.kind == "health" -> emptyList()
+            card.kind == "health" || dailyPlan != null || industrySignal != null -> emptyList()
             card.kind.isNewsCard() -> newsFacts.take(3)
             else -> todayCardFacts(evidence)
         }
@@ -126,6 +148,142 @@ internal fun TodayRecommendationCard(
     }
     var menuExpanded by remember(card.id) { mutableStateOf(false) }
     val opensFullNewsList = card.kind.isNewsCard() && newsFacts.size > facts.size
+
+    if (calendar != null) {
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clip(shape)
+                .background(
+                    Brush.verticalGradient(
+                        listOf(
+                            MaterialTheme.colorScheme.surface,
+                            accent.copy(alpha = if (isPast) 0.035f else 0.075f),
+                        ),
+                    ),
+                )
+                .border(1.dp, accent.copy(alpha = 0.14f), shape)
+                .clickable(onClick = onOpenDetail),
+        ) {
+            Column(
+                modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    CategoryPill(kind = "calendar", accent = accent)
+                    Spacer(Modifier.width(8.dp))
+                    if (card.lifecycle == "unread") {
+                        Box(
+                            modifier = Modifier
+                                .size(6.dp)
+                                .clip(CircleShape)
+                                .background(accent),
+                        )
+                    }
+                    Spacer(Modifier.weight(1f))
+                    if (card.riskLevel == "A3" || card.riskLevel == "A4") {
+                        Text(
+                            text = stringResource(R.string.today_card_needs_confirmation),
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.error,
+                        )
+                        Spacer(Modifier.width(5.dp))
+                    }
+                    Box {
+                        IconButton(
+                            onClick = { menuExpanded = true },
+                            modifier = Modifier.size(30.dp),
+                        ) {
+                            Icon(
+                                Icons.Filled.MoreHoriz,
+                                contentDescription = stringResource(R.string.today_card_more_actions),
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.size(18.dp),
+                            )
+                        }
+                        TodayCardMenu(
+                            expanded = menuExpanded,
+                            card = card,
+                            onDismiss = { menuExpanded = false },
+                            onSnooze = onSnooze,
+                            onFeedback = onFeedback,
+                            onClose = onClose,
+                            sourceUrl = card.sourceUrl,
+                            onOpenSource = { url -> uriHandler.openUri(url) },
+                        )
+                    }
+                }
+
+                Spacer(Modifier.height(6.dp))
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Icon(
+                        imageVector = Icons.Filled.Event,
+                        contentDescription = null,
+                        tint = accent,
+                        modifier = Modifier.size(20.dp),
+                    )
+                    Spacer(Modifier.width(6.dp))
+                    calendar.time?.let { time ->
+                        Text(
+                            text = time,
+                            style = MaterialTheme.typography.titleLarge.copy(
+                                fontWeight = FontWeight.Bold,
+                            ),
+                            color = accent,
+                        )
+                    }
+                    calendar.location?.let { location ->
+                        Spacer(Modifier.width(9.dp))
+                        Text(
+                            text = stringResource(
+                                R.string.today_card_calendar_location_value,
+                                location,
+                            ),
+                            style = MaterialTheme.typography.titleSmall.copy(
+                                fontWeight = FontWeight.Medium,
+                            ),
+                            color = MaterialTheme.colorScheme.onSurface,
+                            modifier = Modifier.weight(1f),
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
+                }
+
+                Spacer(Modifier.height(6.dp))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        text = card.title,
+                        style = MaterialTheme.typography.titleMedium.copy(
+                            fontWeight = FontWeight.SemiBold,
+                        ),
+                        color = MaterialTheme.colorScheme.onSurface,
+                        modifier = Modifier.weight(1f),
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                    if (!executionCompleted) {
+                        Spacer(Modifier.width(8.dp))
+                        CompactCalendarAction(
+                            card = card,
+                            accent = accent,
+                            isPast = isPast,
+                            isUpcoming = isUpcoming,
+                            onOpenDetail = onOpenDetail,
+                            onProcess = onProcess,
+                            onOpenExecution = onOpenExecution,
+                        )
+                    }
+                }
+            }
+        }
+        return
+    }
 
     Box(
         modifier = Modifier
@@ -150,10 +308,16 @@ internal fun TodayRecommendationCard(
                 CategoryPill(
                     kind = card.kind,
                     accent = accent,
-                    label = if (hasPendingMail) {
-                        stringResource(R.string.today_card_pending_mail)
-                    } else {
-                        null
+                    label = when {
+                        hasPendingMail -> stringResource(R.string.today_card_pending_mail)
+                        dailyPlan != null -> stringResource(
+                            if (dailyPlan.isTomorrow) {
+                                R.string.today_card_category_tomorrow_plan
+                            } else {
+                                R.string.today_card_category_daily_plan
+                            },
+                        )
+                        else -> null
                     },
                 )
                 Spacer(Modifier.width(8.dp))
@@ -187,9 +351,11 @@ internal fun TodayRecommendationCard(
                     }
                     TodayCardMenu(
                         expanded = menuExpanded,
+                        card = card,
                         onDismiss = { menuExpanded = false },
                         onSnooze = onSnooze,
                         onFeedback = onFeedback,
+                        onClose = onClose,
                         sourceUrl = card.sourceUrl,
                         onOpenSource = { url -> uriHandler.openUri(url) },
                     )
@@ -198,12 +364,16 @@ internal fun TodayRecommendationCard(
 
             Spacer(Modifier.height(10.dp))
             Text(
-                text = card.title,
+                text = dailyPlan?.title ?: card.title,
                 style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.SemiBold),
                 color = MaterialTheme.colorScheme.onSurface,
             )
 
-            if (calendar == null && summaryPreview.isNotBlank()) {
+            if (
+                dailyPlan == null &&
+                industrySignal == null &&
+                summaryPreview.isNotBlank()
+            ) {
                 Spacer(Modifier.height(5.dp))
                 Text(
                     text = summaryPreview,
@@ -214,32 +384,44 @@ internal fun TodayRecommendationCard(
                 )
             }
 
-            if (healthVisualization != null) {
+            if (dailyPlan != null) {
+                Spacer(Modifier.height(12.dp))
+                DailyPlanPanel(
+                    details = dailyPlan,
+                    accent = accent,
+                    weatherVisualWeight = dailyWeatherWeight,
+                )
+            } else if (industrySignal != null) {
+                Spacer(Modifier.height(12.dp))
+                IndustrySignalPanel(
+                    details = industrySignal,
+                    accent = accent,
+                )
+            } else if (healthVisualization != null) {
                 Spacer(Modifier.height(12.dp))
                 HealthVisualPanel(healthVisualization, accent)
             }
 
-            if (calendar != null) {
-                Spacer(Modifier.height(12.dp))
-                CalendarFocusPanel(calendar, accent)
-            } else if (hasPendingMail) {
-                Spacer(Modifier.height(12.dp))
-                PendingMailPanel(pendingPreview, accent)
-            } else if (facts.isNotEmpty() && !structuredEmail && card.kind != "health") {
-                Spacer(Modifier.height(12.dp))
-                Column(verticalArrangement = Arrangement.spacedBy(7.dp)) {
-                    facts.forEachIndexed { index, fact ->
-                        FactCard(
-                            index = index,
-                            fact = fact,
-                            accent = accent,
-                            onOpen = fact.url?.let { url -> { uriHandler.openUri(url) } },
-                        )
+            if (dailyPlan == null && industrySignal == null) {
+                if (hasPendingMail) {
+                    Spacer(Modifier.height(12.dp))
+                    PendingMailPanel(pendingPreview, accent)
+                } else if (facts.isNotEmpty() && !structuredEmail && card.kind != "health") {
+                    Spacer(Modifier.height(12.dp))
+                    Column(verticalArrangement = Arrangement.spacedBy(7.dp)) {
+                        facts.forEachIndexed { index, fact ->
+                            FactCard(
+                                index = index,
+                                fact = fact,
+                                accent = accent,
+                                onOpen = fact.url?.let { url -> { uriHandler.openUri(url) } },
+                            )
+                        }
                     }
                 }
             }
 
-            if (!hasStructuredAdvice) {
+            if (!hasStructuredAdvice && card.kind != "calendar") {
                 Spacer(Modifier.height(12.dp))
                 AdvicePanel(
                     text = todayCardAdvice(card, isPast, isUpcoming),
@@ -284,61 +466,93 @@ internal fun TodayRecommendationCard(
             }
 
             val primaryAction = when {
+                dailyPlan != null -> onOpenDetail
+                industrySignal != null -> onOpenDetail
                 opensFullNewsList -> onOpenDetail
                 structuredEmail -> onOpenDetail
                 onOpenExecution != null -> onOpenExecution
                 isPast -> onOpenDetail
                 else -> onProcess
             }
-            if (structuredEmail || !executionCompleted) {
+            if (
+                structuredEmail ||
+                !executionCompleted ||
+                dailyPlan != null ||
+                industrySignal != null
+            ) {
                 Spacer(Modifier.height(12.dp))
-                Button(
-                    onClick = primaryAction,
-                    shape = RoundedCornerShape(50),
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = if (isPast) {
-                            MaterialTheme.colorScheme.surfaceVariant
-                        } else {
-                            accent
-                        },
-                        contentColor = if (isPast) {
-                            MaterialTheme.colorScheme.onSurfaceVariant
-                        } else {
-                            Color.White
-                        },
-                    ),
-                    contentPadding = PaddingValues(horizontal = 16.dp, vertical = 9.dp),
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    Icon(
-                        imageVector = when {
-                            structuredEmail -> Icons.Filled.ChevronRight
-                            isPast -> Icons.Filled.History
-                            else -> Icons.Filled.AutoAwesome
-                        },
-                        contentDescription = null,
-                        modifier = Modifier.size(17.dp),
-                    )
-                    Spacer(Modifier.width(7.dp))
-                    Text(
-                        text = if (opensFullNewsList) {
-                            stringResource(R.string.today_card_view_all_news, newsFacts.size)
-                        } else if (structuredEmail) {
-                            stringResource(
-                                if (hasPendingMail) {
-                                    R.string.today_card_action_view_pending
-                                } else {
-                                    R.string.today_card_action_view_details
-                                },
+                    Button(
+                        onClick = primaryAction,
+                        shape = RoundedCornerShape(50),
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = if (isPast) {
+                                MaterialTheme.colorScheme.surfaceVariant
+                            } else {
+                                accent
+                            },
+                            contentColor = if (isPast) {
+                                MaterialTheme.colorScheme.onSurfaceVariant
+                            } else {
+                                Color.White
+                            },
+                        ),
+                        contentPadding = PaddingValues(horizontal = 16.dp, vertical = 9.dp),
+                    ) {
+                        Icon(
+                            imageVector = when {
+                                dailyPlan != null -> Icons.Filled.ChevronRight
+                                industrySignal != null -> Icons.Filled.ChevronRight
+                                structuredEmail -> Icons.Filled.ChevronRight
+                                isPast -> Icons.Filled.History
+                                else -> Icons.Filled.AutoAwesome
+                            },
+                            contentDescription = null,
+                            modifier = Modifier.size(17.dp),
+                        )
+                        Spacer(Modifier.width(7.dp))
+                        Text(
+                            text = when {
+                                dailyPlan != null -> stringResource(R.string.today_card_action_view_plan)
+                                industrySignal != null ->
+                                    stringResource(R.string.today_signal_view_analysis)
+                                opensFullNewsList -> {
+                                    stringResource(R.string.today_card_view_all_news, newsFacts.size)
+                                }
+                                structuredEmail -> stringResource(
+                                    if (hasPendingMail) {
+                                        R.string.today_card_action_view_pending
+                                    } else {
+                                        R.string.today_card_action_view_details
+                                    },
+                                )
+                                else -> todayCardActionLabel(
+                                    card = card,
+                                    isPast = isPast,
+                                    isUpcoming = isUpcoming,
+                                    hasExecution = onOpenExecution != null,
+                                )
+                            },
+                        )
+                    }
+                    if (dailyPlan != null || industrySignal != null) {
+                        OutlinedButton(
+                            onClick = onClose,
+                            shape = RoundedCornerShape(50),
+                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 9.dp),
+                        ) {
+                            Icon(
+                                imageVector = Icons.Filled.Check,
+                                contentDescription = null,
+                                modifier = Modifier.size(17.dp),
                             )
-                        } else {
-                            todayCardActionLabel(
-                                card = card,
-                                isPast = isPast,
-                                isUpcoming = isUpcoming,
-                                hasExecution = onOpenExecution != null,
-                            )
-                        },
-                    )
+                            Spacer(Modifier.width(6.dp))
+                            Text(stringResource(R.string.today_card_understood))
+                        }
+                    }
                 }
             }
         }
@@ -350,6 +564,7 @@ internal fun TodayDailyReviewCard(
     completedSchedules: List<TodayCalendarItemSummary>,
     conversations: List<TodayReviewItem>,
     updates: List<TodayReviewItem>,
+    isYesterday: Boolean,
 ) {
     val accent = Color(0xFF188C78)
     val shape = RoundedCornerShape(22.dp)
@@ -372,7 +587,13 @@ internal fun TodayDailyReviewCard(
             CategoryPill("review", accent)
             Spacer(Modifier.height(10.dp))
             Text(
-                text = stringResource(R.string.today_daily_review_title),
+                text = stringResource(
+                    if (isYesterday) {
+                        R.string.today_daily_review_title_yesterday
+                    } else {
+                        R.string.today_daily_review_title
+                    },
+                ),
                 style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.SemiBold),
             )
             Spacer(Modifier.height(5.dp))
@@ -449,7 +670,13 @@ internal fun TodayDailyReviewCard(
 
             Spacer(Modifier.height(14.dp))
             AdvicePanel(
-                text = stringResource(R.string.today_daily_review_advice),
+                text = stringResource(
+                    if (isYesterday) {
+                        R.string.today_daily_review_advice_yesterday
+                    } else {
+                        R.string.today_daily_review_advice
+                    },
+                ),
                 accent = accent,
             )
         }
@@ -597,6 +824,8 @@ private fun TodayReviewRow(
 internal fun TodayRecommendationDetail(
     card: TodayCardEntity,
     isPast: Boolean,
+    nowMillis: Long,
+    phoneScheduleCards: List<TodayCardEntity> = emptyList(),
     onDismiss: () -> Unit,
     onSnooze: () -> Unit,
     onFeedback: (String) -> Unit,
@@ -614,8 +843,17 @@ internal fun TodayRecommendationDetail(
     val healthVisualization = remember(card.kind, card.summary) {
         if (card.kind == "health") parseHealthVisualization(card.summary) else null
     }
-    val hasStructuredAdvice = summarySections.any {
-        it.heading == "处理建议" || it.heading == "改善建议"
+    val dailyPlan = remember(card.kind, card.title, card.summary, phoneScheduleCards, nowMillis) {
+        resolveTodayDailyPlan(card, phoneScheduleCards, nowMillis)
+    }
+    val industrySignal = remember(card.kind, card.summary) {
+        parseTodaySignal(card)
+    }
+    val hasStructuredAdvice = dailyPlan != null || industrySignal != null || summarySections.any {
+        it.heading == "处理建议" ||
+            it.heading == "改善建议" ||
+            it.heading == "行动建议" ||
+            it.heading == "今晚准备"
     }
     val structuredEmail = card.kind == "inbox" && hasStructuredAdvice
     val hasPendingMail = structuredEmail && summarySections.any { it.heading == "待处理邮件" }
@@ -686,10 +924,16 @@ internal fun TodayRecommendationDetail(
                         CategoryPill(
                             kind = card.kind,
                             accent = accent,
-                            label = if (hasPendingMail) {
-                                stringResource(R.string.today_card_pending_mail)
-                            } else {
-                                null
+                            label = when {
+                                hasPendingMail -> stringResource(R.string.today_card_pending_mail)
+                                dailyPlan != null -> stringResource(
+                                    if (dailyPlan.isTomorrow) {
+                                        R.string.today_card_category_tomorrow_plan
+                                    } else {
+                                        R.string.today_card_category_daily_plan
+                                    },
+                                )
+                                else -> null
                             },
                         )
                         Spacer(Modifier.weight(1f))
@@ -709,19 +953,44 @@ internal fun TodayRecommendationDetail(
                     ) {
                         Spacer(Modifier.height(8.dp))
                         Text(
-                            text = card.title,
+                            text = dailyPlan?.title ?: card.title,
                             style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.SemiBold),
                         )
+                        if (dailyPlan != null) {
+                            Spacer(Modifier.height(12.dp))
+                            DailyPlanPanel(
+                                details = dailyPlan,
+                                accent = accent,
+                                weatherVisualWeight = dailyWeatherVisualWeight(
+                                    card.updatedAt,
+                                    System.currentTimeMillis(),
+                                ),
+                                expanded = true,
+                            )
+                        }
+                        if (industrySignal != null) {
+                            Spacer(Modifier.height(12.dp))
+                            IndustrySignalPanel(
+                                details = industrySignal,
+                                accent = accent,
+                                expanded = true,
+                            )
+                        }
                         if (healthVisualization != null) {
                             Spacer(Modifier.height(12.dp))
                             HealthVisualPanel(healthVisualization, accent)
                         }
-                        if (calendar == null && sectionsBeforeFacts.isNotEmpty()) {
+                        if (
+                            dailyPlan == null &&
+                            industrySignal == null &&
+                            calendar == null &&
+                            sectionsBeforeFacts.isNotEmpty()
+                        ) {
                             SummarySectionList(sectionsBeforeFacts)
                         }
                         if (calendar != null) {
                             Spacer(Modifier.height(14.dp))
-                            CalendarFocusPanel(calendar, accent)
+                            CalendarFocusPanel(calendar, accent, expanded = true)
                         }
 
                         if (
@@ -731,7 +1000,12 @@ internal fun TodayRecommendationDetail(
                         ) {
                             Spacer(Modifier.height(16.dp))
                             SectionTitle(
-                                if (card.kind.isNewsCard()) {
+                                if (industrySignal != null) {
+                                    stringResource(
+                                        R.string.today_signal_evidence_sources,
+                                        contactFacts.size,
+                                    )
+                                } else if (card.kind.isNewsCard()) {
                                     stringResource(
                                         R.string.today_card_news_list_title,
                                         contactFacts.size,
@@ -775,7 +1049,12 @@ internal fun TodayRecommendationDetail(
                             }
                         }
 
-                        if (calendar == null && sectionsAfterFacts.isNotEmpty()) {
+                        if (
+                            dailyPlan == null &&
+                            industrySignal == null &&
+                            calendar == null &&
+                            sectionsAfterFacts.isNotEmpty()
+                        ) {
                             SummarySectionList(sectionsAfterFacts)
                         }
 
@@ -826,11 +1105,13 @@ internal fun TodayRecommendationDetail(
                             .padding(horizontal = 12.dp, vertical = 10.dp),
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
-                        IconButton(onClick = onSnooze) {
-                            Icon(
-                                Icons.Filled.Schedule,
-                                contentDescription = stringResource(R.string.today_card_snooze),
-                            )
+                        if (card.supportsScheduleReminder()) {
+                            IconButton(onClick = onSnooze) {
+                                Icon(
+                                    Icons.Filled.Schedule,
+                                    contentDescription = stringResource(R.string.today_card_snooze),
+                                )
+                            }
                         }
                         Box {
                             TextButton(onClick = { feedbackExpanded = true }) {
@@ -843,6 +1124,7 @@ internal fun TodayRecommendationDetail(
                                     feedbackExpanded = false
                                     onFeedback(it)
                                 },
+                                showPoorSource = card.isNewsRecommendationCard(),
                             )
                         }
                         Spacer(Modifier.weight(1f))
@@ -879,6 +1161,64 @@ internal fun TodayRecommendationDetail(
 }
 
 @Composable
+private fun CompactCalendarAction(
+    card: TodayCardEntity,
+    accent: Color,
+    isPast: Boolean,
+    isUpcoming: Boolean,
+    onOpenDetail: () -> Unit,
+    onProcess: () -> Unit,
+    onOpenExecution: (() -> Unit)?,
+) {
+    val action: () -> Unit = when {
+        onOpenExecution != null -> onOpenExecution
+        isPast -> onOpenDetail
+        card.riskLevel == "A3" || card.riskLevel == "A4" -> onOpenDetail
+        else -> onProcess
+    }
+    val label = when {
+        onOpenExecution != null -> todayCardActionLabel(
+            card = card,
+            isPast = isPast,
+            isUpcoming = isUpcoming,
+            hasExecution = true,
+        )
+        isPast -> stringResource(R.string.today_card_action_view_details)
+        card.riskLevel == "A3" || card.riskLevel == "A4" ->
+            stringResource(R.string.today_card_action_confirm)
+        else -> stringResource(R.string.today_card_action_prepare_short)
+    }
+    Row(
+        modifier = Modifier
+            .clip(RoundedCornerShape(50))
+            .background(accent)
+            .clickable(onClick = action)
+            .padding(horizontal = 8.dp, vertical = 5.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Icon(
+            imageVector = if (onOpenExecution != null) {
+                Icons.Filled.ChevronRight
+            } else {
+                Icons.Filled.AutoAwesome
+            },
+            contentDescription = null,
+            tint = Color.White,
+            modifier = Modifier.size(13.dp),
+        )
+        Spacer(Modifier.width(3.dp))
+        Text(
+            text = label,
+            style = MaterialTheme.typography.labelSmall.copy(
+                fontWeight = FontWeight.SemiBold,
+            ),
+            color = Color.White,
+            maxLines = 1,
+        )
+    }
+}
+
+@Composable
 private fun CategoryPill(kind: String, accent: Color, label: String? = null) {
     Surface(
         shape = RoundedCornerShape(50),
@@ -908,27 +1248,34 @@ private fun CategoryPill(kind: String, accent: Color, label: String? = null) {
 private fun CalendarFocusPanel(
     details: CalendarCardDetails,
     accent: Color,
+    expanded: Boolean = false,
 ) {
     Surface(
-        modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(15.dp),
-        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.04f),
+        modifier = Modifier
+            .fillMaxWidth()
+            .border(
+                width = 1.dp,
+                color = accent.copy(alpha = 0.14f),
+                shape = RoundedCornerShape(13.dp),
+            ),
+        shape = RoundedCornerShape(13.dp),
+        color = accent.copy(alpha = 0.055f),
     ) {
         Row(
-            modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp),
+            modifier = Modifier.padding(horizontal = 11.dp, vertical = 8.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Column(modifier = Modifier.weight(0.42f)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(
                     text = details.day,
-                    style = MaterialTheme.typography.labelMedium,
+                    style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
                 details.time?.let { time ->
-                    Spacer(Modifier.height(2.dp))
+                    Spacer(Modifier.width(5.dp))
                     Text(
                         text = time,
-                        style = MaterialTheme.typography.headlineSmall.copy(fontWeight = FontWeight.SemiBold),
+                        style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
                         color = accent,
                     )
                 }
@@ -936,35 +1283,537 @@ private fun CalendarFocusPanel(
             Box(
                 modifier = Modifier
                     .width(1.dp)
-                    .height(38.dp)
+                    .height(24.dp)
                     .background(MaterialTheme.colorScheme.outline.copy(alpha = 0.25f)),
             )
-            Spacer(Modifier.width(12.dp))
-            Column(modifier = Modifier.weight(0.58f)) {
+            Spacer(Modifier.width(10.dp))
+            Row(
+                modifier = Modifier.weight(1f),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
                 details.eventType?.let { eventType ->
                     Text(
                         text = eventType,
-                        style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.SemiBold),
+                        style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.SemiBold),
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
                     )
                 }
                 details.location?.let { location ->
-                    Spacer(Modifier.height(6.dp))
-                    Row(verticalAlignment = Alignment.Top) {
+                    Spacer(Modifier.width(8.dp))
+                    Icon(
+                        Icons.Filled.Place,
+                        contentDescription = null,
+                        modifier = Modifier.size(13.dp),
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Spacer(Modifier.width(3.dp))
+                    Text(
+                        text = location,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.weight(1f),
+                        maxLines = if (expanded) 3 else 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun IndustrySignalPanel(
+    details: TodaySignalDetails,
+    accent: Color,
+    expanded: Boolean = false,
+) {
+    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        Surface(
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(17.dp),
+            color = accent.copy(alpha = 0.08f),
+            border = androidx.compose.foundation.BorderStroke(1.dp, accent.copy(alpha = 0.16f)),
+        ) {
+            Row(
+                modifier = Modifier.padding(horizontal = 13.dp, vertical = 12.dp),
+                verticalAlignment = Alignment.Top,
+            ) {
+                Surface(
+                    modifier = Modifier.size(34.dp),
+                    shape = CircleShape,
+                    color = accent.copy(alpha = 0.15f),
+                ) {
+                    Box(contentAlignment = Alignment.Center) {
                         Icon(
-                            Icons.Filled.Place,
+                            imageVector = Icons.Filled.AutoAwesome,
                             contentDescription = null,
-                            modifier = Modifier.size(15.dp),
-                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                        Spacer(Modifier.width(4.dp))
-                        Text(
-                            text = location,
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            maxLines = 2,
-                            overflow = TextOverflow.Ellipsis,
+                            tint = accent,
+                            modifier = Modifier.size(18.dp),
                         )
                     }
+                }
+                Spacer(Modifier.width(10.dp))
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = stringResource(R.string.today_signal_judgment),
+                        style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.SemiBold),
+                        color = accent,
+                    )
+                    Spacer(Modifier.height(4.dp))
+                    Text(
+                        text = details.judgment,
+                        style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.SemiBold),
+                        color = MaterialTheme.colorScheme.onSurface,
+                        maxLines = if (expanded) Int.MAX_VALUE else 3,
+                        overflow = if (expanded) TextOverflow.Clip else TextOverflow.Ellipsis,
+                    )
+                }
+            }
+        }
+
+        Surface(
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(17.dp),
+            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.035f),
+        ) {
+            Column(modifier = Modifier.padding(horizontal = 13.dp, vertical = 12.dp)) {
+                details.signals
+                    .take(if (expanded) 3 else 2)
+                    .forEachIndexed { index, signal ->
+                        if (index > 0) {
+                            HorizontalDivider(
+                                modifier = Modifier.padding(vertical = 11.dp),
+                                color = MaterialTheme.colorScheme.outline.copy(alpha = 0.18f),
+                            )
+                        }
+                        IndustrySignalEvent(
+                            signal = signal,
+                            accent = accent,
+                            expanded = expanded,
+                        )
+                    }
+            }
+        }
+
+        details.advice?.let { advice ->
+            AdvicePanel(text = advice, accent = accent)
+        }
+    }
+}
+
+@Composable
+private fun IndustrySignalEvent(
+    signal: TodayIndustrySignal,
+    accent: Color,
+    expanded: Boolean,
+) {
+    Column {
+        Row(verticalAlignment = Alignment.Top) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = signal.company,
+                    style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.SemiBold),
+                    color = MaterialTheme.colorScheme.onSurface,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                signal.subject?.let { subject ->
+                    Spacer(Modifier.height(2.dp))
+                    Text(
+                        text = subject,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+            }
+            signal.maturity?.let { maturity ->
+                Spacer(Modifier.width(8.dp))
+                SignalMaturityPill(maturity)
+            }
+        }
+
+        signal.evidenceStrength?.let { strength ->
+            Spacer(Modifier.height(9.dp))
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    text = stringResource(R.string.today_signal_evidence_strength),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Spacer(Modifier.width(8.dp))
+                SignalEvidenceMeter(strength = strength, accent = accent)
+            }
+        }
+
+        Spacer(Modifier.height(9.dp))
+        Text(
+            text = signal.change,
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurface,
+            maxLines = if (expanded) Int.MAX_VALUE else 3,
+            overflow = if (expanded) TextOverflow.Clip else TextOverflow.Ellipsis,
+        )
+
+        signal.uncertainty?.let { uncertainty ->
+            Spacer(Modifier.height(8.dp))
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(10.dp))
+                    .background(SignalVendorClaimColor.copy(alpha = 0.08f))
+                    .padding(horizontal = 9.dp, vertical = 7.dp),
+                verticalAlignment = Alignment.Top,
+            ) {
+                Text(
+                    text = stringResource(R.string.today_signal_uncertainty),
+                    style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.SemiBold),
+                    color = SignalVendorClaimColor,
+                )
+                Spacer(Modifier.width(7.dp))
+                Text(
+                    text = uncertainty,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.weight(1f),
+                    maxLines = if (expanded) Int.MAX_VALUE else 2,
+                    overflow = if (expanded) TextOverflow.Clip else TextOverflow.Ellipsis,
+                )
+            }
+        }
+
+        signal.relevance?.let { relevance ->
+            Spacer(Modifier.height(8.dp))
+            Row(verticalAlignment = Alignment.Top) {
+                Icon(
+                    imageVector = Icons.Filled.ChevronRight,
+                    contentDescription = null,
+                    tint = accent,
+                    modifier = Modifier
+                        .padding(top = 2.dp)
+                        .size(15.dp),
+                )
+                Spacer(Modifier.width(4.dp))
+                Text(
+                    text = stringResource(R.string.today_signal_relevance, relevance),
+                    style = MaterialTheme.typography.labelMedium,
+                    color = accent,
+                    maxLines = if (expanded) Int.MAX_VALUE else 2,
+                    overflow = if (expanded) TextOverflow.Clip else TextOverflow.Ellipsis,
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun SignalMaturityPill(value: String) {
+    val color = signalMaturityColor(value)
+    Surface(
+        shape = RoundedCornerShape(50),
+        color = color.copy(alpha = 0.13f),
+    ) {
+        Text(
+            text = value,
+            modifier = Modifier.padding(horizontal = 9.dp, vertical = 5.dp),
+            style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.SemiBold),
+            color = color,
+            maxLines = 1,
+        )
+    }
+}
+
+@Composable
+private fun SignalEvidenceMeter(strength: Int, accent: Color) {
+    Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+        repeat(3) { index ->
+            Box(
+                modifier = Modifier
+                    .width(22.dp)
+                    .height(5.dp)
+                    .clip(CircleShape)
+                    .background(
+                        if (index < strength.coerceIn(0, 3)) {
+                            accent
+                        } else {
+                            MaterialTheme.colorScheme.onSurface.copy(alpha = 0.11f)
+                        },
+                    ),
+            )
+        }
+    }
+}
+
+private fun signalMaturityColor(value: String): Color {
+    val normalized = value.lowercase()
+    return when {
+        "第三方" in value || "verified" in normalized -> Color(0xFF23866A)
+        "仅发布" in value || "vendor" in normalized || "claim" in normalized ->
+            SignalVendorClaimColor
+        else -> Color(0xFF177F98)
+    }
+}
+
+private fun resolveTodayDailyPlan(
+    card: TodayCardEntity,
+    phoneScheduleCards: List<TodayCardEntity>,
+    nowMillis: Long,
+): TodayDailyPlanDetails? {
+    val details = parseTodayDailyPlan(card) ?: return null
+    val phoneSchedule = phoneScheduleFallbackLines(
+        cards = phoneScheduleCards,
+        nowMillis = nowMillis,
+        isTomorrow = details.isTomorrow,
+    )
+    return details.withPhoneScheduleFallback(phoneSchedule)
+}
+
+@Composable
+private fun DailyPlanPanel(
+    details: TodayDailyPlanDetails,
+    accent: Color,
+    weatherVisualWeight: Float,
+    expanded: Boolean = false,
+) {
+    val weatherAccent = if (details.weatherIsRainy) Color(0xFF3E78A8) else Color(0xFFB67B18)
+    val weatherAlpha = (weatherVisualWeight * 0.09f).coerceIn(0.035f, 0.09f)
+    Column(verticalArrangement = Arrangement.spacedBy(9.dp)) {
+        Surface(
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(17.dp),
+            color = accent.copy(alpha = 0.08f),
+        ) {
+            Row(
+                modifier = Modifier.padding(horizontal = 13.dp, vertical = 12.dp),
+                verticalAlignment = Alignment.Top,
+            ) {
+                Surface(
+                    modifier = Modifier.size(34.dp),
+                    shape = CircleShape,
+                    color = accent.copy(alpha = 0.14f),
+                ) {
+                    Box(contentAlignment = Alignment.Center) {
+                        Icon(
+                            imageVector = Icons.Filled.EventAvailable,
+                            contentDescription = null,
+                            tint = accent,
+                            modifier = Modifier.size(19.dp),
+                        )
+                    }
+                }
+                Spacer(Modifier.width(10.dp))
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = details.focusHeading,
+                        style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.SemiBold),
+                        color = accent,
+                    )
+                    Spacer(Modifier.height(4.dp))
+                    DailyPlanBody(
+                        text = details.focus,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurface,
+                        expanded = expanded,
+                    )
+                }
+            }
+        }
+
+        details.weather?.let { weather ->
+            Surface(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(15.dp),
+                color = weatherAccent.copy(alpha = weatherAlpha),
+            ) {
+                Row(
+                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 9.dp),
+                    verticalAlignment = Alignment.Top,
+                ) {
+                    Icon(
+                        imageVector = if (details.weatherIsRainy) {
+                            Icons.Filled.Umbrella
+                        } else {
+                            Icons.Filled.WbSunny
+                        },
+                        contentDescription = null,
+                        tint = weatherAccent.copy(alpha = 0.60f + weatherVisualWeight * 0.40f),
+                        modifier = Modifier.size(19.dp),
+                    )
+                    Spacer(Modifier.width(9.dp))
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = details.weatherHeading.orEmpty(),
+                            style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.SemiBold),
+                            color = weatherAccent,
+                        )
+                        val parsedWeather = details.weatherDetails
+                        if (parsedWeather?.isStructured == true) {
+                            Spacer(Modifier.height(7.dp))
+                            WeatherMetricRow(
+                                weather = parsedWeather,
+                                accent = weatherAccent,
+                            )
+                            parsedWeather.detail?.let { detail ->
+                                Spacer(Modifier.height(7.dp))
+                                DailyPlanBody(
+                                    text = detail,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    expanded = expanded,
+                                )
+                            }
+                        } else {
+                            Spacer(Modifier.height(2.dp))
+                            DailyPlanBody(
+                                text = weather,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                expanded = expanded,
+                            )
+                        }
+                    }
+                }
+            }
+        }
+
+        details.advice?.let { advice ->
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(14.dp))
+                    .background(accent.copy(alpha = 0.065f))
+                    .padding(horizontal = 12.dp, vertical = 10.dp),
+                verticalAlignment = Alignment.Top,
+            ) {
+                Icon(
+                    imageVector = Icons.Filled.AutoAwesome,
+                    contentDescription = null,
+                    tint = accent,
+                    modifier = Modifier.size(19.dp),
+                )
+                Spacer(Modifier.width(9.dp))
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = details.adviceHeading.orEmpty(),
+                        style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.SemiBold),
+                        color = accent,
+                    )
+                    Spacer(Modifier.height(2.dp))
+                    DailyPlanBody(
+                        text = advice,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurface,
+                        expanded = expanded,
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun WeatherMetricRow(
+    weather: TodayWeatherDetails,
+    accent: Color,
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
+        WeatherMetric(
+            label = stringResource(R.string.today_weather_location),
+            value = weather.location.orEmpty(),
+            accent = accent,
+            modifier = Modifier.weight(1f),
+        )
+        WeatherMetric(
+            label = stringResource(R.string.today_weather_condition),
+            value = weather.condition.orEmpty(),
+            accent = accent,
+            modifier = Modifier.weight(1f),
+        )
+        WeatherMetric(
+            label = stringResource(R.string.today_weather_temperature),
+            value = weather.temperature.orEmpty(),
+            accent = accent,
+            modifier = Modifier.weight(1f),
+        )
+    }
+}
+
+@Composable
+private fun WeatherMetric(
+    label: String,
+    value: String,
+    accent: Color,
+    modifier: Modifier,
+) {
+    Surface(
+        modifier = modifier,
+        shape = RoundedCornerShape(10.dp),
+        color = accent.copy(alpha = 0.09f),
+    ) {
+        Column(modifier = Modifier.padding(horizontal = 8.dp, vertical = 7.dp)) {
+            Text(
+                text = label,
+                style = MaterialTheme.typography.labelSmall,
+                color = accent.copy(alpha = 0.78f),
+            )
+            Spacer(Modifier.height(2.dp))
+            Text(
+                text = value,
+                style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.SemiBold),
+                color = MaterialTheme.colorScheme.onSurface,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
+    }
+}
+
+@Composable
+private fun DailyPlanBody(
+    text: String,
+    style: TextStyle,
+    color: Color,
+    expanded: Boolean,
+) {
+    val lines = remember(text, expanded) {
+        text.lineSequence()
+            .mapNotNull(::normalizeDailyPlanLine)
+            .let { sequence -> if (expanded) sequence else sequence.take(4) }
+            .toList()
+    }
+    if (lines.size <= 1) {
+        Text(
+            text = lines.firstOrNull() ?: text,
+            style = style,
+            color = color,
+            maxLines = if (expanded) Int.MAX_VALUE else 3,
+            overflow = if (expanded) TextOverflow.Clip else TextOverflow.Ellipsis,
+        )
+    } else {
+        Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
+            lines.forEach { line ->
+                Row(verticalAlignment = Alignment.Top) {
+                    Box(
+                        modifier = Modifier
+                            .padding(top = 7.dp)
+                            .size(4.dp)
+                            .clip(CircleShape)
+                            .background(color.copy(alpha = 0.55f)),
+                    )
+                    Spacer(Modifier.width(7.dp))
+                    Text(
+                        text = line,
+                        style = style,
+                        color = color,
+                        modifier = Modifier.weight(1f),
+                        maxLines = if (expanded) Int.MAX_VALUE else 2,
+                        overflow = if (expanded) TextOverflow.Clip else TextOverflow.Ellipsis,
+                    )
                 }
             }
         }
@@ -1206,13 +2055,16 @@ private fun AdvicePanel(text: String, accent: Color) {
 @Composable
 private fun TodayCardMenu(
     expanded: Boolean,
+    card: TodayCardEntity,
     onDismiss: () -> Unit,
     onSnooze: () -> Unit,
     onFeedback: (String) -> Unit,
+    onClose: () -> Unit,
     sourceUrl: String?,
     onOpenSource: (String) -> Unit,
 ) {
     DropdownMenu(expanded = expanded, onDismissRequest = onDismiss) {
+        val hasPrimaryActions = sourceUrl != null || card.supportsScheduleReminder()
         sourceUrl?.let { url ->
             DropdownMenuItem(
                 text = { Text(stringResource(R.string.today_card_open_source)) },
@@ -1222,15 +2074,31 @@ private fun TodayCardMenu(
                 },
             )
         }
-        DropdownMenuItem(
-            text = { Text(stringResource(R.string.today_card_snooze)) },
-            onClick = {
+        if (card.supportsScheduleReminder()) {
+            DropdownMenuItem(
+                text = { Text(stringResource(R.string.today_card_snooze)) },
+                onClick = {
+                    onDismiss()
+                    onSnooze()
+                },
+            )
+        }
+        if (hasPrimaryActions) HorizontalDivider()
+        FeedbackMenuItems(
+            showPoorSource = card.isNewsRecommendationCard(),
+            onFeedback = { feedbackType ->
                 onDismiss()
-                onSnooze()
+                onFeedback(feedbackType)
             },
         )
         HorizontalDivider()
-        FeedbackMenuItems(onFeedback)
+        DropdownMenuItem(
+            text = { Text(stringResource(R.string.today_card_dismiss)) },
+            onClick = {
+                onDismiss()
+                onClose()
+            },
+        )
     }
 }
 
@@ -1239,19 +2107,30 @@ private fun TodayFeedbackMenu(
     expanded: Boolean,
     onDismiss: () -> Unit,
     onFeedback: (String) -> Unit,
+    showPoorSource: Boolean,
 ) {
     DropdownMenu(expanded = expanded, onDismissRequest = onDismiss) {
-        FeedbackMenuItems(onFeedback)
+        FeedbackMenuItems(
+            showPoorSource = showPoorSource,
+            onFeedback = { feedbackType ->
+                onDismiss()
+                onFeedback(feedbackType)
+            },
+        )
     }
 }
 
 @Composable
-private fun FeedbackMenuItems(onFeedback: (String) -> Unit) {
-    listOf(
+private fun FeedbackMenuItems(
+    showPoorSource: Boolean,
+    onFeedback: (String) -> Unit,
+) {
+    listOfNotNull(
         TodayFeedbackType.USEFUL to R.string.today_card_feedback_useful,
         TodayFeedbackType.IRRELEVANT to R.string.today_card_feedback_irrelevant,
         TodayFeedbackType.TOO_FREQUENT to R.string.today_card_feedback_too_frequent,
-        TodayFeedbackType.POOR_SOURCE to R.string.today_card_feedback_poor_source,
+        (TodayFeedbackType.POOR_SOURCE to R.string.today_card_feedback_poor_source)
+            .takeIf { showPoorSource },
     ).forEach { (type, label) ->
         DropdownMenuItem(
             text = { Text(stringResource(label)) },
@@ -1273,6 +2152,7 @@ private fun todayCardCategoryName(kind: String): String = stringResource(
         "conversation" -> R.string.today_card_category_conversation
         "mail" -> R.string.today_card_category_mail
         "news" -> R.string.today_card_category_news
+        "signal" -> R.string.today_card_category_signal
         else -> R.string.today_card_category_update
     },
 )
@@ -1288,6 +2168,7 @@ private fun todayCardIcon(kind: String): ImageVector = when (kind) {
     "conversation" -> Icons.AutoMirrored.Filled.Chat
     "mail" -> Icons.Filled.Email
     "news" -> Icons.Filled.Newspaper
+    "signal" -> Icons.Filled.AutoAwesome
     else -> Icons.Filled.AutoAwesome
 }
 
@@ -1301,10 +2182,12 @@ private fun todayCardAccent(kind: String, isPast: Boolean): Color = when {
     kind == "conversation" -> Color(0xFF4D72C8)
     kind == "mail" -> Color(0xFFC27A22)
     kind == "news" -> Color(0xFF188C78)
+    kind == "signal" -> Color(0xFF147E91)
     else -> Color(0xFF5B8DEF)
 }
 
 private val PendingMailAccent = Color(0xFFC64D35)
+private val SignalVendorClaimColor = Color(0xFFB6761B)
 
 @Composable
 private fun todayCardActionLabel(
@@ -1336,6 +2219,7 @@ private fun todayCardActionLabel(
         card.kind == "conversation" -> stringResource(R.string.today_card_action_conversation)
         card.kind == "mail" -> stringResource(R.string.today_card_action_mail)
         card.kind == "news" -> stringResource(R.string.today_card_action_news)
+        card.kind == "signal" -> stringResource(R.string.today_signal_view_analysis)
         card.kind == "task" -> stringResource(R.string.today_card_action_task)
         card.kind == "review" -> stringResource(R.string.today_card_action_review)
         else -> stringResource(R.string.today_card_action_default)
@@ -1361,6 +2245,7 @@ private fun todayCardAdvice(
     card.kind == "conversation" -> stringResource(R.string.today_card_advice_conversation)
     card.kind == "mail" -> stringResource(R.string.today_card_advice_mail)
     card.kind == "news" -> stringResource(R.string.today_card_advice_news)
+    card.kind == "signal" -> stringResource(R.string.today_signal_advice)
     card.kind == "review" -> stringResource(R.string.today_card_advice_review)
     else -> stringResource(R.string.today_card_advice_default)
 }

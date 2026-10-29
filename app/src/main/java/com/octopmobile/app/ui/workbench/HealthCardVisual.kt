@@ -74,6 +74,11 @@ internal fun healthChartMode(chart: String): HealthChartMode = when (chart.lower
     else -> HealthChartMode.COLUMNS
 }
 
+internal fun healthPrimaryTrendHeight(chart: String): Dp = when (healthChartMode(chart)) {
+    HealthChartMode.RATIO -> 14.dp
+    else -> 46.dp
+}
+
 internal fun healthMetricColor(key: String): Color = when (key) {
     "steps" -> Color(0xFF36C994)
     "sleep" -> Color(0xFF8B82F6)
@@ -325,7 +330,7 @@ private fun HealthPrimaryTrend(
                 )
             }
         }
-        MetricTrend(metric = metric, height = 46.dp)
+        MetricTrend(metric = metric, height = healthPrimaryTrendHeight(metric.chart))
         HealthSampleNote(metric)
     }
 }

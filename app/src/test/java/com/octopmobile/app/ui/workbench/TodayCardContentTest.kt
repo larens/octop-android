@@ -5,6 +5,7 @@ import com.octopmobile.app.data.db.ThreadEntity
 import java.time.LocalDateTime
 import java.time.ZoneId
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -158,6 +159,8 @@ class TodayCardContentTest {
                     occurredAt = at(2026, 10, 27, 17, 0),
                 ),
             ),
+            now,
+            zone,
         )
 
         assertEquals(listOf("latest", "morning"), conversations.map { it.title })
@@ -191,6 +194,18 @@ class TodayCardContentTest {
 
         assertEquals("10月29日", details.day)
         assertEquals("17:00", details.time)
+        assertEquals("会议邀请", details.eventType)
+        assertEquals("元中心 7-2-013", details.location)
+    }
+
+    @Test
+    fun parsesTodayCalendarRangeAndLabeledLocation() {
+        val details = parseCalendarCardSummary(
+            "16:00-17:00 · 会议邀请 · 地点：元中心 7-2-013",
+        )
+
+        assertEquals("", details.day)
+        assertEquals("16:00-17:00", details.time)
         assertEquals("会议邀请", details.eventType)
         assertEquals("元中心 7-2-013", details.location)
     }
@@ -339,6 +354,338 @@ class TodayCardContentTest {
             listOf("evening-health", "evening-briefing"),
             evening.current.map { it.id },
         )
+    }
+
+    @Test
+    fun morningHealthDropsBelowTheNewMorningFeedAfterItsWindow() {
+        val morningSummary = """
+            【睡眠概览】
+            昨晚睡眠 7 小时 30 分。
+
+            【健康可视化】
+            {"w":"morning","m":[{"k":"sleep","v":450,"d":"7 小时 30 分","u":"小时","t":480,"c":"ring"}]}
+        """.trimIndent()
+        val cards = listOf(
+            card(
+                "sleep",
+                kind = "health",
+                occurredAt = at(2026, 10, 27, 7, 54),
+                summary = morningSummary,
+            ),
+            card(
+                "morning-briefing",
+                kind = "briefing",
+                occurredAt = at(2026, 10, 27, 8, 0),
+            ),
+        )
+
+        val groups = groupTodayCards(cards, at(2026, 10, 27, 8, 30), zone)
+
+        assertEquals(
+            listOf("morning-briefing", "sleep"),
+            groups.current.map { it.id },
+        )
+
+        val afternoon = groupTodayCards(cards, at(2026, 10, 27, 13, 30), zone)
+        assertEquals(
+            listOf("morning-briefing", "sleep"),
+            afternoon.current.map { it.id },
+        )
+    }
+
+    @Test
+    fun previousDayHealthMovesToHistoryAndCannotRiseAgainTonight() {
+        val summary = """
+            【今日概览】
+            步数 7,240 步。
+
+            【健康可视化】
+            {"w":"evening","m":[{"k":"steps","v":7240,"d":"7,240","u":"步","t":8000,"c":"ring"}]}
+        """.trimIndent()
+        val cards = listOf(
+            card(
+                "yesterday-health",
+                kind = "health",
+                occurredAt = at(2026, 10, 27, 19, 0),
+                summary = summary,
+            ),
+            card(
+                "today-signal",
+                kind = "signal",
+                occurredAt = at(2026, 10, 28, 14, 0),
+            ),
+        )
+
+        val groups = groupTodayCards(cards, at(2026, 10, 28, 19, 30), zone)
+
+        assertEquals(listOf("today-signal"), groups.current.map { it.id })
+        assertEquals(listOf("yesterday-health"), groups.history.map { it.id })
+    }
+
+    @Test
+    fun dailyReviewRollsToYesterdayBeforeFive() {
+        val beforeCutoff = todayReviewPeriod(at(2026, 10, 28, 4, 59), zone)
+        val afterCutoff = todayReviewPeriod(at(2026, 10, 28, 5, 0), zone)
+
+        assertEquals(LocalDateTime.of(2026, 10, 27, 0, 0).toLocalDate(), beforeCutoff.date)
+        assertTrue(beforeCutoff.isYesterday)
+        assertEquals(LocalDateTime.of(2026, 10, 28, 0, 0).toLocalDate(), afterCutoff.date)
+        assertFalse(afterCutoff.isYesterday)
+    }
+
+    @Test
+    fun dailyReviewDoesNotBorrowYesterdayItemsDuringToday() {
+        val cards = listOf(
+            card(
+                "yesterday-meeting",
+                occurredAt = at(2026, 10, 27, 10, 0),
+                summary = "10月27日 10:00 · 会议邀请",
+            ),
+            card(
+                "today-meeting",
+                occurredAt = at(2026, 10, 28, 10, 0),
+                summary = "10月28日 10:00 · 会议邀请",
+            ),
+            card(
+                "yesterday-signal",
+                kind = "signal",
+                occurredAt = at(2026, 10, 27, 14, 0),
+            ),
+            card(
+                "today-signal",
+                kind = "signal",
+                occurredAt = at(2026, 10, 28, 14, 0),
+            ),
+        )
+
+        val earlyUpdates = todayUpdateHighlights(cards, at(2026, 10, 28, 2, 0), zone)
+        val daytimeUpdates = todayUpdateHighlights(cards, at(2026, 10, 28, 13, 0), zone)
+        val earlySchedules = completedScheduleHighlights(cards, at(2026, 10, 28, 2, 0), zone)
+        val daytimeSchedules = completedScheduleHighlights(cards, at(2026, 10, 28, 13, 0), zone)
+
+        assertEquals(listOf("yesterday-signal"), earlyUpdates.map { it.title })
+        assertEquals(listOf("today-signal"), daytimeUpdates.map { it.title })
+        assertEquals(listOf("yesterday-meeting"), earlySchedules.map { it.title })
+        assertEquals(listOf("today-meeting"), daytimeSchedules.map { it.title })
+    }
+
+    @Test
+    fun dailyPlanPutsScheduleBeforeWeatherAndDoesNotMasqueradeAsNews() {
+        val weatherCard = card(
+            "daily-plan",
+            kind = "briefing",
+            occurredAt = at(2026, 10, 27, 7, 30),
+            summary = """
+                【今日安排】
+                09:30 产品评审，需要准备原型。
+
+                【天气提醒】
+                北京，小雨，降雨概率 60%，带伞。
+
+                【行动建议】
+                提前十分钟出门。
+            """.trimIndent(),
+        ).copy(title = "晨间天气与日程")
+
+        val details = requireNotNull(parseTodayDailyPlan(weatherCard))
+
+        assertEquals("今日安排与建议", details.title)
+        assertEquals("09:30 产品评审，需要准备原型。", details.focus)
+        assertEquals("天气提醒", details.weatherHeading)
+        assertTrue(details.weatherIsRainy)
+        assertEquals("北京", details.weatherDetails?.location)
+        assertEquals("小雨", details.weatherDetails?.condition)
+        assertEquals(null, details.weatherDetails?.temperature)
+        assertFalse(weatherCard.isNewsRecommendationCard())
+        assertEquals(1f, dailyWeatherVisualWeight(weatherCard.updatedAt, weatherCard.updatedAt))
+        assertEquals(
+            0.42f,
+            dailyWeatherVisualWeight(
+                weatherCard.updatedAt,
+                weatherCard.updatedAt + 15 * 60 * 60 * 1000L,
+            ),
+        )
+        assertFalse(weatherIndicatesRain("北京，晴，降雨概率 0%，不用带伞。"))
+        assertTrue(weatherIndicatesRain("北京，小雨，降雨概率 60%。"))
+        assertEquals(
+            "暂无数据 · 飞书日历未接通",
+            normalizeDailyPlanLine("| — | 暂无数据 | — | 飞书日历未接通 |"),
+        )
+        assertEquals(null, normalizeDailyPlanLine("|---|---|---|"))
+    }
+
+    @Test
+    fun weatherSummaryHighlightsLocationConditionAndTemperature() {
+        val summary = parseDailyWeather("北京，晴转小雨，6~15°C，降雨概率 60%。早晚偏冷。")
+
+        assertEquals("北京", summary?.location)
+        assertEquals("晴转小雨", summary?.condition)
+        assertEquals("6~15°C", summary?.temperature)
+        assertEquals("降雨概率 60%。早晚偏冷。", summary?.detail)
+        assertTrue(summary?.isStructured == true)
+    }
+
+    @Test
+    fun weatherSummaryUnderstandsLabeledWeatherOutput() {
+        val summary = parseDailyWeather(
+            """
+                查询城市：北京。今天是 2026-10-29 周四
+                日期：2026-10-29（周四） · 当前实况 晴
+                11.2°C
+                降雨概率 0%。
+            """.trimIndent(),
+        )
+
+        assertEquals("北京", summary?.location)
+        assertEquals("晴", summary?.condition)
+        assertEquals("11.2°C", summary?.temperature)
+        assertEquals("降雨概率 0%。", summary?.detail)
+        assertTrue(summary?.isStructured == true)
+    }
+
+    @Test
+    fun dailyPlanFallsBackToPhoneCalendarWhenFeishuScheduleIsUnavailable() {
+        val plan = card(
+            "daily-plan",
+            kind = "briefing",
+            occurredAt = at(2026, 10, 27, 7, 30),
+            summary = """
+                【今日安排】
+                飞书日程未获取到，暂无已同步的日程安排。
+
+                【天气提醒】
+                北京，晴，8~18°C。
+            """.trimIndent(),
+        ).copy(title = "晨间天气与日程")
+        val phoneCards = listOf(
+            card(
+                "review",
+                occurredAt = at(2026, 10, 27, 9, 30),
+                summary = "今天 09:30 · 会议邀请",
+            ).copy(title = "产品评审"),
+            card(
+                "tomorrow-review",
+                occurredAt = at(2026, 10, 28, 9, 30),
+                summary = "明天 09:30 · 会议邀请",
+            ).copy(title = "明日评审"),
+        )
+
+        val fallback = phoneScheduleFallbackLines(
+            cards = phoneCards,
+            nowMillis = now,
+            isTomorrow = false,
+            zoneId = zone,
+        )
+        val details = requireNotNull(parseTodayDailyPlan(plan))
+            .withPhoneScheduleFallback(fallback)
+
+        assertEquals(listOf("09:30 产品评审"), fallback)
+        assertEquals("09:30 产品评审", details.focus)
+        assertEquals("今日安排 · 手机日程", details.focusHeading)
+    }
+
+    @Test
+    fun industrySignalParsesTheSharedJudgmentAndComparedEvidence() {
+        val signal = card(
+            "industry-signal",
+            kind = "signal",
+            occurredAt = at(2026, 10, 27, 14, 0),
+            summary = """
+                【总判断】
+                形态已经清楚了，数字还只有发布方口径。
+
+                【关键信号】
+                1. OpenAI｜GPT-6 Astra Pro
+                成熟度：可验证进展
+                证据强度：3/3
+                核心变化：多个 agent 并行推进同一任务，过程实时可见。
+                不确定性：Pro 档仍在灰度。
+                对我的意义：今天就能对照现有流程试一次。
+                2. Anthropic｜企业交易 agent
+                成熟度：仅发布方口径
+                证据强度：1/3
+                核心变化：agent 从聊天走向替企业做交易决策。
+                不确定性：没有第三方验证和收费口径。
+                对我的意义：先观望。
+
+                【行动建议】
+                先验证已经开放的能力，交易类进展等第三方证据。
+            """.trimIndent(),
+        )
+
+        val details = requireNotNull(parseTodaySignal(signal))
+
+        assertEquals("形态已经清楚了，数字还只有发布方口径。", details.judgment)
+        assertEquals(2, details.signals.size)
+        assertEquals("OpenAI", details.signals[0].company)
+        assertEquals("GPT-6 Astra Pro", details.signals[0].subject)
+        assertEquals("可验证进展", details.signals[0].maturity)
+        assertEquals(3, details.signals[0].evidenceStrength)
+        assertTrue(details.signals[0].change.contains("并行推进"))
+        assertEquals("先观望。", details.signals[1].relevance)
+        assertEquals("先验证已经开放的能力，交易类进展等第三方证据。", details.advice)
+        assertTrue(signal.isNewsRecommendationCard())
+        assertFalse(signal.supportsScheduleReminder())
+    }
+
+    @Test
+    fun industrySignalMaturityUsesAShortDisplayLabel() {
+        assertEquals(
+            "第三方验证",
+            simplifySignalMaturity("已有第三方验证（SEC 文件+路透社报道）"),
+        )
+        assertEquals("厂商口径", simplifySignalMaturity("仅发布方口径"))
+
+        val signal = card(
+            "industry-signal",
+            kind = "signal",
+            occurredAt = at(2026, 10, 27, 14, 0),
+            summary = """
+                【关键信号】
+                1. Anthropic｜企业交易 agent
+                成熟度：已有第三方验证（SEC 文件+路透社报道）
+                证据强度：3/3
+                核心变化：企业交易 agent 进入可验证阶段。
+            """.trimIndent(),
+        )
+
+        assertEquals("第三方验证", parseTodaySignal(signal)?.signals?.first()?.maturity)
+    }
+
+    @Test
+    fun industrySignalDoesNotBorrowTheDailyPlanOrGenericNewsPresentation() {
+        val signal = card(
+            "industry-signal",
+            kind = "signal",
+            occurredAt = at(2026, 10, 27, 14, 0),
+            summary = "【关键信号】1. Example｜Model\n核心变化：A verified capability shipped.",
+        )
+
+        assertFalse(signal.isDailyPlanCard())
+        assertEquals(null, parseTodayDailyPlan(signal))
+        assertEquals(null, parseTodaySignal(signal.copy(kind = "news")))
+    }
+
+    @Test
+    fun cardActionsFollowScheduleAndNewsSemantics() {
+        assertTrue("calendar".supportsScheduleReminder())
+        assertTrue("anniversary".supportsScheduleReminder())
+        assertFalse("briefing".supportsScheduleReminder())
+
+        val anniversary = card(
+            "anniversary",
+            kind = "inbox",
+            occurredAt = at(2026, 10, 27, 9, 0),
+        ).copy(title = "纪念日提醒（统一入口）")
+        assertTrue(anniversary.supportsScheduleReminder())
+
+        val newsBriefing = card(
+            "news",
+            kind = "briefing",
+            occurredAt = at(2026, 10, 27, 8, 0),
+            summary = "• Example release changed an API contract.",
+        ).copy(title = "每日新闻")
+        assertTrue(newsBriefing.isNewsRecommendationCard())
     }
 
     private fun at(year: Int, month: Int, day: Int, hour: Int, minute: Int): Long =
