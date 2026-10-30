@@ -107,6 +107,42 @@ def _sleep_rows(target_date: date = date(2026, 10, 28)) -> list[dict[str, object
     ]
 
 
+def _sleep_history_rows(
+    end_date: date = date(2026, 10, 28),
+    nights: int = 14,
+) -> list[dict[str, object]]:
+    rows: list[dict[str, object]] = []
+    for offset in range(nights):
+        target_date = end_date - timedelta(days=offset)
+        duration = 450 if offset == 0 else 420 - min(offset, 6) * 5
+        starts_at = datetime.combine(
+            target_date - timedelta(days=1),
+            datetime.min.time(),
+            tzinfo=CST,
+        ) + timedelta(hours=23, minutes=30 + (offset % 4) * 5)
+        ends_at = starts_at + timedelta(minutes=duration)
+        rows.append(
+            _row(
+                f"sleep-history-{target_date.isoformat()}",
+                "health.sleep_session",
+                starts_at,
+                {
+                    "starts_at": _epoch(starts_at),
+                    "ends_at": _epoch(ends_at),
+                    "duration_minutes": duration,
+                    "stages_minutes": {
+                        "deep": 90 if offset == 0 else 68 + (offset % 3) * 4,
+                        "rem": 80 if offset == 0 else 62,
+                        "awake": 20 if offset == 0 else 25 + (offset % 3) * 5,
+                    },
+                    "sleep_score": 82 if offset == 0 else 76,
+                },
+                observed_at=ends_at,
+            )
+        )
+    return rows
+
+
 def _daily_metric_rows(target_date: date = date(2026, 10, 28)) -> list[dict[str, object]]:
     day_start = datetime.combine(target_date, datetime.min.time(), tzinfo=CST)
     rows = [
@@ -139,6 +175,19 @@ def _daily_metric_rows(target_date: date = date(2026, 10, 28)) -> list[dict[str,
                 "min_bpm": 52,
                 "max_bpm": 148,
                 "measurements": 72,
+            },
+            observed_at=day_start + timedelta(hours=19),
+        ),
+        _row(
+            "resting-heart",
+            "health.resting_heart_rate_daily",
+            day_start,
+            {
+                "date": target_date.isoformat(),
+                "average_bpm": 71,
+                "min_bpm": 66,
+                "max_bpm": 77,
+                "measurements": 18,
             },
             observed_at=day_start + timedelta(hours=19),
         ),
@@ -186,6 +235,13 @@ def _daily_metric_rows(target_date: date = date(2026, 10, 28)) -> list[dict[str,
             observed_at=day_start + timedelta(hours=19),
         ),
         _row(
+            "activity-minutes",
+            "health.activity_minutes_daily",
+            day_start,
+            {"date": target_date.isoformat(), "activity_minutes": 29},
+            observed_at=day_start + timedelta(hours=19),
+        ),
+        _row(
             "distance",
             "health.distance_daily",
             day_start,
@@ -200,7 +256,7 @@ def _daily_metric_rows(target_date: date = date(2026, 10, 28)) -> list[dict[str,
             observed_at=day_start + timedelta(hours=19),
         ),
     ]
-    for days_ago in range(1, 5):
+    for days_ago in range(1, 15):
         baseline_date = target_date - timedelta(days=days_ago)
         baseline_start = datetime.combine(
             baseline_date,
@@ -243,6 +299,36 @@ def _daily_metric_rows(target_date: date = date(2026, 10, 28)) -> list[dict[str,
                     {
                         "date": baseline_date.isoformat(),
                         "average_score": 40,
+                    },
+                ),
+                _row(
+                    f"calories-{days_ago}",
+                    "health.active_calories_daily",
+                    baseline_start,
+                    {
+                        "date": baseline_date.isoformat(),
+                        "active_calories_kcal": 500 + days_ago * 4,
+                    },
+                ),
+                _row(
+                    f"activity-minutes-{days_ago}",
+                    "health.activity_minutes_daily",
+                    baseline_start,
+                    {
+                        "date": baseline_date.isoformat(),
+                        "activity_minutes": 20 + days_ago % 6,
+                    },
+                ),
+                _row(
+                    f"resting-heart-{days_ago}",
+                    "health.resting_heart_rate_daily",
+                    baseline_start,
+                    {
+                        "date": baseline_date.isoformat(),
+                        "average_bpm": 70,
+                        "min_bpm": 65,
+                        "max_bpm": 76,
+                        "measurements": 16,
                     },
                 ),
             ]
@@ -301,6 +387,34 @@ class MorningHealthCardTest(unittest.TestCase):
             )
         )
 
+    def test_morning_card_adds_sleep_regularity_and_resting_heart_context(self) -> None:
+        target_date = date(2026, 10, 28)
+        events = health_cards.parse_health_events(
+            [
+                *_sleep_history_rows(target_date),
+                *_daily_metric_rows(target_date),
+            ]
+        )
+
+        card = health_cards.build_morning_card(
+            events,
+            datetime(2026, 10, 28, 7, 30, tzinfo=CST),
+        )
+
+        self.assertIsNotNone(card)
+        assert card is not None
+        self.assertIn("近 7 晚平均", card.summary)
+        self.assertIn("醒来时间", card.summary)
+        self.assertIn("静息心率近 7 天平均", card.summary)
+        visual = _visual_payload(card)
+        keys = [item["k"] for item in visual["m"]]
+        self.assertEqual("morning", visual["w"])
+        self.assertEqual("sleep", keys[0])
+        self.assertIn("deep_ratio", keys)
+        self.assertIn("wake_time", keys)
+        self.assertIn("resting_heart", keys)
+        self.assertLessEqual(len(card.summary), 1200)
+
 
 class EveningHealthCardTest(unittest.TestCase):
     def test_evening_card_combines_last_sleep_and_today_activity(self) -> None:
@@ -321,7 +435,12 @@ class EveningHealthCardTest(unittest.TestCase):
         self.assertIn("有效站立：10 个有效小时", card.summary)
         self.assertIn("心率：平均 72 bpm", card.summary)
         self.assertIn("血氧：平均 96%", card.summary)
+        self.assertIn("静息心率：71 bpm", card.summary)
         self.assertIn("压力：54，高于 14 日基线 35%", card.summary)
+        self.assertIn("【近 7 天】", card.summary)
+        self.assertIn("近 7 天日均 6,949 步", card.summary)
+        self.assertIn("近 7 天平均 70 bpm", card.summary)
+        self.assertIn("中高强度活动：近 7 天日均", card.summary)
         self.assertNotIn("最长连续未站立", card.summary)
         self.assertIn("步行 25 分钟", card.summary)
         self.assertIn("数据来自小米运动健康云端", card.summary)
@@ -331,11 +450,11 @@ class EveningHealthCardTest(unittest.TestCase):
         visual = _visual_payload(card)
         self.assertEqual("evening", visual["w"])
         self.assertEqual(
-            ["steps", "heart", "oxygen", "sleep", "standing"],
+            ["steps", "calories", "activity_minutes", "resting_heart", "sleep"],
             [item["k"] for item in visual["m"]],
         )
         self.assertEqual(
-            ["line", "columns", "columns", "ratio", "columns"],
+            ["line", "columns", "columns", "columns", "ratio"],
             [item["c"] for item in visual["m"]],
         )
 
@@ -377,6 +496,109 @@ class EveningHealthCardTest(unittest.TestCase):
         self.assertIn("步数：7,240 步", card.summary)
         self.assertNotIn("9,999", card.summary)
         self.assertNotIn("系统步数", card.summary)
+
+    def test_missing_activity_goal_falls_back_to_recorded_exercise(self) -> None:
+        target = datetime(2026, 10, 28, 19, 30, tzinfo=CST)
+        rows = [
+            row
+            for row in _daily_metric_rows(target.date())
+            if row["event_type"] != "health.activity_minutes_daily"
+        ]
+        events = health_cards.parse_health_events(
+            [*_sleep_rows(target.date()), *rows]
+        )
+
+        card = health_cards.build_daily_health_card(events, target)
+
+        self.assertIsNotNone(card)
+        assert card is not None
+        self.assertIn("• 运动：近 7 天", card.summary)
+        self.assertNotIn("中高强度活动：近 7 天日均", card.summary)
+        keys = [item["k"] for item in _visual_payload(card)["m"]]
+        self.assertIn("exercise_minutes", keys)
+
+    def test_missing_activity_goal_day_is_not_filled_with_exercise(self) -> None:
+        target_date = date(2026, 10, 28)
+        rows = [
+            row
+            for row in _daily_metric_rows(target_date)
+            if row["event_type"] != "health.activity_minutes_daily"
+        ]
+        rows.append(
+            _row(
+                "activity-yesterday",
+                "health.activity_minutes_daily",
+                datetime(2026, 10, 27, 0, 1, tzinfo=CST),
+                {
+                    "date": "2026-10-27",
+                    "activity_minutes": 20,
+                },
+            )
+        )
+        events = health_cards.parse_health_events(rows)
+
+        self.assertIsNone(
+            health_cards._activity_minutes_for_date(events, target_date)
+        )
+        self.assertEqual(
+            20,
+            health_cards._activity_minutes_for_date(
+                events,
+                target_date - timedelta(days=1),
+            ),
+        )
+
+
+class WeeklyHealthCardTest(unittest.TestCase):
+    def test_weekly_card_compares_completed_seven_day_periods(self) -> None:
+        completed_through = date(2026, 11, 1)
+        events = health_cards.parse_health_events(
+            [
+                *_sleep_history_rows(completed_through),
+                *_daily_metric_rows(completed_through),
+            ]
+        )
+
+        card = health_cards.build_weekly_health_card(
+            events,
+            datetime(2026, 11, 2, 10, 30, tzinfo=CST),
+        )
+
+        self.assertIsNotNone(card)
+        assert card is not None
+        self.assertEqual("auto:health:weekly:2026-11-02", card.dedupe_key)
+        self.assertTrue(card.title.startswith("健康周报"))
+        self.assertIn("【趋势摘要】", card.summary)
+        self.assertIn("• 睡眠：近 7 晚平均", card.summary)
+        self.assertIn("• 活动：日均", card.summary)
+        self.assertIn("• 中高强度活动：日均", card.summary)
+        self.assertIn("• 恢复：静息心率平均", card.summary)
+        self.assertIn("【下周建议】", card.summary)
+        self.assertLessEqual(len(card.summary), 1200)
+        visual = _visual_payload(card)
+        self.assertEqual("weekly", visual["w"])
+        keys = [item["k"] for item in visual["m"]]
+        self.assertEqual("steps", keys[0])
+        self.assertIn("sleep", keys)
+        self.assertIn("calories", keys)
+        self.assertIn("activity_minutes", keys)
+        self.assertIn("resting_heart", keys)
+
+    def test_weekly_card_only_appears_on_monday_after_morning(self) -> None:
+        events = health_cards.parse_health_events(_daily_metric_rows())
+
+        self.assertIsNone(
+            health_cards.build_weekly_health_card(
+                events,
+                datetime(2026, 11, 2, 9, 30, tzinfo=CST),
+            )
+        )
+        self.assertIsNone(
+            health_cards.build_weekly_health_card(
+                events,
+                datetime(2026, 10, 28, 10, 30, tzinfo=CST),
+            )
+        )
 
 
 class DaytimeAlertTest(unittest.TestCase):

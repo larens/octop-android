@@ -18,6 +18,12 @@ object Routes {
     const val THREADS_PATTERN = "threads?$ARG_TAB={$ARG_TAB}"
     const val SETTINGS = "settings"
     const val SETTINGS_MOBILE_DATA = "settings/mobile-data"
+    const val SETTINGS_PROFILE = "settings/profile"
+    const val SETTINGS_APPEARANCE = "settings/appearance"
+    const val SETTINGS_ABOUT = "settings/about"
+    const val SETTINGS_SERVER = "settings/server"
+    const val SETTINGS_NOTIFICATIONS = "settings/notifications"
+    const val SETTINGS_VOICE = "settings/voice"
 
     const val ARG_AGENT_ID = "agentId"
     const val ARG_THREAD_ID = "threadId"

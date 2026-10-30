@@ -19,6 +19,7 @@ import com.octopmobile.app.data.repo.TagRepository
 import com.octopmobile.app.data.repo.ThreadRepository
 import com.octopmobile.app.data.repo.TodayRepository
 import com.octopmobile.app.data.repo.TodayGoalRepository
+import com.octopmobile.app.data.settings.SettingsPreferences
 import com.octopmobile.app.data.ws.ChatSocket
 import com.octopmobile.app.data.ws.DashboardNotificationSocket
 import kotlinx.serialization.json.Json
@@ -56,6 +57,7 @@ class AppContainer(context: Context) {
     val database: OctopDatabase = OctopDatabase.get(appContext)
 
     val prefs: AppPrefs = AppPrefs(appContext)
+    val settings: SettingsPreferences = SettingsPreferences(appContext)
 
     /** 令牌与实例归属（docs/spec.md §15）。 */
     val securePrefs: SecurePrefs = SecurePrefs(appContext)

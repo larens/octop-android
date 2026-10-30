@@ -45,6 +45,45 @@ def _load_module():
 cron_today_cards = _load_module()
 
 
+class CronResultFreshnessTest(unittest.TestCase):
+    def test_failed_or_empty_runs_do_not_produce_today_content(self) -> None:
+        for text in (
+            "",
+            "执行失败：上游服务不可用",
+            "模型调用失败：file is not a database",
+            "Internal Server Error",
+            "Unable to fetch new information",
+            "暂无新信息",
+        ):
+            with self.subTest(text=text):
+                self.assertFalse(
+                    cron_today_cards.cron_result_has_new_information(
+                        text,
+                        task_kind="weather",
+                    )
+                )
+
+    def test_zero_result_is_still_new_information(self) -> None:
+        self.assertTrue(
+            cron_today_cards.cron_result_has_new_information(
+                "昨日共收到 0 封新邮件，没有需要回复或跟进的事项。",
+                task_kind="inbox",
+            )
+        )
+
+    def test_failed_run_has_no_fallback_summary(self) -> None:
+        self.assertEqual(
+            "",
+            cron_today_cards.task_result_summary(
+                "上一轮的有效结果",
+                task_name="晨间天气与日程",
+                status="error",
+                error="服务器暂时不可用",
+                kind="weather",
+            ),
+        )
+
+
 class MailSummaryTest(unittest.TestCase):
     def test_mail_summary_keeps_full_detail_but_uses_one_line_overview(self) -> None:
         text = """
@@ -430,6 +469,30 @@ class IndustrySignalSummaryTest(unittest.TestCase):
 
     def test_signal_does_not_replace_automatic_news_cards(self) -> None:
         self.assertEqual({"news": "news", "inbox": "mail"}, cron_today_cards._AUTO_KIND_BY_TASK_KIND)
+
+    def test_source_only_web_label_falls_back_to_the_article_host(self) -> None:
+        items = cron_today_cards._web_evidence(
+            "\n".join(
+                (
+                    "来源：；https://view.inews.qq.com/a/20261030A04MS300",
+                    "来源：；https://view.inews.qq.com/a/20261030A01FDS00",
+                )
+            ),
+            occurred_at=1,
+        )
+
+        self.assertEqual(2, len(items))
+        self.assertEqual(
+            ["view.inews.qq.com", "view.inews.qq.com"],
+            [item.title for item in items],
+        )
+        self.assertEqual(
+            [
+                "https://view.inews.qq.com/a/20261030A04MS300",
+                "https://view.inews.qq.com/a/20261030A01FDS00",
+            ],
+            [item.url for item in items],
+        )
 
     def test_connector_json_keeps_titled_article_links_and_drops_images(self) -> None:
         payload = {

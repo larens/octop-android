@@ -6,15 +6,16 @@ import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.graphics.Color
+import com.octopmobile.app.data.settings.ThemeColor
+import com.octopmobile.app.data.settings.ThemeMode
 
 // 品牌色与 res/values/colors.xml 保持一致（最终以系统深/浅色为准，不做自定义配色）。
-private val BrandPrimary = Color(0xFF5B8DEF)
 private val BrandBackgroundDark = Color(0xFF0F1117)
 private val BrandSurfaceDark = Color(0xFF171A21)
 private val BrandOnDark = Color(0xFFECEFF4)
 
-private val DarkColors = darkColorScheme(
-    primary = BrandPrimary,
+private fun darkColors(primary: Color) = darkColorScheme(
+    primary = primary,
     onPrimary = Color(0xFF0B1020),
     background = BrandBackgroundDark,
     onBackground = BrandOnDark,
@@ -25,8 +26,8 @@ private val DarkColors = darkColorScheme(
     outline = Color(0xFF3A424F),
 )
 
-private val LightColors = lightColorScheme(
-    primary = BrandPrimary,
+private fun lightColors(primary: Color) = lightColorScheme(
+    primary = primary,
     onPrimary = Color.White,
     background = Color(0xFFF7F8FA),
     onBackground = Color(0xFF11141A),
@@ -37,14 +38,28 @@ private val LightColors = lightColorScheme(
     outline = Color(0xFFC7CDD6),
 )
 
-/** 主题跟随系统深/浅色（docs/spec.md §22）。 */
+fun ThemeColor.color(): Color = when (this) {
+    ThemeColor.BLUE -> Color(0xFF5B8DEF)
+    ThemeColor.GREEN -> Color(0xFF00A884)
+    ThemeColor.ORANGE -> Color(0xFFF58A34)
+    ThemeColor.PURPLE -> Color(0xFF8B6FE8)
+    ThemeColor.RED -> Color(0xFFE65757)
+}
+
 @Composable
 fun OctopTheme(
     darkTheme: Boolean = isSystemInDarkTheme(),
+    mode: ThemeMode = ThemeMode.SYSTEM,
+    color: ThemeColor = ThemeColor.BLUE,
     content: @Composable () -> Unit,
 ) {
+    val useDark = when (mode) {
+        ThemeMode.SYSTEM -> darkTheme
+        ThemeMode.LIGHT -> false
+        ThemeMode.DARK -> true
+    }
     MaterialTheme(
-        colorScheme = if (darkTheme) DarkColors else LightColors,
+        colorScheme = if (useDark) darkColors(color.color()) else lightColors(color.color()),
         content = content,
     )
 }

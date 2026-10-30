@@ -46,7 +46,11 @@ import java.text.DateFormat
 import java.util.Date
 
 @Composable
-fun MobileDataPane(onBack: () -> Unit) {
+fun MobileDataPane(
+    onBack: () -> Unit,
+    cacheBytes: Long? = null,
+    onClearCache: (() -> Unit)? = null,
+) {
     val viewModel: MobileDataViewModel = viewModel(factory = MobileDataViewModel.Factory)
     val state by viewModel.uiState.collectAsStateWithLifecycle()
     val context = LocalContext.current
@@ -131,8 +135,36 @@ fun MobileDataPane(onBack: () -> Unit) {
                 MobileEventCard(event, onDelete = { viewModel.deleteEvent(event.id) })
             }
         }
+
+        if (onClearCache != null) {
+            item { SectionTitle(stringResource(R.string.mobile_data_storage_title), Modifier.padding(horizontal = 16.dp)) }
+            item {
+                Card(modifier = Modifier.padding(horizontal = 16.dp).fillMaxWidth(), shape = RoundedCornerShape(16.dp)) {
+                    Row(Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Column(Modifier.weight(1f)) {
+                            Text(stringResource(R.string.settings_clear_cache), style = MaterialTheme.typography.titleSmall)
+                            Spacer(Modifier.height(4.dp))
+                            Text(
+                                stringResource(
+                                    R.string.mobile_data_cache_summary,
+                                    cacheBytes?.let(::formatMobileCacheBytes) ?: stringResource(R.string.settings_cache_measuring),
+                                ),
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                        OutlinedButton(onClick = onClearCache, enabled = cacheBytes != null) {
+                            Text(stringResource(R.string.mobile_data_clear_cache_action))
+                        }
+                    }
+                }
+            }
+        }
     }
 }
+
+private fun formatMobileCacheBytes(bytes: Long): String =
+    java.util.Locale.US.let { locale -> String.format(locale, "%.1f MB", bytes / 1024.0 / 1024.0) }
 
 @Composable
 private fun MobileSourceCard(

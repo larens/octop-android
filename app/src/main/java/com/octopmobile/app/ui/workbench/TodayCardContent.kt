@@ -4,6 +4,7 @@ import com.octopmobile.app.data.db.TodayCardEntity
 import com.octopmobile.app.data.db.ThreadEntity
 import com.octopmobile.app.data.remote.dto.TodayCardActionState
 import com.octopmobile.app.data.remote.dto.TodayEvidenceDto
+import java.net.URI
 import java.time.Instant
 import java.time.LocalDate
 import java.time.ZoneId
@@ -25,29 +26,41 @@ internal fun groupTodayCards(
 ): TodayCardGroups {
     val today = Instant.ofEpochMilli(nowMillis).atZone(zoneId).toLocalDate()
     val upcomingWindowEnd = today.plusDays(3)
-    val upcoming = cards
+    // Old clients persisted execution failures as cards. They are not user-facing
+    // information and must disappear even before the server-side cleanup reaches Room.
+    val visibleCards = cards.filterNot { card ->
+        card.isInvalidExecutionFailure() || card.hasInvalidConversationEvidence()
+    }
+    val upcoming = visibleCards
         .filter { card ->
             card.kind == "calendar" &&
                 card.localDate(zoneId).let { it.isAfter(today) && !it.isAfter(upcomingWindowEnd) }
         }
         .sortedWith(compareBy(TodayCardEntity::occurredAt, TodayCardEntity::title))
-    val past = cards
+    val past = visibleCards
         .filter { card ->
             card.kind == "calendar" &&
                 card.localDate(zoneId) == today &&
                 card.occurredAt < nowMillis
         }
         .sortedWith(compareByDescending(TodayCardEntity::occurredAt))
-    val outsideWindow = cards.filter { card ->
+    val outsideWindow = visibleCards.filter { card ->
         card.kind == "calendar" && card.localDate(zoneId).isAfter(upcomingWindowEnd)
     }
-    val previousDays = cards.filter { card ->
+    val previousDays = visibleCards.filter { card ->
         card.kind == "calendar" && card.localDate(zoneId).isBefore(today)
     }
-    val history = cards
+    val previousHealth = visibleCards
         .filter { card ->
             card.kind == "health" && card.localDate(zoneId).isBefore(today)
         }
+    val hasTodayEveningHealth = visibleCards.any { card ->
+        card.kind == "health" &&
+            card.localDate(zoneId) == today &&
+            card.isEveningHealthCard()
+    }
+    val history = previousHealth
+        .filterNot { hasTodayEveningHealth && it.isEveningHealthCard() }
         .sortedWith(
             compareByDescending<TodayCardEntity>(TodayCardEntity::occurredAt)
                 .thenByDescending(TodayCardEntity::updatedAt),
@@ -56,8 +69,8 @@ internal fun groupTodayCards(
         past.toSet() +
         outsideWindow.toSet() +
         previousDays.toSet() +
-        history.toSet()
-    val current = cards
+        previousHealth.toSet()
+    val current = visibleCards
         .filterNot { it in excluded }
         .sortedWith(
             compareByDescending<TodayCardEntity> { it.currentPriority(nowMillis, zoneId) }
@@ -70,6 +83,41 @@ internal fun groupTodayCards(
         past = past,
         history = history,
     )
+}
+
+private val FailedExecutionSummaryPrefixes = listOf("本次执行失败：", "执行失败：")
+
+private fun TodayCardEntity.isInvalidExecutionFailure(): Boolean {
+    if (actionState != TodayCardActionState.FAILED) return false
+    val text = summary.trimStart()
+    return FailedExecutionSummaryPrefixes.any(text::startsWith)
+}
+
+private val FailedConversationExcerptPrefixes = listOf(
+    "模型调用失败",
+    "执行失败",
+    "任务执行失败",
+    "调用失败",
+    "处理失败",
+    "error:",
+    "internal server error",
+)
+
+private fun TodayCardEntity.hasInvalidConversationEvidence(): Boolean {
+    if (kind != "conversation") return false
+    return decodeTodayCardEvidence(evidenceJson).any { evidence ->
+        evidence.sourceType == "conversation" &&
+            evidence.excerpt
+                ?.trimStart()
+                ?.lowercase()
+                ?.let { text -> FailedConversationExcerptPrefixes.any(text::startsWith) } == true
+    }
+}
+
+private fun TodayCardEntity.isEveningHealthCard(): Boolean {
+    if (kind != "health") return false
+    return parseHealthVisualization(summary)?.window == "evening" ||
+        title.startsWith("晚间健康")
 }
 
 private fun TodayCardEntity.currentPriority(nowMillis: Long, zoneId: ZoneId): Int {
@@ -251,7 +299,7 @@ internal fun todayConversationHighlights(
                 ?.takeUnless(String::isInternalThreadId)
             val title = thread.title
                 ?.compactSnippet(80)
-                ?.takeUnless(String::isInternalThreadId)
+                ?.takeUnless { it.isInternalThreadId() || it.isBareUrl() }
                 ?: message?.takeUnless(String::isInternalThreadId)
                 ?: return@mapNotNull null
             TodayReviewItem(
@@ -276,6 +324,7 @@ internal fun todayUpdateHighlights(
         .filter { it.kind != "calendar" && it.kind != "conversation" && it.kind != "health" }
         .flatMap { card ->
             val facts = todayCardFacts(decodeTodayCardEvidence(card.evidenceJson), limit = 2)
+                .filterNot { it.sourceType == "conversation" }
             if (facts.isEmpty()) {
                 sequenceOf(
                     TodayReviewItem(
@@ -767,23 +816,54 @@ internal fun todayCardFacts(evidence: List<TodayEvidenceDto>, limit: Int = 3): L
     val seen = mutableSetOf<String>()
     return evidence.asSequence()
         .mapNotNull { item ->
+            val url = item.url?.trim()?.takeIf(String::isNotBlank)
             val title = item.title?.trim()
+                ?.takeIf { it.isMeaningfulTodayFactText(url) }
                 ?: item.excerpt?.trim()?.take(80)
+                    ?.takeIf { it.isMeaningfulTodayFactText(url) }
+                ?: url?.todayFactFallbackTitle()
                 ?: return@mapNotNull null
-            val key = item.url?.trim()?.takeIf(String::isNotBlank)
-                ?: title.lowercase()
+            val key = url ?: title.lowercase()
             if (!seen.add(key)) return@mapNotNull null
             TodayCardFact(
                 title = title,
-                excerpt = item.excerpt?.trim()?.takeIf { it.isNotBlank() && it != title },
+                excerpt = item.excerpt?.trim()?.takeIf {
+                    it.isNotBlank() && it != title && it.isMeaningfulTodayFactText(url)
+                },
                 sourceType = item.sourceType,
                 sourceRecordId = item.sourceRecordId,
-                url = item.url?.trim()?.takeIf(String::isNotBlank),
+                url = url,
             )
         }
         .take(limit)
         .toList()
 }
+
+private fun String.isMeaningfulTodayFactText(url: String?): Boolean {
+    val host = url?.todayFactHost()
+    val withoutSourceLabel = replace(
+        Regex("^(?:来源|source)\\s*[:：]?", RegexOption.IGNORE_CASE),
+        "",
+    )
+    val withoutHost = if (host == null) {
+        withoutSourceLabel
+    } else {
+        withoutSourceLabel.replace(host, "", ignoreCase = true)
+    }
+    return withoutHost.replace(TodayFactTitleNoisePattern, "").isNotEmpty()
+}
+
+private fun String.todayFactFallbackTitle(): String? =
+    todayFactHost()?.takeIf(String::isNotBlank)
+
+private fun String.todayFactHost(): String? =
+    runCatching { URI(this).host }
+        .getOrNull()
+        ?.removePrefix("www.")
+        ?.takeIf(String::isNotBlank)
+
+private val TodayFactTitleNoisePattern =
+    Regex("[\\s·|｜:：;；,，.。!?！？()（）\\[\\]【】<>《》\\-—–]+")
 
 internal fun todayNewsFacts(evidence: List<TodayEvidenceDto>): List<TodayCardFact> =
     todayCardFacts(evidence, limit = Int.MAX_VALUE)
@@ -798,8 +878,14 @@ private fun String.compactSnippet(maxLength: Int = 100): String =
 private fun String.isInternalThreadId(): Boolean =
     trim().matches(InternalThreadIdPattern)
 
+private fun String.isBareUrl(): Boolean =
+    trim().matches(BareUrlPattern)
+
 private val InternalThreadIdPattern =
     Regex("(?i)^(?:draft-)?[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
+
+private val BareUrlPattern =
+    Regex("(?i)^https?://\\S+(?:\\.\\.\\.|…)?$")
 
 private val SummaryHeadingPattern = Regex("(?m)^【([^】]+)】\\s*$")
 

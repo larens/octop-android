@@ -99,10 +99,15 @@ class MemoryViewModel(private val container: AppContainer) : ViewModel() {
     fun refresh() {
         val host = uiState.host ?: return
         val agentId = uiState.agentId ?: return
-        viewModelScope.launch { refresh(host, agentId, uiState.agentName) }
+        viewModelScope.launch { refresh(host, agentId, uiState.agentName, refreshDiaries = true) }
     }
 
-    private suspend fun refresh(host: String, agentId: String, agentName: String?) {
+    private suspend fun refresh(
+        host: String,
+        agentId: String,
+        agentName: String?,
+        refreshDiaries: Boolean = false,
+    ) {
         uiState = uiState.copy(
             host = host,
             agentId = agentId,
@@ -111,7 +116,10 @@ class MemoryViewModel(private val container: AppContainer) : ViewModel() {
             error = null,
             needsLogin = false,
         )
-        when (val result = container.serverMemoryRepository(host).snapshot(agentId)) {
+        when (
+            val result = container.serverMemoryRepository(host)
+                .snapshot(agentId, refreshDiaries = refreshDiaries)
+        ) {
             is ApiResult.Ok -> uiState = uiState.copy(
                 refreshing = false,
                 snapshot = result.value,

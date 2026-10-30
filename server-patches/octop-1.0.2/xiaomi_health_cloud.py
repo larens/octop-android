@@ -291,6 +291,8 @@ class MiHealthCloudClient:
         key: str,
         start_seconds: int,
         end_seconds: int,
+        *,
+        tag: str = "daily_report",
     ) -> list[dict]:
         items: list[dict] = []
         next_key: str | None = None
@@ -298,7 +300,7 @@ class MiHealthCloudClient:
         for _ in range(self.max_pages):
             payload = {
                 "key": key,
-                "tag": "daily_report",
+                "tag": tag,
                 "start_time": start_seconds,
                 "end_time": end_seconds,
                 "limit": 100,

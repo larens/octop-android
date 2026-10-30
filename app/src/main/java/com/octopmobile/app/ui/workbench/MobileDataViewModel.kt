@@ -39,7 +39,12 @@ class MobileDataViewModel(private val container: AppContainer) : ViewModel() {
     private val transient = kotlinx.coroutines.flow.MutableStateFlow(MobileDataUiState())
 
     val uiState: StateFlow<MobileDataUiState> = combine(
-        repository.observeSources(),
+        repository.observeSources().map { sources ->
+            sources.filterNot {
+                it.sourceType == MobileSourceType.HEALTH_CONNECT ||
+                    it.sourceType == MobileSourceType.XIAMI_HEALTH
+            }
+        },
         repository.observeRecent().map { events ->
             events.filterNot {
                 it.sourceType == MobileSourceType.HEALTH_CONNECT ||

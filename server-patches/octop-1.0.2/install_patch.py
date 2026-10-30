@@ -2,10 +2,23 @@
 
 from __future__ import annotations
 
+import shutil
+import time
 from pathlib import Path
 
+from patch_paths import backups_dir, octop_site
 
-path = Path("/opt/octop/venv/lib/python3.12/site-packages/octop/api/routers/chat/history.py")
+
+module_source = Path(__file__).with_name("turn_delete.py")
+module_target = octop_site() / "infra/agents/threads/turn_delete.py"
+module_target.parent.mkdir(parents=True, exist_ok=True)
+if module_target.exists() and module_target.read_bytes() != module_source.read_bytes():
+    backup = backups_dir() / f"turn-delete-{time.strftime('%Y%m%d-%H%M%S')}"
+    backup.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(module_target, backup / "turn_delete.py")
+shutil.copy2(module_source, module_target)
+
+path = octop_site() / "api/routers/chat/history.py"
 source = path.read_text()
 import_anchor = "from octop.infra.agents.threads.fork import fork_dashboard_thread\n"
 route_anchor = '@router.delete("/agents/{agent_id}/threads/{thread_id}", status_code=204, summary="Delete thread")\n'

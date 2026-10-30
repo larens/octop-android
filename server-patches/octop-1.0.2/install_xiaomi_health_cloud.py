@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
+import os
 import shutil
 from pathlib import Path
 
-TARGET = Path("/opt/octop/xiaomi_health")
-SYSTEMD = Path("/etc/systemd/system")
+TARGET = Path(os.environ.get("OCTOP_XIAOMI_HEALTH_DIR", "/opt/octop/xiaomi_health"))
+SYSTEMD = Path(os.environ.get("OCTOP_SYSTEMD_DIR", "/etc/systemd/system"))
 
 
 def main() -> None:
@@ -57,8 +58,10 @@ Unit=octop-xiaomi-health.service
 [Install]
 WantedBy=timers.target
 """
-    (SYSTEMD / "octop-xiaomi-health.service").write_text(service)
-    (SYSTEMD / "octop-xiaomi-health.timer").write_text(timer)
+    if os.environ.get("OCTOP_INSTALL_SYSTEMD", "1") == "1":
+        SYSTEMD.mkdir(parents=True, exist_ok=True)
+        (SYSTEMD / "octop-xiaomi-health.service").write_text(service)
+        (SYSTEMD / "octop-xiaomi-health.timer").write_text(timer)
     print(TARGET)
 
 

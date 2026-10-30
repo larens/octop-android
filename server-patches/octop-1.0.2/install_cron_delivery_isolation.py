@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-from pathlib import Path
+from patch_paths import octop_site
 
 
-site = Path("/opt/octop/venv/lib/python3.12/site-packages/octop")
+site = octop_site()
 delivery_path = site / "infra/cron/delivery.py"
 threads_path = site / "infra/gateway/threads.py"
 gateway_path = site / "infra/gateway/gateway.py"

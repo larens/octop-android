@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-from pathlib import Path
+from patch_paths import octop_site
 
 
-path = Path("/opt/octop/venv/lib/python3.12/site-packages/octop/infra/cron/tools.py")
+path = octop_site() / "infra/cron/tools.py"
 source = path.read_text()
 old = """                session_key=session_key,
                 enabled=enabled,

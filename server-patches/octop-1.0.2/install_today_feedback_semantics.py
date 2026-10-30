@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from patch_paths import octop_site
+
 
 OLD_BRANCH = '''        elif body.feedback_type in {"too_frequent", "irrelevant"}:
             for monitor in linked_monitors:
@@ -203,7 +205,7 @@ def patch_publisher(source: str) -> str:
 
 
 def main() -> None:
-    site = Path("/opt/octop/venv/lib/python3.12/site-packages/octop")
+    site = octop_site()
     ingest_path = site / "api/routers/mobile_ingest.py"
     publisher_path = site / "infra/today/cards.py"
 

@@ -73,6 +73,9 @@ data class CreateThreadResponse(
 data class HistoryResponse(
     @SerialName("thread_id") val threadId: String,
     val messages: List<MessageDto> = emptyList(),
+    /** 旧版服务端只有路径；新版同时下发带 agent 归属的 [artifactRefs]。 */
+    val artifacts: List<String> = emptyList(),
+    @SerialName("artifact_refs") val artifactRefs: List<ArtifactRefDto> = emptyList(),
     @SerialName("has_more") val hasMore: Boolean = false,
     val limit: Int? = null,
     val offset: Int? = null,
@@ -91,4 +94,31 @@ data class HistoryResponse(
     @SerialName("conversation_mode") val conversationMode: String = ConversationMode.CRAFT,
     @SerialName("pending_plan_path") val pendingPlanPath: String? = null,
     @SerialName("hitl_policy") val hitlPolicy: HitlPolicyDto? = null,
+)
+
+/**
+ * 会话产物的结构化引用。
+ *
+ * `agent_id` 可能指向本轮 `@专家` 的 workspace，而不是当前会话所属 agent；缺失时按当前
+ * [HistoryResponse] 所属 agent 解释。
+ */
+@Serializable
+data class ArtifactRefDto(
+    val path: String,
+    @SerialName("agent_id") val agentId: String? = null,
+)
+
+/** `POST /api/agents/{agent_id}/threads/{thread_id}/artifact-shares` 的请求体。 */
+@Serializable
+data class ArtifactShareBody(
+    val path: String,
+    @SerialName("agent_id") val agentId: String? = null,
+)
+
+/** 由服务端登记的限时公开 HTML 短链接。 */
+@Serializable
+data class ArtifactShareDto(
+    val url: String,
+    @SerialName("expires_at") val expiresAt: Long,
+    val filename: String? = null,
 )

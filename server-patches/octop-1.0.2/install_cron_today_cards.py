@@ -5,8 +5,9 @@ from __future__ import annotations
 import shutil
 from pathlib import Path
 
+from patch_paths import octop_site
 
-site = Path("/opt/octop/venv/lib/python3.12/site-packages/octop")
+site = octop_site()
 delivery_path = site / "infra/cron/delivery.py"
 automatic_path = site / "infra/today/automatic.py"
 cards_path = site / "infra/today/cards.py"
@@ -127,12 +128,91 @@ delivery_path.write_text(source)
 
 source = automatic_path.read_text()
 import_anchor = "from octop.infra.db.repos.secrets import SecretRepo\n"
-import_new = (
-    import_anchor
-    + "from octop.infra.today.cron_cards import has_cron_card_kind\n"
+owned_import = "from octop.infra.today.cron_cards import has_cron_card_kind\n"
+result_import = (
+    "from octop.infra.today.cron_cards import "
+    "cron_result_has_new_information, has_cron_card_kind\n"
 )
-if "from octop.infra.today.cron_cards import has_cron_card_kind" not in source:
-    source = source.replace(import_anchor, import_new, 1)
+if result_import not in source:
+    if owned_import in source:
+        source = source.replace(owned_import, result_import, 1)
+    elif import_anchor in source:
+        source = source.replace(import_anchor, import_anchor + result_import, 1)
+    else:
+        raise SystemExit("Octop 1.0.2 automatic import anchor not found")
+
+conversation_query_old = (
+    '") ORDER BY t.last_active DESC LIMIT ?",\n'
+    "            (agent_id, user_id, since, _MAX_CONVERSATIONS),\n"
+)
+conversation_query_new = (
+    '") ORDER BY t.last_active DESC LIMIT ?",\n'
+    "            (agent_id, user_id, since, _MAX_CONVERSATIONS * 3),\n"
+)
+if conversation_query_new not in source:
+    if conversation_query_old not in source:
+        raise SystemExit("Octop 1.0.2 automatic conversation query anchor not found")
+    source = source.replace(conversation_query_old, conversation_query_new, 1)
+
+conversation_loop_old = '''        for row in rows:
+            thread_id = str(row["thread_id"])
+            title = _compact(row["title"] or "未命名会话", 96)
+            titles.append(title)
+            last_active = max(last_active, int(row["last_active"]))
+            message = conn.execute(
+                "SELECT message_json FROM thread_messages "
+                "WHERE thread_id = ? AND role = 'ai' "
+                "ORDER BY created_at DESC, seq DESC LIMIT 1",
+                (thread_id,),
+            ).fetchone()
+            excerpt = _message_content(str(message["message_json"])) if message else ""
+            evidence.append(
+                _Evidence(
+                    source_type="conversation",
+                    source_record_id=thread_id,
+                    event_type="conversation.context",
+                    occurred_at=int(row["last_active"]),
+                    privacy_class="private_user_content",
+                    title=title,
+                    excerpt=excerpt or "最近一轮会话尚未收尾。",
+                )
+            )
+'''
+conversation_loop_new = '''        for row in rows:
+            thread_id = str(row["thread_id"])
+            message = conn.execute(
+                "SELECT message_json FROM thread_messages "
+                "WHERE thread_id = ? AND role = 'ai' "
+                "ORDER BY created_at DESC, seq DESC LIMIT 1",
+                (thread_id,),
+            ).fetchone()
+            excerpt = _message_content(str(message["message_json"])) if message else ""
+            if not cron_result_has_new_information(
+                excerpt,
+                task_kind="conversation",
+            ):
+                continue
+            title = _compact(row["title"] or "未命名会话", 96)
+            titles.append(title)
+            last_active = max(last_active, int(row["last_active"]))
+            evidence.append(
+                _Evidence(
+                    source_type="conversation",
+                    source_record_id=thread_id,
+                    event_type="conversation.context",
+                    occurred_at=int(row["last_active"]),
+                    privacy_class="private_user_content",
+                    title=title,
+                    excerpt=excerpt,
+                )
+            )
+            if len(evidence) >= _MAX_CONVERSATIONS:
+                break
+'''
+if "if not cron_result_has_new_information(" not in source:
+    if conversation_loop_old not in source:
+        raise SystemExit("Octop 1.0.2 automatic conversation loop anchor not found")
+    source = source.replace(conversation_loop_old, conversation_loop_new, 1)
 
 helper_anchor = '''def _dismiss_previous(
 '''

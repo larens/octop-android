@@ -123,7 +123,11 @@ fun WorkbenchScreen(
 
     Scaffold(
         bottomBar = {
-            if (!memorySubpageOpen && !taskComposerOpen && !mobileDataOpen) {
+            if (
+                !memorySubpageOpen &&
+                !taskComposerOpen &&
+                !mobileDataOpen
+            ) {
                 WorkbenchBottomBar(current = tab, onSelect = { tab = it })
             }
         },
@@ -172,6 +176,7 @@ fun WorkbenchScreen(
                     onNeedsLogin = onNeedsLogin,
                     onSubpageChanged = { memorySubpageOpen = it },
                 )
+
             }
         }
     }

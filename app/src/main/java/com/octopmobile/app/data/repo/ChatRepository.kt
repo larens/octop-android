@@ -15,11 +15,14 @@ import com.octopmobile.app.data.db.PendingOpEntity
 import com.octopmobile.app.data.db.ThreadDao
 import com.octopmobile.app.data.db.ThreadEntity
 import com.octopmobile.app.data.model.ASK_USER_TOOL
+import com.octopmobile.app.data.model.ArtifactReference
+import com.octopmobile.app.data.model.ChatArtifact
 import com.octopmobile.app.data.model.HitlPending
 import com.octopmobile.app.data.model.Part
 import com.octopmobile.app.data.model.PartType
 import com.octopmobile.app.data.model.PartsCodec
 import com.octopmobile.app.data.model.UploadedAttachment
+import com.octopmobile.app.data.model.chatArtifacts
 import com.octopmobile.app.data.model.hitlQuestionFromToolCall
 import com.octopmobile.app.data.model.parseHitlPending
 import com.octopmobile.app.data.remote.ApiError
@@ -27,6 +30,8 @@ import com.octopmobile.app.data.remote.ApiResult
 import com.octopmobile.app.data.remote.OctopApi
 import com.octopmobile.app.data.remote.dto.BlockType
 import com.octopmobile.app.data.remote.dto.ContentBlockDto
+import com.octopmobile.app.data.remote.dto.ArtifactShareBody
+import com.octopmobile.app.data.remote.dto.ArtifactShareDto
 import com.octopmobile.app.data.remote.dto.HitlDecision
 import com.octopmobile.app.data.remote.dto.HitlResumeBody
 import com.octopmobile.app.data.remote.dto.MessageDto
@@ -124,6 +129,10 @@ class ChatRepository(
     /** 服务端下发的错误帧。M1 只做提示，不做重试。 */
     private val _errors = MutableSharedFlow<String>(extraBufferCapacity = 8)
     val errors: SharedFlow<String> = _errors.asSharedFlow()
+
+    /** 历史响应顶层的产物索引；它不属于某一条消息，因此单独暴露给会话流尾部。 */
+    private val _artifacts = MutableStateFlow<List<ChatArtifact>>(emptyList())
+    val artifacts: StateFlow<List<ChatArtifact>> = _artifacts.asStateFlow()
 
     /** 正在等人工确认的卡片。非空时回合被服务端挂起，UI 必须禁用输入（docs/protocol.md §6.1）。 */
     private val _hitl = MutableStateFlow<HitlPending?>(null)
@@ -444,6 +453,9 @@ class ChatRepository(
 
                 is ApiResult.Ok -> {
                     val page = result.value
+                    if (offset == 0) {
+                        _artifacts.value = page.toChatArtifacts(agentId)
+                    }
                     if (page.historyLoading) {
                         attempt++
                         if (attempt >= MAX_PROJECTION_ATTEMPTS) {
@@ -495,6 +507,19 @@ class ChatRepository(
         }
     }
 
+    /** Refresh only the top-level artifact index after a turn completes. */
+    suspend fun refreshArtifacts() {
+        when (val result = api.history(agentId, threadId, limit = 1, offset = 0)) {
+            is ApiResult.Ok -> {
+                if (!result.value.historyLoading) {
+                    _artifacts.value = result.value.toChatArtifacts(agentId)
+                }
+            }
+
+            is ApiResult.Failure -> Unit
+        }
+    }
+
     /** 服务端先删真实 checkpoint；成功后才移除本地行，避免只在界面上隐藏错误上下文。 */
     suspend fun deleteConversationTurn(anchorMessageId: String, localMessageIds: List<String>): ApiResult<Unit> {
         if (isDraft || anchorMessageId.startsWith(LOCAL_PREFIX) || localMessageIds.isEmpty()) {
@@ -509,6 +534,14 @@ class ChatRepository(
             }
         }
     }
+
+    /** 只分享服务端已登记到该 thread 的 HTML 产物。 */
+    suspend fun createArtifactShare(artifact: ChatArtifact): ApiResult<ArtifactShareDto> =
+        api.createArtifactShare(
+            agentId = agentId,
+            threadId = threadId,
+            body = ArtifactShareBody(path = artifact.path, agentId = artifact.agentId),
+        )
 
     // ------------------------------------------------------------ 增量事件
 
@@ -565,6 +598,7 @@ class ChatRepository(
                 // 压缩发生在回合之间，而且没有 WS 事件 —— 只有在这里主动问一次，长任务跑到
                 // 一半被压缩时界面上才会当场出现分隔线，而不是等用户重开会话。
                 background.launch { syncCompactMarkers() }
+                background.launch { refreshArtifacts() }
             }
 
             is ServerEvent.Token -> {
@@ -1044,6 +1078,16 @@ private fun MessageDto.toEntity(agentId: String, index: Int, threadId: String, j
         // `updatedAt == sortOrder`，UI 据此区分「服务端行」与「本地流式行」（见 `thinkingDurationMs`）。
         updatedAt = at,
     )
+}
+
+private fun com.octopmobile.app.data.remote.dto.HistoryResponse.toChatArtifacts(
+    defaultAgentId: String,
+): List<ChatArtifact> {
+    val structured = artifactRefs.map {
+        ArtifactReference(path = it.path, agentId = it.agentId)
+    }
+    val legacy = artifacts.map { ArtifactReference(path = it) }
+    return chatArtifacts(defaultAgentId, structured + legacy)
 }
 
 /**

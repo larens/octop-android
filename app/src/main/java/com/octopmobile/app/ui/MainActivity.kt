@@ -12,13 +12,17 @@ import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.LocalTextStyle
 import androidx.compose.material3.Surface
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.unit.TextUnit
 import androidx.core.content.ContextCompat
 import com.octopmobile.app.OctopApp
 import com.octopmobile.app.ui.theme.OctopTheme
@@ -63,7 +67,30 @@ class MainActivity : ComponentActivity() {
         val container = (application as OctopApp).container
 
         setContent {
-            OctopTheme {
+            val appSettings by container.settings.settings.collectAsState(
+                initial = com.octopmobile.app.data.settings.AppSettings(
+                    themeMode = com.octopmobile.app.data.settings.ThemeMode.SYSTEM,
+                    themeColor = com.octopmobile.app.data.settings.ThemeColor.BLUE,
+                    fontScale = 1f,
+                    voiceReadAloud = false,
+                    notificationsEnabled = true,
+                    taskResultNotifications = true,
+                    confirmationNotifications = true,
+                    scheduledTaskNotifications = true,
+                ),
+            )
+            CompositionLocalProvider(
+                LocalTextStyle provides LocalTextStyle.current.let { style ->
+                    val baseFontSize = style.fontSize
+                    val scaledFontSize = if (baseFontSize != TextUnit.Unspecified) {
+                        TextUnit(baseFontSize.value * appSettings.fontScale, baseFontSize.type)
+                    } else {
+                        baseFontSize
+                    }
+                    style.copy(fontSize = scaledFontSize)
+                },
+            ) {
+                OctopTheme(mode = appSettings.themeMode, color = appSettings.themeColor) {
                 var startDestination by remember { mutableStateOf<String?>(null) }
                 var startWorkbenchTab by remember { mutableStateOf<WorkbenchTab?>(null) }
                 var pendingRoute by remember { mutableStateOf<String?>(null) }
@@ -137,6 +164,7 @@ class MainActivity : ComponentActivity() {
                         pendingRoute = pendingRoute,
                         onPendingRouteConsumed = { pendingRoute = null },
                     )
+                }
                 }
             }
         }

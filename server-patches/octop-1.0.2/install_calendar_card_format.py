@@ -6,14 +6,15 @@ import shutil
 import time
 from pathlib import Path
 
+from patch_paths import backups_dir, octop_site
 
-site = Path("/opt/octop/venv/lib/python3.12/site-packages/octop")
+site = octop_site()
 path = site / "api/routers/mobile_ingest.py"
 source = path.read_text()
 marker = "def _calendar_time_range_label("
 
 if marker not in source:
-    backup = Path("/opt/octop/backups") / f"calendar-card-format-{time.strftime('%Y%m%d-%H%M%S')}"
+    backup = backups_dir() / f"calendar-card-format-{time.strftime('%Y%m%d-%H%M%S')}"
     backup.mkdir(parents=True, exist_ok=True)
     shutil.copy2(path, backup / "mobile_ingest.py")
 

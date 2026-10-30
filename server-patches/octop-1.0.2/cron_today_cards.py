@@ -22,6 +22,9 @@ logger = logging.getLogger(__name__)
 
 _URL_RE = re.compile(r"https?://[^\s<>\]\)\}]+")
 _ITEM_RE = re.compile(r"^(?:[-*+]\s+|\d+[.)、]\s*|\*\*\d+[.、]\s*)")
+_HONORIFIC_LEAD_RE = re.compile(
+    r"^(?:(?:早上|中午|下午|晚上)?好[，,]\s*)?[\u4e00-\u9fff]{1,4}(?:老师|先生|女士|总)[，,：:]"
+)
 _MARKDOWN_LINK_RE = re.compile(r"\[([^\]]+)\]\((https?://[^)]+)\)")
 _MAILTO_LINK_RE = re.compile(r"\[([^\]]+)\]\(mailto:[^)]+\)")
 _SENTENCE_SPLIT_RE = re.compile(r"(?<=[。；;])")
@@ -55,6 +58,24 @@ _SIGNAL_MARKERS = (
 )
 _INTERNAL_TITLE_SUFFIX_RE = re.compile(
     r"\s*[（(]\s*(?:统一入口|系统入口|自动入口)\s*[）)]\s*$"
+)
+_FAILED_RESULT_START_RE = re.compile(
+    r"^(?:"
+    r"执行失败|任务执行失败|运行失败|请求失败|获取失败|调用失败|模型调用失败|处理失败|"
+    r"无法获取|暂时无法|连接失败|"
+    r"服务器错误|服务不可用|服务暂时不可用|"
+    r"error\b|internal server error|server unavailable|service unavailable|"
+    r"unable to|could not|cannot |connection (?:refused|failed)|"
+    r"request (?:failed|timed out)|timed out|timeout"
+    r")",
+    re.IGNORECASE,
+)
+_NO_NEW_INFORMATION_START_RE = re.compile(
+    r"^(?:"
+    r"暂无新信息|没有新的信息|没有获取到新信息|没有获取新信息|暂无重要信息|"
+    r"no new information|no important updates?"
+    r")",
+    re.IGNORECASE,
 )
 
 
@@ -100,6 +121,10 @@ def _clean_inline(value: str) -> str:
     return _compact(text, 320)
 
 
+def _has_honorific_lead(text: str) -> bool:
+    return _HONORIFIC_LEAD_RE.match(text) is not None
+
+
 def _summary_candidates(text: str) -> list[str]:
     candidates: list[str] = []
     for raw in text.splitlines():
@@ -111,7 +136,7 @@ def _summary_candidates(text: str) -> list[str]:
         cleaned = _clean_inline(line)
         if len(cleaned) < 8:
             continue
-        if cleaned.startswith("武老师") and ("运行" in cleaned or "简报" in cleaned):
+        if _has_honorific_lead(cleaned) and ("运行" in cleaned or "简报" in cleaned):
             continue
         candidates.append(_compact(cleaned, 120))
         if len(candidates) >= 3:
@@ -199,6 +224,20 @@ def cron_card_title(task_kind: str, task_name: str, text: str) -> str:
         return "明日安排与准备" if _weather_plan_is_tomorrow(task_name, text) else "今日安排与建议"
     public_name = _INTERNAL_TITLE_SUFFIX_RE.sub("", task_name).strip()
     return _compact(public_name or "定时任务", 200)
+
+
+def cron_result_has_new_information(text: str, *, task_kind: str) -> bool:
+    """Return whether a successful run produced content worth putting in Today."""
+    normalized = re.sub(r"^[\s*_`#>]+", "", str(text or "")).strip()
+    if not normalized:
+        return False
+    if task_kind == "signal" and _signal_no_update(normalized):
+        return False
+    if _FAILED_RESULT_START_RE.match(normalized):
+        return False
+    if _NO_NEW_INFORMATION_START_RE.match(normalized):
+        return False
+    return True
 
 
 def _signal_no_update(text: str) -> bool:
@@ -483,8 +522,7 @@ def task_result_summary(
     kind: str | None = None,
 ) -> str:
     if status == "error":
-        reason = _compact(error or "未返回具体错误", 220)
-        return f"本次执行失败：{reason}"
+        return ""
     if kind == "inbox":
         return _mail_result_summary(text)
     if kind == "weather":
@@ -500,7 +538,7 @@ def task_result_summary(
             for raw in text.splitlines()
             if (cleaned := _clean_inline(raw))
             and len(cleaned) >= 16
-            and not cleaned.startswith("武老师")
+            and not _has_honorific_lead(cleaned)
         ),
         "",
     )
@@ -556,6 +594,19 @@ def _web_title(raw_line: str, segment: str) -> str:
     return _compact(label, 120)
 
 
+def _web_host(url: str) -> str:
+    return urlsplit(url).netloc.removeprefix("www.")
+
+
+def _meaningful_web_title(value: str, url: str) -> bool:
+    label = re.sub(r"^(?:来源|source)\s*[:：]?", "", value, flags=re.IGNORECASE)
+    host = _web_host(url)
+    if host:
+        label = re.sub(re.escape(host), "", label, flags=re.IGNORECASE)
+    label = re.sub(r"[\s·|｜:：;；,，.。!?！？()（）\[\]【】<>《》\-—–]+", "", label)
+    return bool(label)
+
+
 def _web_evidence(text: str, *, occurred_at: int, limit: int = 99) -> list[TodayEvidenceInput]:
     items: list[TodayEvidenceInput] = []
     seen: set[str] = set()
@@ -568,11 +619,13 @@ def _web_evidence(text: str, *, occurred_at: int, limit: int = 99) -> list[Today
                     continue
                 seen.add(url)
                 label = _web_title(raw_line, segment)
-                if not label:
-                    label = urlsplit(url).netloc or url
+                if not _meaningful_web_title(label, url):
+                    label = _web_host(url) or url
                 title_key = label.lower()
                 if title_counts.get(title_key, 0):
-                    label = _compact(f"{label} · {urlsplit(url).netloc or '来源'}", 120)
+                    host = _web_host(url) or "来源"
+                    if label.lower() != host.lower():
+                        label = _compact(f"{label} · {host}", 120)
                 title_counts[title_key] = title_counts.get(title_key, 0) + 1
                 items.append(
                     TodayEvidenceInput(
@@ -765,6 +818,16 @@ def publish_cron_task_card(
     mark_unread: bool = False,
 ) -> dict[str, Any]:
     """Publish one stable card per task and link it to the canonical run thread."""
+    task_kind = classify_cron_kind(task_name, prompt)
+    kind = _TODAY_KIND_BY_TASK_KIND.get(task_kind, task_kind)
+    if status != "ok":
+        return {
+            "card_id": None,
+            "changed": False,
+            "notify": False,
+            "kind": kind,
+        }
+
     with db.connect() as conn:
         thread = conn.execute(
             "SELECT title FROM threads "
@@ -774,8 +837,13 @@ def publish_cron_task_card(
     if thread is None:
         raise ValueError("cron result thread does not belong to this agent and user")
 
-    task_kind = classify_cron_kind(task_name, prompt)
-    kind = _TODAY_KIND_BY_TASK_KIND.get(task_kind, task_kind)
+    if not cron_result_has_new_information(text, task_kind=task_kind):
+        return {
+            "card_id": None,
+            "changed": False,
+            "notify": False,
+            "kind": kind,
+        }
     title = cron_card_title(
         task_kind,
         task_name or str(thread["title"] or ""),
@@ -969,12 +1037,12 @@ def sync_completed_cron_today_cards(
     """Backfill cards for completed task runs, including runs from before this patch."""
     with db.connect() as conn:
         rows = conn.execute(
-            "SELECT j.cron_id, j.name, j.prompt, j.last_run_at, j.last_status, j.last_error, "
+            "SELECT j.cron_id, j.name, j.prompt, j.last_run_at, j.last_status, "
             "t.thread_id FROM cron_jobs j JOIN threads t "
             "ON t.agent_id = j.agent_id AND t.user_id = j.user_id "
             "AND t.session_key = j.session_key "
             "WHERE j.agent_id = ? AND j.user_id = ? AND j.last_run_at IS NOT NULL "
-            "AND j.last_status IN ('ok', 'error') ORDER BY j.last_run_at DESC",
+            "AND j.last_status = 'ok' ORDER BY j.last_run_at DESC",
             (agent_id, user_id),
         ).fetchall()
 
@@ -984,8 +1052,6 @@ def sync_completed_cron_today_cards(
             thread_id = str(row["thread_id"])
             status = str(row["last_status"])
             text = last_ai_text(db, thread_id)
-            if not text and status == "error":
-                text = f"执行失败：{row['last_error'] or '未返回具体错误'}"
             if not text:
                 logger.warning(
                     "skip Today card for cron=%s: result thread has no assistant text",
@@ -1003,7 +1069,6 @@ def sync_completed_cron_today_cards(
                 text=text,
                 last_run_at=int(row["last_run_at"]),
                 status=status,
-                error=str(row["last_error"]) if row["last_error"] else None,
                 mark_unread=False,
             )
             if result["changed"]:
@@ -1020,6 +1085,7 @@ def sync_completed_cron_today_cards(
 __all__ = [
     "classify_cron_kind",
     "cron_card_title",
+    "cron_result_has_new_information",
     "has_cron_card_kind",
     "last_ai_text",
     "publish_cron_task_card",

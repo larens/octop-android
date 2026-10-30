@@ -83,10 +83,16 @@ internal fun healthMetricColor(key: String): Color = when (key) {
     "steps" -> Color(0xFF36C994)
     "sleep" -> Color(0xFF8B82F6)
     "deep_sleep" -> Color(0xFF5D7CE2)
+    "deep_ratio" -> Color(0xFF7069D8)
     "awake" -> Color(0xFFE4A84C)
+    "wake_time" -> Color(0xFF9A7BD8)
     "standing" -> Color(0xFF1FB9C7)
     "sedentary" -> Color(0xFFD8912F)
     "heart" -> Color(0xFFF26868)
+    "resting_heart" -> Color(0xFFE35484)
+    "calories" -> Color(0xFFF28A3D)
+    "exercise_minutes" -> Color(0xFF2CA9C8)
+    "activity_minutes" -> Color(0xFF2F9FD4)
     "oxygen" -> Color(0xFF32A9E8)
     "stress" -> Color(0xFFE88A3C)
     else -> Color(0xFF4FAF8C)
@@ -571,12 +577,16 @@ private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawColumns(
     val rawMaximum = numbers.maxOrNull() ?: 0f
     val floor = when (metric.key) {
         "oxygen" -> minOf(90f, rawMinimum - 1f)
-        "heart" -> max(0f, rawMinimum - 5f)
+        "heart",
+        "resting_heart",
+        -> max(0f, rawMinimum - 5f)
         else -> 0f
     }
     val ceiling = when (metric.key) {
         "oxygen" -> max(100f, rawMaximum)
-        "heart" -> max(rawMaximum + 5f, floor + 10f)
+        "heart",
+        "resting_heart",
+        -> max(rawMaximum + 5f, floor + 10f)
         "standing" -> max(rawMaximum, (metric.target ?: 12.0).toFloat())
         else -> max(rawMaximum, 1f)
     }
@@ -660,11 +670,17 @@ private fun healthTargetText(metric: HealthMetricVisual, target: Double): String
 private fun healthMetricLabel(key: String): String = when (key) {
     "sleep" -> "睡眠时长"
     "deep_sleep" -> "深睡"
+    "deep_ratio" -> "深睡占比"
     "awake" -> "夜醒"
+    "wake_time" -> "醒来时间"
     "steps" -> "今日步数"
+    "calories" -> "活动热量"
+    "exercise_minutes" -> "运动时长"
+    "activity_minutes" -> "中高强度活动"
     "standing" -> "有效站立"
     "sedentary" -> "最长久坐"
     "heart" -> "心率"
+    "resting_heart" -> "静息心率"
     "stress" -> "压力指数"
     "oxygen" -> "血氧"
     else -> key
@@ -673,11 +689,17 @@ private fun healthMetricLabel(key: String): String = when (key) {
 private fun healthMetricGlyph(key: String): String = when (key) {
     "sleep" -> "眠"
     "deep_sleep" -> "深"
+    "deep_ratio" -> "深"
     "awake" -> "醒"
+    "wake_time" -> "起"
     "steps" -> "步"
+    "calories" -> "热"
+    "exercise_minutes" -> "动"
+    "activity_minutes" -> "动"
     "standing" -> "立"
     "sedentary" -> "坐"
     "heart" -> "心"
+    "resting_heart" -> "静"
     "stress" -> "压"
     "oxygen" -> "氧"
     else -> "健"
@@ -687,6 +709,7 @@ private fun healthDisplayUnit(metric: HealthMetricVisual): String = when (metric
     "sleep",
     "deep_sleep",
     "awake",
+    "wake_time",
     -> ""
     else -> metric.unit
 }

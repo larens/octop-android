@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import statistics
 import time
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
@@ -22,10 +23,12 @@ logger = logging.getLogger(__name__)
 _HEALTH_SOURCES = ("health_connect", "android_health_connect", "xiaomi_health")
 _LOOKBACK_DAYS = 16
 _ALERT_KINDS = ("sedentary", "stress", "heart", "oxygen")
+_MAX_VISUAL_METRICS = 8
 _EVENT_TITLES = {
     "health.steps_30d": "步数",
     "health.distance_daily": "活动距离",
     "health.active_calories_daily": "活动热量",
+    "health.activity_minutes_daily": "中高强度活动",
     "health.heart_rate_daily": "心率",
     "health.resting_heart_rate_daily": "静息心率",
     "health.oxygen_saturation_daily": "血氧",
@@ -67,11 +70,17 @@ _EXERCISE_NAMES = {
 _METRIC_LABELS = {
     "sleep": ("睡眠时长", "小时"),
     "deep_sleep": ("深睡", "小时"),
+    "deep_ratio": ("深睡占比", "%"),
     "awake": ("夜醒", "分钟"),
+    "wake_time": ("醒来时间", ""),
     "steps": ("步数", "步"),
+    "calories": ("活动热量", "千卡"),
+    "exercise_minutes": ("运动时长", "分钟"),
+    "activity_minutes": ("中高强度活动", "分钟"),
     "standing": ("有效站立", "小时"),
     "sedentary": ("最长久坐", "分钟"),
     "heart": ("心率", "bpm"),
+    "resting_heart": ("静息心率", "bpm"),
     "stress": ("压力指数", "分"),
     "oxygen": ("血氧", "%"),
 }
@@ -389,6 +398,201 @@ def _series_for_metric(
     return values
 
 
+def _average(values: Iterable[float]) -> float:
+    numbers = [float(value) for value in values]
+    return sum(numbers) / len(numbers) if numbers else 0.0
+
+
+def _change_text(
+    current: float,
+    previous: float,
+    unit: str,
+    *,
+    stable_at: float = 3,
+    period: str = "前 7 天",
+) -> str:
+    if current <= 0 or previous <= 0:
+        return ""
+    delta = current - previous
+    if abs(delta) < stable_at:
+        return f"，与{period}基本持平"
+    direction = "增加" if delta > 0 else "减少"
+    return f"，较{period}{direction} {abs(delta):.0f}{unit}"
+
+
+def _metric_values(
+    events: list[HealthEvent],
+    event_type: str,
+    field: str,
+    start_date: date,
+    end_date: date,
+) -> list[float]:
+    values: list[float] = []
+    current = start_date
+    while current <= end_date:
+        event = _latest_event(events, event_type, current)
+        value = _as_float(event.payload.get(field)) if event else 0.0
+        if value > 0:
+            values.append(value)
+        current += timedelta(days=1)
+    return values
+
+
+def _sleep_values(
+    events: list[HealthEvent],
+    start_date: date,
+    end_date: date,
+) -> list[float]:
+    values: list[float] = []
+    current = start_date
+    while current <= end_date:
+        _, duration, _, _, _, _ = _sleep_totals(events, current)
+        if duration > 0:
+            values.append(float(duration))
+        current += timedelta(days=1)
+    return values
+
+
+def _wake_minutes_for_date(
+    events: list[HealthEvent],
+    target_date: date,
+) -> int | None:
+    sleep_events = _sleep_events(events, target_date)
+    ends = [
+        _epoch_seconds(event.payload.get("ends_at"))
+        for event in sleep_events
+        if _epoch_seconds(event.payload.get("ends_at")) > 0
+    ]
+    if not ends:
+        return None
+    ends_local = _local_datetime(max(ends), sleep_events[0].offset_minutes)
+    return ends_local.hour * 60 + ends_local.minute
+
+
+def _wake_series(
+    events: list[HealthEvent],
+    target_date: date,
+    *,
+    days: int = 7,
+) -> list[float | None]:
+    return [
+        (
+            float(value)
+            if (value := _wake_minutes_for_date(
+                events,
+                target_date - timedelta(days=offset),
+            )) is not None
+            else None
+        )
+        for offset in range(days - 1, -1, -1)
+    ]
+
+
+def _clock_from_minutes(minutes: int) -> str:
+    normalized = minutes % (24 * 60)
+    return f"{normalized // 60:02d}:{normalized % 60:02d}"
+
+
+def _deep_ratio_series(
+    events: list[HealthEvent],
+    target_date: date,
+    *,
+    days: int = 7,
+) -> list[float | None]:
+    values: list[float | None] = []
+    for offset in range(days - 1, -1, -1):
+        _, duration, deep, _, _, _ = _sleep_totals(
+            events,
+            target_date - timedelta(days=offset),
+        )
+        ratio = deep / duration * 100 if duration > 0 and deep > 0 else 0.0
+        values.append(round(ratio, 1) if ratio > 0 else None)
+    return values
+
+
+def _exercise_minutes_for_date(
+    events: list[HealthEvent],
+    target_date: date,
+) -> int:
+    sessions: dict[str, HealthEvent] = {}
+    for event in events:
+        if event.event_type != "health.exercise_session":
+            continue
+        starts_at = _local_datetime(
+            _epoch_seconds(event.payload.get("starts_at"), event.occurred_at),
+            event.offset_minutes,
+        )
+        if starts_at.date() != target_date:
+            continue
+        sessions[event.source_record_id or event.event_id] = event
+    return sum(
+        _as_int(event.payload.get("duration_minutes"))
+        for event in sessions.values()
+    )
+
+
+def _exercise_series(
+    events: list[HealthEvent],
+    target_date: date,
+    *,
+    days: int = 7,
+) -> list[float | None]:
+    return [
+        float(_exercise_minutes_for_date(events, target_date - timedelta(days=offset)))
+        for offset in range(days - 1, -1, -1)
+    ]
+
+
+def _activity_minutes_for_date(
+    events: list[HealthEvent],
+    target_date: date,
+) -> int | None:
+    event = _latest_event(events, "health.activity_minutes_daily", target_date)
+    if not event:
+        return None
+    return max(0, _as_int(event.payload.get("activity_minutes")))
+
+
+def _activity_minutes_series(
+    events: list[HealthEvent],
+    target_date: date,
+    *,
+    days: int = 7,
+) -> list[float | None]:
+    values: list[float | None] = []
+    for offset in range(days - 1, -1, -1):
+        value = _activity_minutes_for_date(
+            events,
+            target_date - timedelta(days=offset),
+        )
+        values.append(float(value) if value is not None else None)
+    return values
+
+
+def _has_activity_minutes(
+    events: list[HealthEvent],
+    start_date: date,
+    end_date: date,
+) -> bool:
+    return any(
+        event.event_type == "health.activity_minutes_daily"
+        and start_date <= _event_date(event) <= end_date
+        for event in events
+    )
+
+
+def _wake_regularity_text(values: Iterable[float]) -> str:
+    numbers = list(values)
+    if len(numbers) < 3:
+        return ""
+    variation = round(statistics.pstdev(numbers))
+    if variation <= 20:
+        return f"醒来时间较规律，波动约 {variation} 分钟"
+    if variation <= 45:
+        return f"醒来时间有波动，约 {variation} 分钟"
+    return f"醒来时间波动较大，约 {variation} 分钟"
+
+
 def _sleep_series(
     events: list[HealthEvent],
     target_date: date,
@@ -436,7 +640,7 @@ def _visual_metric(
 
 def _visualization_section(window: str, metrics: list[dict[str, Any]]) -> str:
     payload = json.dumps(
-        {"w": window, "m": metrics[:6]},
+        {"w": window, "m": metrics[:_MAX_VISUAL_METRICS]},
         ensure_ascii=False,
         separators=(",", ":"),
     )
@@ -448,7 +652,7 @@ def _summary_with_visualization(
     window: str,
     metrics: list[dict[str, Any]],
 ) -> str:
-    for count in range(min(6, len(metrics)), 0, -1):
+    for count in range(min(_MAX_VISUAL_METRICS, len(metrics)), 0, -1):
         summary = "\n\n".join(
             [*sections, _visualization_section(window, metrics[:count])]
         )
@@ -479,10 +683,82 @@ def build_morning_card(events: list[HealthEvent], local_now: datetime) -> Health
     starts_local = _local_datetime(starts_at, sleep_events[0].offset_minutes)
     ends_local = _local_datetime(ends_at, sleep_events[0].offset_minutes)
     quality = _sleep_quality(duration, deep, awake)
+    target_date = local_now.date()
+    recent_sleep = _sleep_values(
+        events,
+        target_date - timedelta(days=6),
+        target_date,
+    )
+    previous_sleep = _sleep_values(
+        events,
+        target_date - timedelta(days=13),
+        target_date - timedelta(days=7),
+    )
+    recent_sleep_average = _average(recent_sleep)
+    previous_sleep_average = _average(previous_sleep)
+    sleep_trend = ""
+    if len(recent_sleep) >= 3 and recent_sleep_average > 0:
+        sleep_trend = (
+            f"近 7 晚平均 {_duration_text(round(recent_sleep_average))}"
+            + (
+                _change_text(
+                    recent_sleep_average,
+                    previous_sleep_average,
+                    " 分钟",
+                    stable_at=10,
+                    period="前 7 晚",
+                )
+                if len(previous_sleep) >= 3
+                else ""
+            )
+            + "。"
+        )
+    wake_values = [
+        value
+        for value in _wake_series(events, target_date)
+        if value is not None
+    ]
+    wake_minutes = _wake_minutes_for_date(events, target_date)
+    wake_regularity = _wake_regularity_text(wake_values)
+    recent_resting_heart = _metric_values(
+        events,
+        "health.resting_heart_rate_daily",
+        "average_bpm",
+        target_date - timedelta(days=6),
+        target_date,
+    )
+    previous_resting_heart = _metric_values(
+        events,
+        "health.resting_heart_rate_daily",
+        "average_bpm",
+        target_date - timedelta(days=13),
+        target_date - timedelta(days=7),
+    )
+    recent_resting_average = _average(recent_resting_heart)
+    previous_resting_average = _average(previous_resting_heart)
 
     overview = [
         f"昨晚 {_clock_text(starts_local)}–{_clock_text(ends_local)}，共 {_duration_text(duration)}，质量{quality}。"
     ]
+    if sleep_trend:
+        overview.append(sleep_trend)
+    if wake_minutes is not None and wake_regularity:
+        overview.append(f"今天 {_clock_from_minutes(wake_minutes)} 醒来，{wake_regularity}。")
+    if recent_resting_average > 0:
+        resting_trend = (
+            f"静息心率近 7 天平均 {recent_resting_average:.0f} bpm"
+            + (
+                _change_text(
+                    recent_resting_average,
+                    previous_resting_average,
+                    " bpm",
+                )
+                if len(previous_resting_heart) >= 3
+                else ""
+            )
+            + "。"
+        )
+        overview.append(resting_trend)
     if deep > 0 or rem > 0 or awake > 0:
         overview.append(
             f"深睡 {_duration_text(deep)} · REM {_duration_text(rem)} · 夜醒 {_duration_text(awake)}"
@@ -512,6 +788,7 @@ def build_morning_card(events: list[HealthEvent], local_now: datetime) -> Health
             else "来自 Health Connect。"
         )
     )
+    deep_ratio = round(deep / duration * 100) if duration > 0 and deep > 0 else 0
     metrics = [
         _visual_metric(
             "sleep",
@@ -521,20 +798,61 @@ def build_morning_card(events: list[HealthEvent], local_now: datetime) -> Health
             series=_sleep_series(events, local_now.date(), "duration"),
             chart="ratio",
         ),
-        _visual_metric(
-            "deep_sleep",
-            deep,
-            _duration_text(deep),
-            series=_sleep_series(events, local_now.date(), "deep"),
-        ),
+    ]
+    if deep_ratio > 0:
+        metrics.append(
+            _visual_metric(
+                "deep_ratio",
+                deep_ratio,
+                str(deep_ratio),
+                series=_deep_ratio_series(events, target_date),
+                chart="columns",
+            )
+        )
+    metrics.append(
         _visual_metric(
             "awake",
             awake,
             _duration_text(awake),
-            series=_sleep_series(events, local_now.date(), "awake"),
+            series=_sleep_series(events, target_date, "awake"),
             chart="line",
-        ),
-    ]
+        )
+    )
+    if wake_minutes is not None:
+        metrics.append(
+            _visual_metric(
+                "wake_time",
+                wake_minutes,
+                _clock_from_minutes(wake_minutes),
+                series=_wake_series(events, target_date),
+                chart="line",
+            )
+        )
+    if recent_resting_average > 0:
+        resting_today = _latest_event(
+            events,
+            "health.resting_heart_rate_daily",
+            target_date,
+        )
+        resting_value = (
+            _as_float(resting_today.payload.get("average_bpm"))
+            if resting_today
+            else recent_resting_average
+        )
+        metrics.append(
+            _visual_metric(
+                "resting_heart",
+                resting_value,
+                f"{resting_value:.0f}",
+                series=_series_for_metric(
+                    events,
+                    "health.resting_heart_rate_daily",
+                    "average_bpm",
+                    target_date,
+                ),
+                chart="columns",
+            )
+        )
     summary = _summary_with_visualization(
         [
             "【睡眠概览】\n" + "\n".join(overview),
@@ -740,6 +1058,87 @@ def build_daily_health_card(events: list[HealthEvent], local_now: datetime) -> H
         name = _EXERCISE_NAMES.get(raw_name, raw_name)
         exercise_lines.append(f"{name} {minutes} 分钟")
 
+    recent_start = target_date - timedelta(days=6)
+    previous_start = target_date - timedelta(days=13)
+    previous_end = target_date - timedelta(days=7)
+    recent_steps = _metric_values(
+        events,
+        "health.steps_30d",
+        "steps",
+        recent_start,
+        target_date,
+    )
+    previous_steps = _metric_values(
+        events,
+        "health.steps_30d",
+        "steps",
+        previous_start,
+        previous_end,
+    )
+    recent_calories = _metric_values(
+        events,
+        "health.active_calories_daily",
+        "active_calories_kcal",
+        recent_start,
+        target_date,
+    )
+    previous_calories = _metric_values(
+        events,
+        "health.active_calories_daily",
+        "active_calories_kcal",
+        previous_start,
+        previous_end,
+    )
+    recent_exercise = [
+        _exercise_minutes_for_date(events, target_date - timedelta(days=offset))
+        for offset in range(6, -1, -1)
+    ]
+    previous_exercise = [
+        _exercise_minutes_for_date(events, target_date - timedelta(days=offset))
+        for offset in range(13, 6, -1)
+    ]
+    has_activity_minutes = _has_activity_minutes(
+        events,
+        previous_start,
+        target_date,
+    )
+    recent_activity_minutes = [
+        _activity_minutes_for_date(events, target_date - timedelta(days=offset))
+        for offset in range(6, -1, -1)
+    ]
+    previous_activity_minutes = [
+        _activity_minutes_for_date(events, target_date - timedelta(days=offset))
+        for offset in range(13, 6, -1)
+    ]
+    available_recent_activity_minutes = [
+        value for value in recent_activity_minutes if value is not None
+    ]
+    available_previous_activity_minutes = [
+        value for value in previous_activity_minutes if value is not None
+    ]
+    recent_resting_heart = _metric_values(
+        events,
+        "health.resting_heart_rate_daily",
+        "average_bpm",
+        recent_start,
+        target_date,
+    )
+    previous_resting_heart = _metric_values(
+        events,
+        "health.resting_heart_rate_daily",
+        "average_bpm",
+        previous_start,
+        previous_end,
+    )
+    recent_steps_average = _average(recent_steps)
+    recent_calories_average = _average(recent_calories)
+    recent_exercise_average = _average(recent_exercise)
+    previous_exercise_average = _average(previous_exercise)
+    recent_activity_average = _average(available_recent_activity_minutes)
+    previous_activity_average = _average(available_previous_activity_minutes)
+    recent_resting_average = _average(recent_resting_heart)
+    previous_resting_average = _average(previous_resting_heart)
+
     overview = [
         f"• 步数：{steps or '设备未提供'}",
         f"• 心率：{heart or '设备未提供'}",
@@ -754,6 +1153,77 @@ def build_daily_health_card(events: list[HealthEvent], local_now: datetime) -> H
         f"• 距离：{distance or '设备未提供'}",
         f"• 爬楼：{floors or '设备未提供'}",
     ]
+    recent_trends: list[str] = []
+    if len(recent_steps) >= 3:
+        recent_trends.append(
+            f"• 步数：近 7 天日均 {recent_steps_average:,.0f} 步"
+            + (
+                _change_text(
+                    recent_steps_average,
+                    _average(previous_steps),
+                    " 步",
+                )
+                if len(previous_steps) >= 3
+                else ""
+            )
+        )
+    if len(recent_calories) >= 3:
+        recent_trends.append(
+            f"• 活动热量：近 7 天日均 {recent_calories_average:.0f} 千卡"
+            + (
+                _change_text(
+                    recent_calories_average,
+                    _average(previous_calories),
+                    " 千卡",
+                )
+                if len(previous_calories) >= 3
+                else ""
+            )
+        )
+    if has_activity_minutes and available_recent_activity_minutes:
+        recent_trends.append(
+            f"• 中高强度活动：近 7 天日均 {recent_activity_average:.0f} 分钟"
+            + (
+                _change_text(
+                    recent_activity_average,
+                    previous_activity_average,
+                    " 分钟/天",
+                    stable_at=3,
+                )
+                if available_previous_activity_minutes
+                else ""
+            )
+        )
+    elif any(recent_exercise) or any(previous_exercise):
+        recent_exercise_total = sum(recent_exercise)
+        previous_exercise_total = sum(previous_exercise)
+        exercise_sessions = sum(1 for minutes in recent_exercise if minutes > 0)
+        recent_trends.append(
+            f"• 运动：近 7 天 {exercise_sessions} 天有记录，共 {recent_exercise_total} 分钟"
+            + (
+                _change_text(
+                    recent_exercise_average,
+                    previous_exercise_average,
+                    " 分钟/天",
+                    stable_at=3,
+                )
+                if previous_exercise_total > 0
+                else ""
+            )
+        )
+    if len(recent_resting_heart) >= 3:
+        recent_trends.append(
+            f"• 静息心率：近 7 天平均 {recent_resting_average:.0f} bpm"
+            + (
+                _change_text(
+                    recent_resting_average,
+                    previous_resting_average,
+                    " bpm",
+                )
+                if len(previous_resting_heart) >= 3
+                else ""
+            )
+        )
 
     advice: list[str] = []
     if sleep_events and sleep_duration < 360:
@@ -768,7 +1238,15 @@ def build_daily_health_card(events: list[HealthEvent], local_now: datetime) -> H
         advice.append("今天离常见活动目标不远，再补一段 10–15 分钟步行就够。")
     elif steps:
         advice.append("今天的活动量已经不错，晚上优先恢复和按时入睡。")
-    if exercise_events and exercise_minutes < 20:
+    if has_activity_minutes:
+        today_active_minutes = recent_activity_minutes[-1]
+        if today_active_minutes is None:
+            advice.append("今天没有同步到中高强度活动数据，明天可按状态预留 20–30 分钟活动。")
+        elif today_active_minutes < 20:
+            advice.append("今天中高强度活动偏少，明天预留一段完整的 20–30 分钟活动。")
+        elif today_active_minutes >= 60:
+            advice.append("今天中高强度活动已经较充足，晚上优先补水和恢复。")
+    elif exercise_events and exercise_minutes < 20:
         advice.append("今天的运动时长较短，明天可预留一段完整的 20–30 分钟活动。")
     elif not exercise_events:
         advice.append("明天挑一个容易执行的时段，安排 20 分钟步行或低强度运动。")
@@ -807,6 +1285,87 @@ def build_daily_health_card(events: list[HealthEvent], local_now: datetime) -> H
                 chart="line",
             )
         )
+    calories_event = _latest_event(
+        events,
+        "health.active_calories_daily",
+        target_date,
+    )
+    if calories_event:
+        calories_value = _as_float(
+            calories_event.payload.get("active_calories_kcal")
+        )
+        if calories_value > 0:
+            visual_metrics.append(
+                _visual_metric(
+                    "calories",
+                    calories_value,
+                    f"{calories_value:.0f}",
+                    series=_series_for_metric(
+                        events,
+                        "health.active_calories_daily",
+                        "active_calories_kcal",
+                        target_date,
+                    ),
+                    chart="columns",
+                )
+            )
+    today_activity_minutes = recent_activity_minutes[-1]
+    if has_activity_minutes and today_activity_minutes is not None:
+        visual_metrics.append(
+            _visual_metric(
+                "activity_minutes",
+                today_activity_minutes,
+                f"{today_activity_minutes:.0f}",
+                series=_activity_minutes_series(events, target_date),
+                chart="columns",
+            )
+        )
+    elif exercise_events:
+        visual_metrics.append(
+            _visual_metric(
+                "exercise_minutes",
+                exercise_minutes,
+                str(exercise_minutes),
+                series=_exercise_series(events, target_date),
+                chart="columns",
+            )
+        )
+    if recent_resting_average > 0:
+        resting_today = _latest_event(
+            events,
+            "health.resting_heart_rate_daily",
+            target_date,
+        )
+        resting_value = (
+            _as_float(resting_today.payload.get("average_bpm"))
+            if resting_today
+            else recent_resting_average
+        )
+        visual_metrics.append(
+            _visual_metric(
+                "resting_heart",
+                resting_value,
+                f"{resting_value:.0f}",
+                series=_series_for_metric(
+                    events,
+                    "health.resting_heart_rate_daily",
+                    "average_bpm",
+                    target_date,
+                ),
+                chart="columns",
+            )
+        )
+    if sleep_events:
+        visual_metrics.append(
+            _visual_metric(
+                "sleep",
+                sleep_duration,
+                _duration_text(sleep_duration),
+                target=480,
+                series=_sleep_series(events, target_date, "duration"),
+                chart="ratio",
+            )
+        )
     heart_event = _latest_event(events, "health.heart_rate_daily", target_date)
     if heart_event:
         heart_value = _as_float(heart_event.payload.get("average_bpm"))
@@ -842,18 +1401,24 @@ def build_daily_health_card(events: list[HealthEvent], local_now: datetime) -> H
                     chart="columns",
                 )
             )
-    if sleep_events:
-        visual_metrics.append(
-            _visual_metric(
-                "sleep",
-                sleep_duration,
-                _duration_text(sleep_duration),
-                target=480,
-                series=_sleep_series(events, target_date, "duration"),
-                chart="ratio",
+    if stress_event:
+        stress_value = _as_float(stress_event.payload.get("average_score"))
+        if stress_value > 0:
+            visual_metrics.append(
+                _visual_metric(
+                    "stress",
+                    stress_value,
+                    f"{stress_value:.0f}",
+                    series=_series_for_metric(
+                        events,
+                        "health.stress_daily",
+                        "average_score",
+                        target_date,
+                    ),
+                    chart="line",
+                )
             )
-        )
-    if standing_event:
+    if len(visual_metrics) < _MAX_VISUAL_METRICS and standing_event:
         stand_hours = _as_int(standing_event.payload.get("stand_hours"))
         visual_metrics.append(
             _visual_metric(
@@ -878,6 +1443,7 @@ def build_daily_health_card(events: list[HealthEvent], local_now: datetime) -> H
         [
             "【今日概览】\n" + "\n".join(overview),
             "【运动与活动】\n" + "\n".join(activity),
+            *(["【近 7 天】\n" + "\n".join(recent_trends)] if recent_trends else []),
             "【改善建议】\n" + "\n".join(f"• {item}" for item in advice[:3]),
             "【数据说明】\n"
             + _source_note(health_data_events)
@@ -940,6 +1506,358 @@ def build_daily_health_card(events: list[HealthEvent], local_now: datetime) -> H
             local_now.replace(hour=19, minute=0, second=0, microsecond=0).timestamp()
         ),
         evidence=tuple(evidence),
+    )
+
+
+def build_weekly_health_card(
+    events: list[HealthEvent],
+    local_now: datetime,
+) -> HealthCard | None:
+    if local_now.weekday() != 0 or local_now.hour < 10:
+        return None
+    events = _preferred_events(events)
+    through = local_now.date() - timedelta(days=1)
+    recent_start = through - timedelta(days=6)
+    previous_start = through - timedelta(days=13)
+    previous_end = through - timedelta(days=7)
+
+    recent_sleep = _sleep_values(events, recent_start, through)
+    previous_sleep = _sleep_values(events, previous_start, previous_end)
+    recent_steps = _metric_values(
+        events,
+        "health.steps_30d",
+        "steps",
+        recent_start,
+        through,
+    )
+    previous_steps = _metric_values(
+        events,
+        "health.steps_30d",
+        "steps",
+        previous_start,
+        previous_end,
+    )
+    recent_calories = _metric_values(
+        events,
+        "health.active_calories_daily",
+        "active_calories_kcal",
+        recent_start,
+        through,
+    )
+    previous_calories = _metric_values(
+        events,
+        "health.active_calories_daily",
+        "active_calories_kcal",
+        previous_start,
+        previous_end,
+    )
+    recent_exercise = [
+        _exercise_minutes_for_date(events, through - timedelta(days=offset))
+        for offset in range(6, -1, -1)
+    ]
+    previous_exercise = [
+        _exercise_minutes_for_date(events, through - timedelta(days=offset))
+        for offset in range(13, 6, -1)
+    ]
+    has_activity_minutes = _has_activity_minutes(
+        events,
+        previous_start,
+        through,
+    )
+    recent_activity_minutes = [
+        _activity_minutes_for_date(events, through - timedelta(days=offset))
+        for offset in range(6, -1, -1)
+    ]
+    previous_activity_minutes = [
+        _activity_minutes_for_date(events, through - timedelta(days=offset))
+        for offset in range(13, 6, -1)
+    ]
+    available_recent_activity_minutes = [
+        value for value in recent_activity_minutes if value is not None
+    ]
+    available_previous_activity_minutes = [
+        value for value in previous_activity_minutes if value is not None
+    ]
+    recent_resting_heart = _metric_values(
+        events,
+        "health.resting_heart_rate_daily",
+        "average_bpm",
+        recent_start,
+        through,
+    )
+    previous_resting_heart = _metric_values(
+        events,
+        "health.resting_heart_rate_daily",
+        "average_bpm",
+        previous_start,
+        previous_end,
+    )
+
+    recent_sleep_average = _average(recent_sleep)
+    previous_sleep_average = _average(previous_sleep)
+    recent_steps_average = _average(recent_steps)
+    previous_steps_average = _average(previous_steps)
+    recent_calories_average = _average(recent_calories)
+    previous_calories_average = _average(previous_calories)
+    recent_exercise_total = sum(recent_exercise)
+    previous_exercise_total = sum(previous_exercise)
+    recent_activity_average = _average(available_recent_activity_minutes)
+    previous_activity_average = _average(available_previous_activity_minutes)
+    recent_resting_average = _average(recent_resting_heart)
+    previous_resting_average = _average(previous_resting_heart)
+
+    trends: list[str] = []
+    if len(recent_sleep) >= 3:
+        sleep_line = (
+            f"• 睡眠：近 7 晚平均 {_duration_text(round(recent_sleep_average))}"
+        )
+        if len(previous_sleep) >= 3:
+            sleep_line += _change_text(
+                recent_sleep_average,
+                previous_sleep_average,
+                " 分钟",
+                stable_at=10,
+                period="前 7 晚",
+            )
+        wake_values = [
+            value
+            for value in _wake_series(events, through)
+            if value is not None
+        ]
+        wake_regularity = _wake_regularity_text(wake_values)
+        if wake_regularity:
+            sleep_line += f"；{wake_regularity}"
+        trends.append(sleep_line)
+    if len(recent_steps) >= 3:
+        step_line = f"• 活动：日均 {recent_steps_average:,.0f} 步"
+        if len(previous_steps) >= 3:
+            step_line += _change_text(
+                recent_steps_average,
+                previous_steps_average,
+                " 步",
+            )
+        if len(recent_calories) >= 3:
+            step_line += f"；日均活动热量 {recent_calories_average:.0f} 千卡"
+            if len(previous_calories) >= 3:
+                step_line += _change_text(
+                    recent_calories_average,
+                    previous_calories_average,
+                    " 千卡",
+                    stable_at=10,
+                )
+        trends.append(step_line)
+    if has_activity_minutes and available_recent_activity_minutes:
+        activity_line = (
+            f"• 中高强度活动：日均 {recent_activity_average:.0f} 分钟"
+        )
+        if available_previous_activity_minutes:
+            activity_line += _change_text(
+                recent_activity_average,
+                previous_activity_average,
+                " 分钟/天",
+                stable_at=3,
+            )
+        trends.append(activity_line)
+    elif recent_exercise_total > 0 or previous_exercise_total > 0:
+        exercise_days = sum(1 for minutes in recent_exercise if minutes > 0)
+        exercise_line = (
+            f"• 运动：{exercise_days} 天有记录，共 {recent_exercise_total} 分钟"
+        )
+        if previous_exercise_total > 0:
+            exercise_line += _change_text(
+                _average(recent_exercise),
+                _average(previous_exercise),
+                " 分钟/天",
+                stable_at=3,
+            )
+        trends.append(exercise_line)
+    if len(recent_resting_heart) >= 3:
+        recovery_line = f"• 恢复：静息心率平均 {recent_resting_average:.0f} bpm"
+        if len(previous_resting_heart) >= 3:
+            recovery_line += _change_text(
+                recent_resting_average,
+                previous_resting_average,
+                " bpm",
+            )
+        trends.append(recovery_line)
+    if not trends:
+        return None
+
+    advice: list[str] = []
+    if recent_sleep_average and recent_sleep_average < 360:
+        advice.append("下周先固定起床时间，并把入睡提前 30–45 分钟，优先补连续睡眠。")
+    elif (
+        previous_sleep_average
+        and recent_sleep_average + 15 < previous_sleep_average
+    ):
+        advice.append("睡眠时长较前一周下降，选两天提前收尾晚间安排，先补回 15–30 分钟。")
+    if (
+        previous_steps_average
+        and recent_steps_average < previous_steps_average * 0.9
+    ):
+        advice.append("日均步数较前一周下降，下周挑 3 天各补一段 15–20 分钟步行。")
+    elif recent_steps_average and recent_steps_average < 6000:
+        advice.append("把目标拆小：每天午间或晚饭后走 10–15 分钟，比周末一次补量更容易坚持。")
+    if (
+        previous_resting_average
+        and recent_resting_average >= previous_resting_average + 3
+    ):
+        advice.append("静息心率较前一周抬升，下周先减少连续高强度安排，并保证睡眠和恢复日。")
+    if has_activity_minutes:
+        if recent_activity_average < 20:
+            advice.append("下周把中高强度活动补到每天约 20–30 分钟，先从 2–3 天开始。")
+    elif recent_exercise_total < 60:
+        advice.append("下周安排两段 20–30 分钟的低到中等强度活动，先建立稳定节奏。")
+    if not advice:
+        advice.append("主要指标保持稳定，下周延续当前睡眠与活动节奏，不需要额外加量。")
+
+    source_events = [
+        event
+        for event in events
+        if event.event_type != "health.sync_window"
+        and recent_start <= _event_date(event) <= through
+    ]
+    visual_metrics: list[dict[str, Any]] = []
+    if recent_steps:
+        visual_metrics.append(
+            _visual_metric(
+                "steps",
+                recent_steps_average,
+                f"{recent_steps_average:,.0f}",
+                target=8000,
+                series=_series_for_metric(
+                    events,
+                    "health.steps_30d",
+                    "steps",
+                    through,
+                ),
+                chart="columns",
+            )
+        )
+    if recent_sleep:
+        visual_metrics.append(
+            _visual_metric(
+                "sleep",
+                recent_sleep_average,
+                _duration_text(round(recent_sleep_average)),
+                target=480,
+                series=_sleep_series(events, through, "duration"),
+                chart="columns",
+            )
+        )
+    if recent_calories:
+        visual_metrics.append(
+            _visual_metric(
+                "calories",
+                recent_calories_average,
+                f"{recent_calories_average:.0f}",
+                series=_series_for_metric(
+                    events,
+                    "health.active_calories_daily",
+                    "active_calories_kcal",
+                    through,
+                ),
+                chart="columns",
+            )
+        )
+    if has_activity_minutes and available_recent_activity_minutes:
+        visual_metrics.append(
+            _visual_metric(
+                "activity_minutes",
+                recent_activity_average,
+                f"{recent_activity_average:.0f}",
+                series=_activity_minutes_series(events, through),
+                chart="columns",
+            )
+        )
+    elif recent_exercise_total > 0:
+        visual_metrics.append(
+            _visual_metric(
+                "exercise_minutes",
+                recent_exercise_total,
+                str(recent_exercise_total),
+                series=_exercise_series(events, through),
+                chart="columns",
+            )
+        )
+    if recent_resting_heart:
+        visual_metrics.append(
+            _visual_metric(
+                "resting_heart",
+                recent_resting_average,
+                f"{recent_resting_average:.0f}",
+                series=_series_for_metric(
+                    events,
+                    "health.resting_heart_rate_daily",
+                    "average_bpm",
+                    through,
+                ),
+                chart="columns",
+            )
+        )
+    deep_ratios = [
+        value
+        for value in _deep_ratio_series(events, through)
+        if value is not None
+    ]
+    if deep_ratios:
+        deep_ratio_average = _average(deep_ratios)
+        visual_metrics.append(
+            _visual_metric(
+                "deep_ratio",
+                deep_ratio_average,
+                f"{deep_ratio_average:.0f}",
+                series=_deep_ratio_series(events, through),
+                chart="columns",
+            )
+        )
+    if not visual_metrics:
+        return None
+
+    summary = _summary_with_visualization(
+        [
+            "【趋势摘要】\n" + "\n".join(trends),
+            "【下周建议】\n" + "\n".join(f"• {item}" for item in advice[:3]),
+            "【数据说明】\n"
+            + _source_note(source_events)
+            + "健康周报比较截至昨天的两个 7 天周期，只用于生活方式参考。",
+        ],
+        "weekly",
+        visual_metrics,
+    )
+    title = "健康周报"
+    if recent_steps:
+        title += f"：日均 {recent_steps_average:,.0f} 步"
+    elif recent_sleep:
+        title += f"：睡眠 {_duration_text(round(recent_sleep_average))}"
+    evidence = tuple(
+        TodayEvidenceInput(
+            source_type="mobile_event",
+            reference=event.event_id,
+            title=_EVENT_TITLES.get(event.event_type, "健康指标"),
+            excerpt=(
+                f"{event.payload.get('date') or _event_date(event).isoformat()}"
+                " · 小米运动健康云端记录"
+            ),
+            occurred_at=event.occurred_at,
+        )
+        for event in sorted(
+            source_events,
+            key=lambda item: (item.observed_at, item.occurred_at),
+            reverse=True,
+        )[:12]
+    )
+    return HealthCard(
+        dedupe_key=f"auto:health:weekly:{local_now.date().isoformat()}",
+        title=title,
+        summary=summary,
+        why_now="每 7 天回看睡眠、活动量与恢复趋势，比只看单日波动更适合调整下周节奏。",
+        action_prompt=(
+            "基于这份 7 天健康趋势，给我 1–3 个下周可执行的生活方式建议；"
+            "不要做医疗诊断，缺少数据时直接说明。"
+        ),
+        occurred_at=int(local_now.timestamp()),
+        evidence=evidence,
     )
 
 
@@ -1237,6 +2155,7 @@ def build_health_cards(
     cards = [
         build_morning_card(events, local_now),
         build_daily_health_card(events, local_now),
+        build_weekly_health_card(events, local_now),
         *build_daytime_alert_cards(events, local_now),
     ]
     return [card for card in cards if card is not None]
@@ -1407,6 +2326,7 @@ __all__ = [
     "build_daily_health_card",
     "build_health_cards",
     "build_morning_card",
+    "build_weekly_health_card",
     "parse_health_events",
     "publish_health_today_cards",
 ]

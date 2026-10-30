@@ -1,10 +1,13 @@
 package com.octopmobile.app.ui.chat
 
 import android.Manifest
+import android.content.ClipData
+import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.Uri
+import android.os.Build
 import android.provider.MediaStore
 import android.text.format.DateUtils
 import android.widget.Toast
@@ -70,16 +73,20 @@ import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Description
+import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.ExpandLess
 import androidx.compose.material.icons.filled.ExpandMore
+import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.Image
 import androidx.compose.material.icons.filled.KeyboardVoice
 import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.PhotoCamera
 import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.Stop
+import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Checkbox
@@ -96,6 +103,7 @@ import androidx.compose.material3.LocalContentColor
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.MenuDefaults
 import androidx.compose.material3.ModalDrawerSheet
+import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.ModalNavigationDrawer
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextFieldDefaults
@@ -172,6 +180,7 @@ import com.octopmobile.app.data.db.MessageEntity
 import com.octopmobile.app.data.db.MessageStatus
 import com.octopmobile.app.data.db.ThreadEntity
 import com.octopmobile.app.data.model.HitlPending
+import com.octopmobile.app.data.model.ChatArtifact
 import com.octopmobile.app.data.model.HitlQuestion
 import com.octopmobile.app.data.model.HitlQuestionAnswer
 import com.octopmobile.app.data.model.HitlQuestionOption
@@ -195,6 +204,8 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.first
 import kotlinx.serialization.json.Json
 import java.io.File
+import java.text.DateFormat
+import java.util.Date
 
 /**
  * 单会话页（docs/spec.md §18 M1–M3）。
@@ -244,6 +255,11 @@ fun ChatScreen(
     val turnActive by viewModel.turnActive.collectAsStateWithLifecycle()
     val pending by viewModel.hitl.collectAsStateWithLifecycle()
     val attachments by viewModel.attachments.collectAsStateWithLifecycle()
+    val generatedArtifacts by viewModel.artifacts.collectAsStateWithLifecycle()
+    val previewingArtifactKey by viewModel.previewingArtifactKey.collectAsStateWithLifecycle()
+    val sharingArtifactKey by viewModel.sharingArtifactKey.collectAsStateWithLifecycle()
+    val artifactShare by viewModel.artifactShare.collectAsStateWithLifecycle()
+    val artifactPreview by viewModel.artifactPreview.collectAsStateWithLifecycle()
     val busy by viewModel.busy.collectAsStateWithLifecycle()
     val deletingTurnIds by viewModel.deletingTurnIds.collectAsStateWithLifecycle()
     val notice by viewModel.notice.collectAsStateWithLifecycle()
@@ -266,6 +282,8 @@ fun ChatScreen(
 
     // 消息与压缩标记合成一条渲染序列，标记插在「第一条晚于它的消息」之前（spec §8.2）。
     val rows = remember(messages, compactMarkers) { buildChatRows(messages, compactMarkers) }
+    val hasFeedContent = messages.isNotEmpty()
+    var artifactsOpen by remember(threadId) { mutableStateOf(false) }
     var deleteTarget by remember { mutableStateOf<ConversationTurn?>(null) }
 
     // 挂起期间服务端会拒绝新回合（`SteerRejectReason.HITL_PAUSED`），所以和「回合中」一样禁用输入。
@@ -315,6 +333,30 @@ fun ChatScreen(
     val cameraPermission = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission(),
     ) { granted -> if (granted) launchCamera() }
+
+    var pendingArtifactDownload by remember { mutableStateOf<ChatArtifact?>(null) }
+    val artifactStoragePermission = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission(),
+    ) { granted ->
+        val artifact = pendingArtifactDownload
+        pendingArtifactDownload = null
+        if (granted && artifact != null) {
+            viewModel.downloadArtifact(context, artifact)
+        } else if (!granted) {
+            Toast.makeText(context, R.string.err_storage_denied, Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    fun downloadArtifact(artifact: ChatArtifact) {
+        val needsStorage = Build.VERSION.SDK_INT <= Build.VERSION_CODES.P &&
+            !hasPermission(context, Manifest.permission.WRITE_EXTERNAL_STORAGE)
+        if (needsStorage) {
+            pendingArtifactDownload = artifact
+            artifactStoragePermission.launch(Manifest.permission.WRITE_EXTERNAL_STORAGE)
+        } else {
+            viewModel.downloadArtifact(context, artifact)
+        }
+    }
 
     // 输入框文本：`@专家名` 直接写在正文里（spec §23.5），发送时再解析成 `target_agent_ids`。
     var input by remember { mutableStateOf(TextFieldValue("")) }
@@ -409,8 +451,7 @@ fun ChatScreen(
         }
     }
 
-    // 「load-older」也是 LazyColumn 里的独立一项；算绝对下标时必须带上它，
-    // 否则新内容到达时会停在倒数第二条上。
+    // 「load-older」也是 LazyColumn 里的独立一项；算绝对下标时必须带上它。
     val lastItemIndex = rows.lastIndex + if (state.hasMore || state.loadingOlder) 1 else 0
 
     // 新内容到达时才滚动，且只在用户仍处于死区内时。这里读 atBottom 的当前值（不是在
@@ -419,8 +460,8 @@ fun ChatScreen(
     var positionedOnEntry by remember(threadId) { mutableStateOf(false) }
 
     // 首次进入必须主动落到最新：LazyColumn 默认从第 0 项开始，历史页一长就会停在旧消息。
-    LaunchedEffect(lastItemIndex, messages.isNotEmpty()) {
-        if (positionedOnEntry || messages.isEmpty()) return@LaunchedEffect
+    LaunchedEffect(lastItemIndex, hasFeedContent) {
+        if (positionedOnEntry || !hasFeedContent) return@LaunchedEffect
         snapshotFlow { listState.layoutInfo.totalItemsCount }
             .first { it > lastItemIndex }
         listState.scrollToLatest(lastItemIndex, animate = false)
@@ -428,7 +469,7 @@ fun ChatScreen(
     }
 
     LaunchedEffect(stickKey, positionedOnEntry) {
-        if (positionedOnEntry && atBottom && messages.isNotEmpty()) {
+        if (positionedOnEntry && atBottom && hasFeedContent) {
             listState.scrollToLatest(lastItemIndex, animate = false)
         }
     }
@@ -484,7 +525,9 @@ fun ChatScreen(
                     title = thread?.title?.takeIf { it.isNotBlank() }
                         ?: stringResource(R.string.chat_new_title),
                     turnActive = turnActive,
+                    artifactCount = generatedArtifacts.size,
                     connectionColor = connectionColor(connection),
+                    onOpenArtifacts = { artifactsOpen = true },
                     onOpenDrawer = {
                         hideKeyboard()
                         scope.launch { drawerState.open() }
@@ -555,14 +598,14 @@ fun ChatScreen(
             ) {
             when {
                 // 首屏没有本地内容时给气泡骨架屏，不是全屏转圈（spec §12、§19 第 15 条）。
-                messages.isEmpty() && state.historyLoading -> ChatSkeleton()
+                !hasFeedContent && state.historyLoading -> ChatSkeleton()
 
-                messages.isEmpty() && state.error != null -> CenteredNotice(
+                !hasFeedContent && state.error != null -> CenteredNotice(
                     text = state.error!!.asText(),
                     onRetry = viewModel::retry,
                 )
 
-                messages.isEmpty() -> CenteredNotice(
+                !hasFeedContent -> CenteredNotice(
                     text = stringResource(R.string.chat_no_messages),
                 )
 
@@ -613,7 +656,7 @@ fun ChatScreen(
             }
 
             // 用户上滑离开死区后就不再自动贴底，这时给出回到最新的入口。
-            if (!atBottom && messages.isNotEmpty()) {
+            if (!atBottom && hasFeedContent) {
                 FilledTonalIconButton(
                     onClick = {
                         scope.launch {
@@ -637,6 +680,11 @@ fun ChatScreen(
                 ChatNotice.Queued -> stringResource(R.string.chat_queued)
                 ChatNotice.AttachFailed -> stringResource(R.string.chat_attach_failed)
                 ChatNotice.TurnDeleted -> stringResource(R.string.chat_turn_deleted)
+                ChatNotice.DownloadStarted -> stringResource(R.string.chat_download_started)
+                ChatNotice.DownloadFailed -> stringResource(R.string.err_download_failed)
+                ChatNotice.PreviewFailed -> stringResource(R.string.chat_artifact_preview_failed)
+                ChatNotice.ShareFailed -> stringResource(R.string.chat_artifact_share_failed)
+                ChatNotice.ArtifactMissing -> stringResource(R.string.chat_artifact_missing)
                 is ChatNotice.Failure -> current.error.asText()
             }
             if (noticeText != null) {
@@ -659,6 +707,35 @@ fun ChatScreen(
         }
     }
 
+    if (artifactsOpen) {
+        ModalBottomSheet(onDismissRequest = { artifactsOpen = false }) {
+            ArtifactSheet(
+                artifacts = generatedArtifacts,
+                previewingKey = previewingArtifactKey,
+                sharingKey = sharingArtifactKey,
+                onPreview = { artifact ->
+                    hideKeyboard()
+                    viewModel.previewArtifact(context, artifact)
+                },
+                onDownload = ::downloadArtifact,
+                onShare = { artifact ->
+                    if (artifact.isHtml) {
+                        viewModel.shareArtifact(artifact)
+                    } else {
+                        viewModel.shareArtifactFile(context, artifact)
+                    }
+                },
+            )
+        }
+    }
+
+    artifactPreview?.let { preview ->
+        ArtifactPreviewDialog(
+            preview = preview,
+            onClose = viewModel::closeArtifactPreview,
+        )
+    }
+
     deleteTarget?.let { turn ->
         AlertDialog(
             onDismissRequest = { deleteTarget = null },
@@ -679,6 +756,89 @@ fun ChatScreen(
             },
         )
     }
+
+    artifactShare?.let { link ->
+        val expiresAt = remember(link.expiresAt) {
+            DateFormat.getDateTimeInstance(DateFormat.MEDIUM, DateFormat.SHORT)
+                .format(Date(link.expiresAt * 1000))
+        }
+        AlertDialog(
+            onDismissRequest = viewModel::clearArtifactShare,
+            title = { Text(stringResource(R.string.chat_artifact_share_title)) },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Text(
+                        text = stringResource(R.string.chat_artifact_share_public_notice),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Text(
+                        text = stringResource(R.string.chat_artifact_share_expires, expiresAt),
+                        style = MaterialTheme.typography.labelSmall,
+                    )
+                    Surface(
+                        shape = RoundedCornerShape(10.dp),
+                        color = MaterialTheme.colorScheme.surfaceContainerHighest,
+                    ) {
+                        Text(
+                            text = link.url,
+                            style = MaterialTheme.typography.bodySmall,
+                            modifier = Modifier.padding(10.dp),
+                        )
+                    }
+                    OutlinedButton(
+                        onClick = {
+                            val send = Intent(Intent.ACTION_SEND).apply {
+                                type = "text/plain"
+                                putExtra(Intent.EXTRA_TEXT, link.url)
+                            }
+                            context.startActivity(
+                                Intent.createChooser(
+                                    send,
+                                    context.getString(R.string.chat_artifact_share_system),
+                                ),
+                            )
+                        },
+                    ) {
+                        Icon(
+                            imageVector = Icons.Filled.Share,
+                            contentDescription = null,
+                            modifier = Modifier.size(18.dp),
+                        )
+                        Spacer(Modifier.width(8.dp))
+                        Text(stringResource(R.string.chat_artifact_share_system))
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE)
+                            as ClipboardManager
+                        clipboard.setPrimaryClip(
+                            ClipData.newPlainText(
+                                context.getString(R.string.chat_artifact_share_title),
+                                link.url,
+                            ),
+                        )
+                        Toast.makeText(
+                            context,
+                            R.string.chat_artifact_link_copied,
+                            Toast.LENGTH_SHORT,
+                        ).show()
+                        viewModel.clearArtifactShare()
+                    },
+                ) {
+                    Text(stringResource(R.string.chat_artifact_copy_link))
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = viewModel::clearArtifactShare) {
+                    Text(stringResource(R.string.action_close))
+                }
+            },
+        )
+    }
 }
 
 // ------------------------------------------------------------------ 输入区
@@ -687,7 +847,9 @@ fun ChatScreen(
 private fun ChatHeader(
     title: String,
     turnActive: Boolean,
+    artifactCount: Int,
     connectionColor: Color,
+    onOpenArtifacts: () -> Unit,
     onOpenDrawer: () -> Unit,
 ) {
     Row(
@@ -723,6 +885,20 @@ private fun ChatHeader(
                     color = MaterialTheme.colorScheme.primary,
                 )
             }
+        }
+        IconButton(onClick = onOpenArtifacts) {
+            Icon(
+                imageVector = Icons.Filled.Folder,
+                contentDescription = stringResource(
+                    R.string.chat_artifacts_open,
+                    artifactCount,
+                ),
+                tint = if (artifactCount > 0) {
+                    MaterialTheme.colorScheme.onSurface
+                } else {
+                    MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.55f)
+                },
+            )
         }
         Box(
             modifier = Modifier
@@ -1522,6 +1698,176 @@ private fun AttachmentChip(filename: String, onRemove: (() -> Unit)?) {
                         contentDescription = stringResource(R.string.action_cancel),
                         modifier = Modifier.size(14.dp),
                     )
+                }
+            }
+        }
+    }
+}
+
+/** 产物清单放在标题栏入口里，不再占据消息流或输入框上方的固定空间。 */
+@Composable
+private fun ArtifactSheet(
+    artifacts: List<ChatArtifact>,
+    previewingKey: String?,
+    sharingKey: String?,
+    onPreview: (ChatArtifact) -> Unit,
+    onDownload: (ChatArtifact) -> Unit,
+    onShare: (ChatArtifact) -> Unit,
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 20.dp)
+            .padding(bottom = 24.dp),
+    ) {
+        Text(
+            text = stringResource(R.string.chat_artifacts_title, artifacts.size),
+            style = MaterialTheme.typography.titleLarge,
+            fontWeight = FontWeight.SemiBold,
+        )
+        Spacer(Modifier.height(12.dp))
+        if (artifacts.isEmpty()) {
+            Surface(
+                shape = RoundedCornerShape(16.dp),
+                color = MaterialTheme.colorScheme.surfaceContainerLow,
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Text(
+                    text = stringResource(R.string.chat_artifacts_empty),
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(16.dp),
+                )
+            }
+        } else {
+            LazyColumn(
+                modifier = Modifier.heightIn(max = 520.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                items(artifacts, key = ChatArtifact::key) { artifact ->
+                    ArtifactRow(
+                        artifact = artifact,
+                        previewing = previewingKey == artifact.key,
+                        sharing = sharingKey == artifact.key,
+                        onPreview = { onPreview(artifact) },
+                        onDownload = { onDownload(artifact) },
+                        onShare = { onShare(artifact) },
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ArtifactRow(
+    artifact: ChatArtifact,
+    previewing: Boolean,
+    sharing: Boolean,
+    onPreview: () -> Unit,
+    onDownload: () -> Unit,
+    onShare: () -> Unit,
+) {
+    Surface(
+        shape = RoundedCornerShape(12.dp),
+        color = MaterialTheme.colorScheme.surfaceContainerLow,
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+    ) {
+        Column(modifier = Modifier.padding(10.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Surface(
+                    shape = RoundedCornerShape(9.dp),
+                    color = MaterialTheme.colorScheme.primaryContainer,
+                    contentColor = MaterialTheme.colorScheme.onPrimaryContainer,
+                    modifier = Modifier.size(42.dp),
+                ) {
+                    Box(contentAlignment = Alignment.Center) {
+                        Text(
+                            text = artifact.formatLabel.take(4),
+                            style = MaterialTheme.typography.labelSmall,
+                            fontWeight = FontWeight.Bold,
+                        )
+                    }
+                }
+                Spacer(Modifier.width(10.dp))
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = artifact.filename,
+                        style = MaterialTheme.typography.bodyMedium,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                    Spacer(Modifier.height(2.dp))
+                    Text(
+                        text = stringResource(
+                            if (artifact.isHtml) {
+                                R.string.chat_artifact_html_hint
+                            } else {
+                                R.string.chat_artifact_download_hint
+                            },
+                        ),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+            Spacer(Modifier.height(6.dp))
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.End,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                TextButton(
+                    onClick = onPreview,
+                    enabled = !previewing,
+                    contentPadding = PaddingValues(horizontal = 8.dp),
+                ) {
+                    if (previewing) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(16.dp),
+                            strokeWidth = 2.dp,
+                        )
+                    } else {
+                        Icon(
+                            imageVector = Icons.Filled.Visibility,
+                            contentDescription = null,
+                            modifier = Modifier.size(18.dp),
+                        )
+                    }
+                    Spacer(Modifier.width(6.dp))
+                    Text(stringResource(R.string.chat_artifact_preview))
+                }
+                TextButton(
+                    onClick = onDownload,
+                    contentPadding = PaddingValues(horizontal = 8.dp),
+                ) {
+                    Icon(
+                        imageVector = Icons.Filled.Download,
+                        contentDescription = null,
+                        modifier = Modifier.size(18.dp),
+                    )
+                    Spacer(Modifier.width(6.dp))
+                    Text(stringResource(R.string.chat_artifact_download))
+                }
+                TextButton(
+                    onClick = onShare,
+                    enabled = !sharing,
+                    contentPadding = PaddingValues(horizontal = 8.dp),
+                ) {
+                    if (sharing) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(16.dp),
+                            strokeWidth = 2.dp,
+                        )
+                    } else {
+                        Icon(
+                            imageVector = Icons.Filled.Share,
+                            contentDescription = null,
+                            modifier = Modifier.size(18.dp),
+                        )
+                    }
+                    Spacer(Modifier.width(6.dp))
+                    Text(stringResource(R.string.chat_artifact_share))
                 }
             }
         }
@@ -2367,7 +2713,7 @@ private fun MessageText(text: String, caret: Boolean, streaming: Boolean) {
     val shown = if (collapsible && !expanded) text.take(COLLAPSED_TEXT_CHARS) else text
     val body = shown + if (caret) CARET else ""
 
-    MarkdownText(markdown = body, contentColor = LocalContentColor.current)
+    ChatMarkdownText(markdown = body, contentColor = LocalContentColor.current)
 
     if (collapsible) {
         Text(
@@ -2399,7 +2745,7 @@ private fun MessageText(text: String, caret: Boolean, streaming: Boolean) {
  * `modifier` 显式传 `Modifier`：渲染器默认是 `fillMaxSize()`，那会让每条消息的气泡都被撑到宽度上限。
  */
 @Composable
-private fun MarkdownText(markdown: String, contentColor: Color) {
+internal fun ChatMarkdownText(markdown: String, contentColor: Color) {
     val markdownState = rememberMarkdownState(markdown)
     val parsed by markdownState.state.collectAsState()
 

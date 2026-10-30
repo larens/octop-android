@@ -1,0 +1,707 @@
+#!/usr/bin/env bash
+set -euo pipefail
+umask 077
+
+ROOT="${OCTOP_HOME:-/opt/octop}"
+RELEASES="$ROOT/releases"
+STATE="$ROOT/state/bluegreen"
+BACKUPS="$ROOT/backups"
+WORK="$ROOT/upgrade-work"
+SERVICE="${OCTOP_SERVICE:-octop}"
+CANDIDATE_PORT="${OCTOP_CANDIDATE_PORT:-18088}"
+HEALTH_URL="${OCTOP_HEALTH_URL:-http://127.0.0.1:8088/api/health}"
+KIT_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
+if [ -n "${OCTOP_PATCH_DIR:-}" ]; then
+  PATCH_DIR="$OCTOP_PATCH_DIR"
+elif [ -d "$KIT_DIR/octop-1.0.2" ]; then
+  PATCH_DIR="$KIT_DIR/octop-1.0.2"
+else
+  PATCH_DIR="$KIT_DIR/../octop-1.0.2"
+fi
+PYTHON3="${PYTHON3:-python3}"
+PACKAGE_SPEC="${OCTOP_PACKAGE_SPEC:-}"
+SEED_RELEASE="${OCTOP_SEED_RELEASE:-}"
+
+die() {
+  printf 'octop-bluegreen: %s\n' "$*" >&2
+  exit 1
+}
+
+need_root() {
+  [ "$(id -u)" -eq 0 ] || die "run as root"
+}
+
+mkdir -p "$RELEASES" "$STATE" "$BACKUPS" "$WORK"
+chmod 700 "$WORK"
+
+timestamp() {
+  date +%Y%m%d-%H%M%S
+}
+
+release_path() {
+  local id="$1"
+  [[ "$id" =~ ^[A-Za-z0-9._+-]+$ ]] || die "invalid release id: $id"
+  printf '%s/%s\n' "$RELEASES" "$id"
+}
+
+current_target() {
+  readlink -f "$STATE/current" 2>/dev/null || true
+}
+
+previous_target() {
+  readlink -f "$STATE/previous" 2>/dev/null || true
+}
+
+atomic_symlink() {
+  local target="$1"
+  local link="$2"
+  local temporary="${link}.next.$$"
+  ln -s "$target" "$temporary"
+  mv -Tf "$temporary" "$link"
+}
+
+ensure_managed_layout() {
+  if [ -L "$ROOT/venv" ]; then
+    [ -L "$STATE/current" ] || die "managed venv exists but current release link is missing"
+    return
+  fi
+  [ -d "$ROOT/venv" ] || die "missing $ROOT/venv"
+
+  local version
+  version="$("$ROOT/venv/bin/python" -c 'import octop; print(octop.__version__)')"
+  local id="${version}-baseline-$(timestamp)"
+  local release
+  release="$(release_path "$id")"
+  mkdir -p "$release"
+
+  printf 'Converting production venv into managed release %s\n' "$id"
+  systemctl stop "$SERVICE"
+  mv "$ROOT/venv" "$release/venv"
+  atomic_symlink "$release" "$STATE/current"
+  atomic_symlink "$RELEASES/current/venv" "$ROOT/venv"
+  ln -sfn "$release" "$RELEASES/current"
+
+  "$PYTHON3" - "$release/manifest.json" "$id" "$version" <<'PY'
+import json
+import sys
+import time
+from pathlib import Path
+
+path = Path(sys.argv[1])
+path.write_text(
+    json.dumps(
+        {
+            "release_id": sys.argv[2],
+            "octop_version": sys.argv[3],
+            "status": "active",
+            "created_at": int(time.time()),
+            "baseline": True,
+        },
+        indent=2,
+    )
+    + "\n",
+    encoding="utf-8",
+)
+PY
+  install_managed_update_dropin
+  systemctl start "$SERVICE"
+  wait_health "http://127.0.0.1:8088/api/health" 120
+}
+
+install_managed_update_dropin() {
+  local dropin="/etc/systemd/system/$SERVICE.service.d/20-managed-update.conf"
+  mkdir -p "$(dirname "$dropin")"
+  cat >"$dropin" <<'EOF'
+[Service]
+Environment="OCTOP_MANAGED_UPDATE=1"
+EOF
+  systemctl daemon-reload
+}
+
+wait_health() {
+  local url="$1"
+  local timeout="${2:-120}"
+  local elapsed=0
+  while [ "$elapsed" -lt "$timeout" ]; do
+    if curl -fsS --max-time 5 "$url" >/dev/null 2>&1; then
+      return 0
+    fi
+    sleep 2
+    elapsed=$((elapsed + 2))
+  done
+  return 1
+}
+
+stop_pid() {
+  local pid="${1:-}"
+  if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+    kill "$pid" 2>/dev/null || true
+    for _ in $(seq 1 20); do
+      kill -0 "$pid" 2>/dev/null || return 0
+      sleep 1
+    done
+    kill -9 "$pid" 2>/dev/null || true
+  fi
+}
+
+port_in_use() {
+  ss -ltn | awk '{print $4}' | grep -Eq "[:.]${CANDIDATE_PORT}$"
+}
+
+apply_patch_pack() {
+  local release="$1"
+  local source="$2"
+  local site="$release/venv/lib/python3.12/site-packages"
+  local patch_copy="$release/patch-pack"
+
+  rm -rf "$patch_copy"
+  cp -a "$source" "$patch_copy"
+  "$PYTHON3" "$KIT_DIR/reconcile_migrations.py" \
+    --custom-dir "$patch_copy/migrations" \
+    --migrations-dir "$site/octop/infra/db/migrations" \
+    --report "$release/migration-reconcile.json"
+
+  (
+    cd "$patch_copy"
+    export OCTOP_SITE_PACKAGES="$site"
+    export OCTOP_BACKUPS_DIR="$release/patch-backups"
+    export OCTOP_XIAOMI_HEALTH_DIR="$release/xiaomi-health"
+    export OCTOP_INSTALL_SYSTEMD=0
+    "$release/venv/bin/python" install_patch.py
+    "$release/venv/bin/python" install_memory_diaries.py
+    "$release/venv/bin/python" install_mobile_today_backport.py
+    "$release/venv/bin/python" install_mobile_ingest_router.py
+    "$release/venv/bin/python" install_artifact_shares.py
+    "$release/venv/bin/python" install_artifact_lifecycle.py
+    "$release/venv/bin/python" install_cron_isolation.py
+    "$release/venv/bin/python" install_cron_delivery_isolation.py
+    "$release/venv/bin/python" install_cron_today_cards.py
+    "$release/venv/bin/python" install_calendar_card_format.py
+    "$release/venv/bin/python" install_today_feedback_semantics.py
+    "$release/venv/bin/python" install_xiaomi_health_cloud.py
+  )
+  OCTOP_SITE_PACKAGES="$site" \
+    OCTOP_BACKUPS_DIR="$release/patch-backups" \
+    "$release/venv/bin/python" "$KIT_DIR/install_managed_update.py"
+
+  "$release/venv/bin/python" -m py_compile \
+    "$site/octop/api/routers/chat/history.py" \
+    "$site/octop/api/routers/update.py" \
+    "$site/octop/api/routers/mobile_ingest.py" \
+    "$site/octop/api/routers/interest_monitors.py" \
+    "$site/octop/api/routers/artifact_shares.py" \
+    "$site/octop/api/app.py" \
+    "$site/octop/api/deps.py" \
+    "$site/octop/infra/agents/middleware/thread_artifacts.py" \
+    "$site/octop/infra/db/repos/threads.py" \
+    "$site/octop/infra/agents/threads/turn_delete.py" \
+    "$site/octop/infra/today/cron_cards.py" \
+    "$site/octop/infra/today/health_cards.py" \
+    "$site/octop/infra/today/automatic.py" \
+    "$site/octop/infra/today/cards.py" \
+    "$site/octop/infra/interest_monitor.py" \
+    "$site/octop/infra/memory/mobile_diaries.py" \
+    "$site/octop/infra/memory/mobile_profiles.py"
+}
+
+run_patch_tests() {
+  local release="$1"
+  (
+    cd "$release/patch-pack"
+    "$release/venv/bin/python" test_memory_diaries.py
+    "$release/venv/bin/python" test_mobile_profiles.py
+    "$release/venv/bin/python" test_mobile_today_backport.py
+    "$release/venv/bin/python" test_artifact_shares.py
+    "$release/venv/bin/python" test_artifact_lifecycle.py
+    "$release/venv/bin/python" -m unittest -v \
+      test_cron_today_cards.py \
+      test_health_today_cards.py \
+      test_health_trend_memory.py \
+      test_today_feedback_semantics.py
+  )
+}
+
+verify_release() {
+  local release="$1"
+  local id
+  id="$(basename "$release")"
+  port_in_use && die "candidate port $CANDIDATE_PORT is already in use"
+
+  local work="$WORK/${id}-verify-$(timestamp)"
+  local home="$work/home"
+  local candidate_log="$work/candidate.log"
+  mkdir -p "$work"
+  chmod 700 "$work"
+
+  VERIFY_WORK="$work"
+  ACTIVE_VERIFY_PID=""
+  cleanup() {
+    stop_pid "$ACTIVE_VERIFY_PID"
+    if [ -n "${VERIFY_WORK:-}" ]; then
+      rm -rf "$VERIFY_WORK"
+    fi
+  }
+  trap cleanup EXIT INT TERM
+
+  "$release/venv/bin/python" "$KIT_DIR/prepare_candidate.py" \
+    --production-home "$ROOT" \
+    --candidate-home "$home" \
+    --port "$CANDIDATE_PORT" >"$work/prepare.json"
+
+  OCTOP_DB_PATH="$home/octop.db" \
+    "$release/venv/bin/python" "$release/patch-pack/migrate_existing_tasks.py" \
+    >"$work/task-migration.log"
+
+  (
+    export OCTOP_HOME="$home"
+    export OCTOP_MANAGED_UPDATE=1
+    export OCTOP_MOBILE_PROFILE_CACHE_DIR="$home/state/mobile-profiles"
+    exec "$release/venv/bin/octop" run \
+      --host 127.0.0.1 \
+      --port "$CANDIDATE_PORT" \
+      --log-level warning
+  ) >"$candidate_log" 2>&1 &
+  ACTIVE_VERIFY_PID=$!
+
+  if ! wait_health "http://127.0.0.1:$CANDIDATE_PORT/api/health" 150; then
+    tail -n 200 "$candidate_log" >&2 || true
+    die "candidate did not become healthy"
+  fi
+
+  "$release/venv/bin/python" "$KIT_DIR/smoke_test.py" \
+    --base-url "http://127.0.0.1:$CANDIDATE_PORT" \
+    --credentials "$home/candidate-test.json" >"$work/smoke.json"
+
+  "$release/venv/bin/python" - \
+    "$home/octop.db" "$work/database.json" "$home/candidate-test.json" <<'PY'
+import json
+import sqlite3
+import sys
+from pathlib import Path
+
+with sqlite3.connect(f"file:{sys.argv[1]}?mode=ro", uri=True) as conn:
+    result = {
+        "quick_check": conn.execute("PRAGMA quick_check").fetchone()[0],
+        "schema_version": conn.execute("SELECT version FROM _schema_version").fetchone()[0],
+        "agents_enabled": conn.execute("SELECT COUNT(*) FROM agents WHERE enabled = 1").fetchone()[0],
+        "enabled_agents": [
+            row[0] for row in conn.execute("SELECT agent_id FROM agents WHERE enabled = 1 ORDER BY id")
+        ],
+        "channels_enabled": conn.execute("SELECT COUNT(*) FROM channels WHERE enabled = 1").fetchone()[0],
+        "cron_enabled": conn.execute("SELECT COUNT(*) FROM cron_jobs WHERE enabled = 1").fetchone()[0],
+    }
+    for table in ("interest_monitors", "proactive_care_config"):
+        columns = {row[1] for row in conn.execute(f'PRAGMA table_info("{table}")')}
+        if "enabled" in columns:
+            result[f"{table}_enabled"] = conn.execute(
+                f'SELECT COUNT(*) FROM "{table}" WHERE enabled = 1'
+            ).fetchone()[0]
+if result["quick_check"] != "ok":
+    raise SystemExit(result)
+expected_agent = json.loads(Path(sys.argv[3]).read_text(encoding="utf-8"))["agent_id"]
+if result["enabled_agents"] != [expected_agent]:
+    raise SystemExit(f"candidate agent isolation mismatch: {result}")
+enabled_side_effects = {
+    key: value
+    for key, value in result.items()
+    if key.endswith("_enabled") and key != "agents_enabled" and value
+}
+if enabled_side_effects:
+    raise SystemExit(f"candidate side effects were not disabled: {result}")
+with open(sys.argv[2], "w", encoding="utf-8") as handle:
+    json.dump(result, handle, indent=2)
+    handle.write("\n")
+PY
+
+  stop_pid "$ACTIVE_VERIFY_PID"
+  ACTIVE_VERIFY_PID=""
+  trap - EXIT INT TERM
+
+  local acceptance="$release/acceptance"
+  mkdir -p "$acceptance"
+  cp "$work/prepare.json" "$acceptance/prepare.json"
+  cp "$work/task-migration.log" "$acceptance/task-migration.log"
+  cp "$candidate_log" "$acceptance/candidate.log"
+  cp "$work/smoke.json" "$acceptance/smoke.json"
+  cp "$work/database.json" "$acceptance/database.json"
+  date -Is >"$acceptance/accepted-at.txt"
+
+  "$PYTHON3" - "$release/manifest.json" "$id" <<'PY'
+import json
+import sys
+import time
+from pathlib import Path
+
+path = Path(sys.argv[1])
+data = json.loads(path.read_text())
+data.update(
+    {
+        "release_id": sys.argv[2],
+        "status": "verified",
+        "verified_at": int(time.time()),
+    }
+)
+path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+PY
+
+  rm -rf "$work"
+  printf 'Verified %s\n' "$id"
+}
+
+cmd_bootstrap() {
+  need_root
+  ensure_managed_layout
+  cmd_status
+}
+
+cmd_check() {
+  "$ROOT/venv/bin/python" - <<'PY'
+from octop.infra.setup.self_update import fetch_pypi_info
+
+info = fetch_pypi_info()
+if info is None:
+    raise SystemExit("could not reach PyPI")
+print(f"latest_any={info.version}")
+print(f"latest_stable={info.latest_stable}")
+PY
+}
+
+cmd_stage() {
+  need_root
+  [ "$#" -ge 1 ] || die "usage: stage VERSION [PATCH_DIR]"
+  local version="$1"
+  local patch_source="${2:-$PATCH_DIR}"
+  [[ "$version" =~ ^[0-9][0-9A-Za-z.+-]*$ ]] || die "invalid version: $version"
+  [ -d "$patch_source" ] || die "patch directory not found: $patch_source"
+  ensure_managed_layout
+
+  local id="${version}-$(timestamp)"
+  local release
+  release="$(release_path "$id")"
+  mkdir -p "$release"
+  chmod 700 "$release"
+
+  "$PYTHON3" - "$release/manifest.json" "$id" "$version" <<'PY'
+import json
+import sys
+import time
+from pathlib import Path
+
+Path(sys.argv[1]).write_text(
+    json.dumps(
+        {
+            "release_id": sys.argv[2],
+            "octop_version": sys.argv[3],
+            "status": "building",
+            "created_at": int(time.time()),
+        },
+        indent=2,
+    )
+    + "\n",
+    encoding="utf-8",
+)
+PY
+
+  if [ -n "$SEED_RELEASE" ]; then
+    [ -d "$SEED_RELEASE/venv" ] || die "seed release venv not found: $SEED_RELEASE"
+    local seed_version
+    seed_version="$("$SEED_RELEASE/venv/bin/python" -c 'import octop; print(octop.__version__)')"
+    [ "$seed_version" = "$version" ] ||
+      die "seed release is $seed_version, expected $version"
+    # A same-version patch can reuse the already-accepted dependency tree. Copy
+    # it instead of calling PyPI again; rewrite launcher shebangs so the new
+    # release never invokes the old virtualenv by accident.
+    cp -a "$SEED_RELEASE/venv" "$release/venv"
+    "$PYTHON3" - "$SEED_RELEASE/venv" "$release/venv" <<'PY'
+import sys
+from pathlib import Path
+
+old = str(Path(sys.argv[1]) / "bin/python").encode()
+new = str(Path(sys.argv[2]) / "bin/python").encode()
+prefix = b"#!" + old
+for path in (Path(sys.argv[2]) / "bin").iterdir():
+    if path.is_symlink() or not path.is_file():
+        continue
+    data = path.read_bytes()
+    if data.startswith(prefix):
+        path.write_bytes(b"#!" + new + data[len(prefix):])
+PY
+  else
+    uv venv --python 3.12 "$release/venv"
+    uv pip install \
+      --link-mode=copy \
+      --python "$release/venv/bin/python" \
+      "${PACKAGE_SPEC:-octop==$version}"
+  fi
+  uv pip freeze --python "$release/venv/bin/python" >"$release/requirements.lock"
+  apply_patch_pack "$release" "$patch_source"
+  run_patch_tests "$release"
+  verify_release "$release"
+  printf '%s\n' "$id"
+}
+
+cmd_verify() {
+  need_root
+  [ "$#" -eq 1 ] || die "usage: verify RELEASE_ID"
+  local release
+  release="$(release_path "$1")"
+  [ -d "$release" ] || die "release not found: $1"
+  verify_release "$release"
+}
+
+backup_database() {
+  local destination="$1"
+  "$ROOT/venv/bin/python" - "$ROOT/octop.db" "$destination" <<'PY'
+import sqlite3
+import sys
+
+source = sqlite3.connect(f"file:{sys.argv[1]}?mode=ro", uri=True)
+target = sqlite3.connect(sys.argv[2])
+try:
+    source.backup(target)
+finally:
+    target.close()
+    source.close()
+PY
+}
+
+restore_database() {
+  local source="$1"
+  rm -f "$ROOT/octop.db-wal" "$ROOT/octop.db-shm"
+  cp "$source" "$ROOT/octop.db"
+}
+
+cmd_promote() {
+  need_root
+  [ "$#" -eq 1 ] || die "usage: promote RELEASE_ID"
+  ensure_managed_layout
+  local id="$1"
+  local release
+  release="$(release_path "$id")"
+  [ -d "$release" ] || die "release not found: $id"
+  [ -f "$release/acceptance/smoke.json" ] || die "release has not passed acceptance"
+  local before
+  before="$(current_target)"
+  [ "$before" != "$release" ] || die "release is already active"
+  local previous_before
+  previous_before="$(previous_target)"
+
+  verify_release "$release"
+  local stamp
+  stamp="$(timestamp)"
+  local backup="$BACKUPS/pre-promote-$id-$stamp.db"
+  cp "$release/manifest.json" "$release/manifest.pre-promote.json"
+  backup_database "$backup"
+  chmod 600 "$backup"
+
+  local promotion_started=0
+  local promotion_committed=0
+  local promotion_rollback_done=0
+  rollback_failed_promotion() {
+    local status=$?
+    if [ "$promotion_started" -eq 1 ] &&
+      [ "$promotion_committed" -eq 0 ] &&
+      [ "$promotion_rollback_done" -eq 0 ]; then
+      promotion_rollback_done=1
+      set +e
+      printf 'Promotion failed; restoring release %s and database backup %s\n' "$before" "$backup" >&2
+      systemctl stop "$SERVICE"
+      restore_database "$backup"
+      atomic_symlink "$before" "$STATE/current"
+      atomic_symlink "$before" "$RELEASES/current"
+      if [ -n "$previous_before" ]; then
+        atomic_symlink "$previous_before" "$STATE/previous"
+      else
+        rm -f "$STATE/previous"
+      fi
+      install_managed_update_dropin
+      systemctl start "$SERVICE"
+      if wait_health "http://127.0.0.1:8088/api/health" 150; then
+        printf 'Previous release %s is healthy again\n' "$before" >&2
+      else
+        printf 'Automatic recovery did not restore health; inspect octop.service immediately\n' >&2
+      fi
+    fi
+    exit "$status"
+  }
+  trap 'exit 130' INT
+  trap 'exit 143' TERM
+  trap rollback_failed_promotion EXIT
+
+  systemctl stop "$SERVICE"
+  promotion_started=1
+  OCTOP_DB_PATH="$ROOT/octop.db" \
+    "$release/venv/bin/python" "$release/patch-pack/migrate_existing_tasks.py" \
+    >"$release/acceptance/promote-task-migration.log"
+
+  if [ -n "$before" ]; then
+    atomic_symlink "$before" "$STATE/previous"
+  fi
+  install_managed_update_dropin
+  atomic_symlink "$release" "$STATE/current"
+  atomic_symlink "$release" "$RELEASES/current"
+  systemctl start "$SERVICE"
+
+  wait_health "http://127.0.0.1:8088/api/health" 150 ||
+    die "promotion local health check failed"
+  wait_health "$HEALTH_URL" 60 ||
+    die "promotion public health check failed"
+
+  "$PYTHON3" - "$release/manifest.json" "$before" "$stamp" <<'PY'
+import json
+import sys
+import time
+from pathlib import Path
+
+path = Path(sys.argv[1])
+data = json.loads(path.read_text())
+data.update(
+    {
+        "status": "active",
+        "promoted_at": int(time.time()),
+        "previous_release": sys.argv[2],
+        "promotion_id": sys.argv[3],
+    }
+)
+path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+PY
+  promotion_committed=1
+  trap - EXIT INT TERM
+  printf 'Promoted %s\n' "$id"
+}
+
+cmd_rollback() {
+  need_root
+  ensure_managed_layout
+  local target="${1:-}"
+  if [ -z "$target" ]; then
+    target="$(previous_target)"
+  fi
+  [ -n "$target" ] || die "no previous release recorded"
+  [ -d "$target" ] || die "rollback release not found: $target"
+  local active
+  active="$(current_target)"
+  [ "$target" != "$active" ] || die "target is already active"
+
+  local stamp
+  stamp="$(timestamp)"
+  backup_database "$BACKUPS/rollback-$stamp.db"
+
+  local previous_before
+  previous_before="$(previous_target)"
+  local rollback_started=0
+  local rollback_committed=0
+  local rollback_recovered=0
+  recover_failed_rollback() {
+    local status=$?
+    if [ "$rollback_started" -eq 1 ] &&
+      [ "$rollback_committed" -eq 0 ] &&
+      [ "$rollback_recovered" -eq 0 ]; then
+      rollback_recovered=1
+      set +e
+      printf 'Rollback failed; restoring release %s and database backup %s\n' "$active" "$BACKUPS/rollback-$stamp.db" >&2
+      systemctl stop "$SERVICE"
+      restore_database "$BACKUPS/rollback-$stamp.db"
+      atomic_symlink "$active" "$STATE/current"
+      atomic_symlink "$active" "$RELEASES/current"
+      if [ -n "$previous_before" ]; then
+        atomic_symlink "$previous_before" "$STATE/previous"
+      else
+        rm -f "$STATE/previous"
+      fi
+      systemctl start "$SERVICE"
+      if wait_health "http://127.0.0.1:8088/api/health" 150; then
+        printf 'Original release %s is healthy again\n' "$active" >&2
+      else
+        printf 'Automatic recovery did not restore health; inspect octop.service immediately\n' >&2
+      fi
+    fi
+    exit "$status"
+  }
+  trap 'exit 130' INT
+  trap 'exit 143' TERM
+  trap recover_failed_rollback EXIT
+
+  systemctl stop "$SERVICE"
+  rollback_started=1
+  atomic_symlink "$active" "$STATE/previous"
+  atomic_symlink "$target" "$STATE/current"
+  atomic_symlink "$target" "$RELEASES/current"
+  systemctl start "$SERVICE"
+  wait_health "http://127.0.0.1:8088/api/health" 150 ||
+    die "rollback health check failed"
+  rollback_committed=1
+  trap - EXIT INT TERM
+  printf 'Rolled back to %s\n' "$(basename "$target")"
+}
+
+cmd_status() {
+  local current
+  local previous
+  current="$(current_target)"
+  previous="$(previous_target)"
+  printf 'root=%s\n' "$ROOT"
+  printf 'service=%s state=%s\n' "$SERVICE" "$(systemctl is-active "$SERVICE" 2>/dev/null || true)"
+  printf 'current=%s\n' "${current:-none}"
+  printf 'previous=%s\n' "${previous:-none}"
+  printf 'venv=%s\n' "$(readlink -f "$ROOT/venv" 2>/dev/null || printf 'unmanaged')"
+  printf 'octop_version=%s\n' "$("$ROOT/venv/bin/python" -c 'import octop; print(octop.__version__)')"
+  printf 'local_health=%s\n' "$(curl -fsS --max-time 5 http://127.0.0.1:8088/api/health 2>/dev/null || printf 'unhealthy')"
+  printf 'public_health=%s\n' "$(curl -fsS --max-time 10 "$HEALTH_URL" 2>/dev/null || printf 'unhealthy')"
+  printf 'managed_update=%s\n' "$(systemctl show "$SERVICE" -p Environment | grep -q OCTOP_MANAGED_UPDATE=1 && printf enabled || printf disabled)"
+}
+
+cmd_list() {
+  find "$RELEASES" -mindepth 2 -maxdepth 2 -name manifest.json -printf '%h\n' 2>/dev/null |
+    sort |
+    while IFS= read -r release; do
+      "$PYTHON3" - "$release/manifest.json" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+data = json.loads(Path(sys.argv[1]).read_text())
+print(
+    f"{data.get('release_id', Path(sys.argv[1]).parent.name)}\t"
+    f"{data.get('octop_version', '?')}\t{data.get('status', '?')}"
+)
+PY
+    done
+}
+
+usage() {
+  cat <<'EOF'
+Usage: octop-bluegreen COMMAND
+
+Commands:
+  bootstrap               Convert the current venv to blue-green layout
+  check                   Show latest PyPI release information
+  stage VERSION [PATCH]   Build and verify a candidate release
+  verify RELEASE_ID       Re-run acceptance on a fresh database copy
+  promote RELEASE_ID      Test fresh state, switch atomically, verify, or rollback
+  rollback [RELEASE_ID]   Switch back to a previous release
+  status                  Show active release and health
+  list                    List staged releases
+EOF
+}
+
+command="${1:-}"
+shift || true
+case "$command" in
+  bootstrap|stage|verify|promote|rollback)
+    need_root
+    exec 9>/run/lock/octop-bluegreen.lock
+    flock -n 9 || die "another blue-green operation is running"
+    ;;
+esac
+case "$command" in
+  bootstrap) cmd_bootstrap "$@" ;;
+  check) cmd_check "$@" ;;
+  stage) cmd_stage "$@" ;;
+  verify) cmd_verify "$@" ;;
+  promote) cmd_promote "$@" ;;
+  rollback) cmd_rollback "$@" ;;
+  status) cmd_status "$@" ;;
+  list) cmd_list "$@" ;;
+  *) usage; exit 1 ;;
+esac

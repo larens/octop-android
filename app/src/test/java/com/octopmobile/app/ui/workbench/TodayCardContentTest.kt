@@ -149,7 +149,8 @@ class TodayCardContentTest {
                     evidenceJson = """
                         [
                           {"source_type":"web_search","event_type":"web.search_result","occurred_at":1,"privacy_class":"public_web","title":"AI Agent 新进展","url":"https://example.com/a"},
-                          {"source_type":"web_search","event_type":"web.search_result","occurred_at":2,"privacy_class":"public_web","title":"云计算容量变化","url":"https://example.com/b"}
+                          {"source_type":"web_search","event_type":"web.search_result","occurred_at":2,"privacy_class":"public_web","title":"云计算容量变化","url":"https://example.com/b"},
+                          {"source_type":"conversation","source_record_id":"thread-1","event_type":"conversation.context","occurred_at":3,"privacy_class":"private_user_content","title":"定时任务结果","excerpt":"完整执行记录保留在会话中。"}
                         ]
                     """.trimIndent(),
                 ),
@@ -186,6 +187,25 @@ class TodayCardContentTest {
 
         assertEquals(listOf("讨论明日发布节奏", "readable"), conversations.map { it.title })
         assertTrue(conversations.all { it.detail == null })
+    }
+
+    @Test
+    fun dailyReviewReplacesBareUrlThreadTitlesWithTheLatestReadableMessage() {
+        val conversations = todayConversationHighlights(
+            listOf(
+                thread("url-title", at(2026, 10, 27, 17, 30)).copy(
+                    title = "https://www.doubao.com/thread/xXhwdgBIV...",
+                    lastMessage = "已确认连接器恢复，并整理了后续动作。",
+                ),
+            ),
+            now,
+            zone,
+        )
+
+        assertEquals(
+            listOf("已确认连接器恢复，并整理了后续动作。"),
+            conversations.map { it.title },
+        )
     }
 
     @Test
@@ -227,6 +247,30 @@ class TodayCardContentTest {
         assertEquals(2, facts.size)
         assertEquals("GPT-6 Astra Pro", facts[0].title)
         assertTrue(facts[1].title.contains("只有摘要"))
+    }
+
+    @Test
+    fun sourceOnlyEvidenceTitlesFallBackToTheArticleHost() {
+        val evidence = decodeTodayCardEvidence(
+            """
+            [
+              {"source_type":"web_search","event_type":"web.search_result","occurred_at":1,"privacy_class":"public_web","title":"来源：；","url":"https://view.inews.qq.com/a/20261030A04MS300"},
+              {"source_type":"web_search","event_type":"web.search_result","occurred_at":2,"privacy_class":"public_web","title":"来源： ； · view.inews.qq.com","url":"https://view.inews.qq.com/a/20261030A01FDS00"},
+              {"source_type":"web_search","event_type":"web.search_result","occurred_at":3,"privacy_class":"public_web","title":"来源：；"}
+            ]
+            """.trimIndent(),
+        )
+
+        val facts = todayCardFacts(evidence)
+
+        assertEquals(listOf("view.inews.qq.com", "view.inews.qq.com"), facts.map { it.title })
+        assertEquals(
+            listOf(
+                "https://view.inews.qq.com/a/20261030A04MS300",
+                "https://view.inews.qq.com/a/20261030A01FDS00",
+            ),
+            facts.map { it.url },
+        )
     }
 
     @Test
@@ -420,6 +464,78 @@ class TodayCardContentTest {
 
         assertEquals(listOf("today-signal"), groups.current.map { it.id })
         assertEquals(listOf("yesterday-health"), groups.history.map { it.id })
+    }
+
+    @Test
+    fun todayEveningHealthHidesPreviousEveningCardsButKeepsMorningHistory() {
+        val cards = listOf(
+            card(
+                "yesterday-evening",
+                kind = "health",
+                occurredAt = at(2026, 10, 27, 19, 0),
+                summary = healthSummary("evening"),
+            ),
+            card(
+                "yesterday-morning",
+                kind = "health",
+                occurredAt = at(2026, 10, 27, 7, 30),
+                summary = healthSummary("morning"),
+            ),
+            card(
+                "today-evening",
+                kind = "health",
+                occurredAt = at(2026, 10, 28, 19, 0),
+                summary = healthSummary("evening"),
+            ),
+        )
+
+        val groups = groupTodayCards(cards, at(2026, 10, 28, 20, 0), zone)
+
+        assertEquals(listOf("today-evening"), groups.current.map { it.id })
+        assertEquals(listOf("yesterday-morning"), groups.history.map { it.id })
+    }
+
+    @Test
+    fun previousEveningHealthStaysVisibleUntilTodayEveningHealthArrives() {
+        val cards = listOf(
+            card(
+                "yesterday-evening",
+                kind = "health",
+                occurredAt = at(2026, 10, 27, 19, 0),
+                summary = healthSummary("evening"),
+            ),
+            card(
+                "today-morning",
+                kind = "health",
+                occurredAt = at(2026, 10, 28, 7, 30),
+                summary = healthSummary("morning"),
+            ),
+        )
+
+        val groups = groupTodayCards(cards, at(2026, 10, 28, 20, 0), zone)
+
+        assertEquals(listOf("yesterday-evening"), groups.history.map { it.id })
+    }
+
+    @Test
+    fun todayEveningHealthAlsoHidesLegacyCardsIdentifiedByTitle() {
+        val cards = listOf(
+            card(
+                "legacy-evening",
+                kind = "health",
+                occurredAt = at(2026, 10, 27, 19, 0),
+            ).copy(title = "晚间健康 · 12,379 步"),
+            card(
+                "today-evening",
+                kind = "health",
+                occurredAt = at(2026, 10, 28, 19, 0),
+                summary = healthSummary("evening"),
+            ),
+        )
+
+        val groups = groupTodayCards(cards, at(2026, 10, 28, 20, 0), zone)
+
+        assertTrue(groups.history.isEmpty())
     }
 
     @Test
@@ -688,11 +804,81 @@ class TodayCardContentTest {
         assertTrue(newsBriefing.isNewsRecommendationCard())
     }
 
+    @Test
+    fun failedCronPlaceholdersAreNeverRenderedAsTodayInformation() {
+        val groups = groupTodayCards(
+            listOf(
+                card(
+                    "failed-weather",
+                    kind = "briefing",
+                    occurredAt = at(2026, 10, 27, 7, 30),
+                    summary = "本次执行失败：服务器暂时不可用",
+                    actionState = "failed",
+                ),
+                card(
+                    "valid-weather",
+                    kind = "briefing",
+                    occurredAt = at(2026, 10, 27, 7, 0),
+                    summary = "【今日安排】09:30 产品评审",
+                    actionState = "completed",
+                ),
+            ),
+            at(2026, 10, 27, 9, 0),
+            zone,
+        )
+
+        assertEquals(listOf("valid-weather"), groups.current.map { it.id })
+    }
+
+    @Test
+    fun conversationFollowUpIsHiddenWhenAnySourceContainsAFailureMessage() {
+        val groups = groupTodayCards(
+            listOf(
+                card(
+                    "broken-conversations",
+                    kind = "conversation",
+                    occurredAt = at(2026, 10, 27, 8, 0),
+                    evidenceJson = """
+                        [
+                          {"source_type":"conversation","source_record_id":"thread-1","event_type":"conversation.context","occurred_at":1,"privacy_class":"private_user_content","title":"正常会话","excerpt":"已经形成明确结论，下一步继续验证。"},
+                          {"source_type":"conversation","source_record_id":"thread-2","event_type":"conversation.context","occurred_at":2,"privacy_class":"private_user_content","title":"失败会话","excerpt":"模型调用失败：file is not a database"}
+                        ]
+                    """.trimIndent(),
+                ),
+                card(
+                    "valid-briefing",
+                    kind = "briefing",
+                    occurredAt = at(2026, 10, 27, 7, 0),
+                    summary = "【今日安排】09:30 产品评审",
+                ),
+            ),
+            at(2026, 10, 27, 9, 0),
+            zone,
+        )
+
+        assertEquals(listOf("valid-briefing"), groups.current.map { it.id })
+    }
+
     private fun at(year: Int, month: Int, day: Int, hour: Int, minute: Int): Long =
         LocalDateTime.of(year, month, day, hour, minute)
             .atZone(zone)
             .toInstant()
             .toEpochMilli()
+
+    private fun healthSummary(window: String): String {
+        val metric = if (window == "morning") {
+            """{"k":"sleep","v":450,"d":"7 小时 30 分","u":"小时","t":480,"c":"ring"}"""
+        } else {
+            """{"k":"steps","v":7240,"d":"7,240","u":"步","t":8000,"c":"ring"}"""
+        }
+        return """
+            【健康概览】
+            今日状态平稳。
+
+            【健康可视化】
+            {"w":"$window","m":[$metric]}
+        """.trimIndent()
+    }
 
     private fun card(
         id: String,

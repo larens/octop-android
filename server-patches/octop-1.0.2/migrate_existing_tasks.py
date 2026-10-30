@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
+import os
 import sqlite3
 
 
-path = "/opt/octop/octop.db"
+path = os.environ.get("OCTOP_DB_PATH", "/opt/octop/octop.db")
 with sqlite3.connect(path) as conn:
     rows = conn.execute("SELECT cron_id, agent_id FROM cron_jobs").fetchall()
     for cron_id, agent_id in rows:

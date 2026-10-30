@@ -103,17 +103,24 @@ class MemoryRepository(private val dao: MemoryItemDao) {
  */
 class ServerMemoryRepository(private val api: OctopApi) {
 
-    suspend fun snapshot(agentId: String): ApiResult<ServerMemorySnapshot> {
-        val about = api.memoryTerminalAboutMe(agentId)
-        if (about is ApiResult.Failure) return about
-        val aboutValue = (about as ApiResult.Ok).value
-
+    suspend fun snapshot(
+        agentId: String,
+        refreshDiaries: Boolean = false,
+    ): ApiResult<ServerMemorySnapshot> {
         return supervisorScope {
+            val aboutDeferred = async { api.memoryTerminalAboutMe(agentId) }
             val focusDeferred = async { api.memoryTerminalCurrentFocus(agentId).valueOrNull() }
             val toldDeferred = async { api.memoryTerminalThingsYouToldMe(agentId).valueOrNull() }
             val entityDeferred = async { api.memoryTerminalEntities(agentId).valueOrNull() }
             val episodeDeferred = async { api.memoryEpisodes(agentId).valueOrNull() }
             val atomDeferred = async { api.memoryAtoms(agentId).valueOrNull() }
+            val diaryDeferred = async {
+                api.memoryDiaries(agentId, refresh = refreshDiaries).valueOrNull()
+            }
+
+            val about = aboutDeferred.await()
+            if (about is ApiResult.Failure) return@supervisorScope about
+            val aboutValue = (about as ApiResult.Ok).value
 
             val extras = awaitAll(
                 focusDeferred,
@@ -121,6 +128,7 @@ class ServerMemoryRepository(private val api: OctopApi) {
                 entityDeferred,
                 episodeDeferred,
                 atomDeferred,
+                diaryDeferred,
             )
 
             val focus = extras[0]
@@ -128,13 +136,14 @@ class ServerMemoryRepository(private val api: OctopApi) {
             val entities = extras[2]
             val episodes = extras[3]
             val atoms = extras[4]
+            val diaries = extras[5]
             val portrait = buildPortrait(aboutValue, focus, told)
             val archives = buildArchives(entities, atoms, portrait)
 
             ApiResult.Ok(
                 ServerMemorySnapshot(
                     portrait = portrait,
-                    episodes = parseEpisodes(episodes),
+                    episodes = parseDiaries(diaries).ifEmpty { parseEpisodes(episodes) },
                     archives = archives,
                 ),
             )
@@ -149,12 +158,16 @@ class ServerMemoryRepository(private val api: OctopApi) {
         val aboutTexts = extractProfileTexts(about).filter(::looksLikeProfileText)
         val toldTexts = extractProfileTexts(told, excludeScheduledTasks = true)
             .filter(::looksLikeProfileText)
-        val summary = aboutTexts
-            .ifEmpty { toldTexts }
-            .take(PORTRAIT_SUMMARY_MAX)
-            .joinToString(separator = "\n\n")
-            .let(::cleanProfileDisplayText)
-            .trim()
+        val profileSubject = extractProfileSubject(about)
+        val summary = extractProfileNarrative(about, profileSubject)
+            .ifBlank {
+                aboutTexts
+                    .ifEmpty { toldTexts }
+                    .take(PORTRAIT_SUMMARY_MAX)
+                    .joinToString(separator = "\n\n")
+                    .let(::cleanProfileDisplayText)
+                    .trim()
+            }
         val focusItems = extractProfileTexts(focus, excludeScheduledTasks = true)
             .ifEmpty { deriveHighlights(aboutTexts + toldTexts, onlyFocus = true) }
             .take(PORTRAIT_LIST_MAX)
@@ -165,9 +178,62 @@ class ServerMemoryRepository(private val api: OctopApi) {
         return MemoryPortrait(
             preferredAddress = extractPreferredAddress(about, told),
             summary = summary,
+            brief = extractProfileBrief(about).ifBlank { compactPortraitPreview(summary) },
             focus = focusItems,
             truths = truthItems,
         )
+    }
+
+    private fun extractProfileNarrative(about: JsonElement, subject: String?): String {
+        val payload = about as? JsonObject ?: return ""
+        val generated = firstText(payload, "profile_narrative")
+        if (!generated.isNullOrBlank()) return cleanProfileNarrative(generated, subject = null)
+        val raw = firstText(payload, "profile_markdown", "about_me")
+            ?: return ""
+        return cleanProfileNarrative(raw, subject)
+    }
+
+    private fun extractProfileBrief(about: JsonElement): String {
+        val payload = about as? JsonObject ?: return ""
+        return firstText(payload, "profile_brief")
+            ?.let { cleanProfileNarrative(it, subject = null) }
+            .orEmpty()
+    }
+
+    private fun compactPortraitPreview(summary: String): String {
+        val compact = summary.trim()
+        if (compact.isEmpty()) return ""
+        val paragraphs = compact.split(Regex("\\n\\s*\\n")).map(String::trim).filter(String::isNotEmpty)
+        val preview = paragraphs.take(2).joinToString("\n\n")
+        return if (preview.length <= PORTRAIT_BRIEF_MAX) {
+            preview
+        } else {
+            preview.take(PORTRAIT_BRIEF_MAX).trimEnd('，', '。', ',', '.') + "…"
+        }
+    }
+
+    private fun extractProfileSubject(about: JsonElement): String? {
+        val payload = about as? JsonObject ?: return null
+        return firstText(payload, "profile_subject", "canonical_name", "entity_name")
+            ?.takeIf { it.length in 1..40 }
+    }
+
+    private fun cleanProfileNarrative(raw: String, subject: String?): String {
+        var narrative = raw
+            .replace("&#10;", "\n")
+            .replace("&amp;#10;", "\n")
+            .replace("\\n", "\n")
+            .replace(Regex("\\s*\\((?:atom-)?[0-9a-f]{6,}(?:-[0-9a-f]+)*\\)"), "")
+            .replace(Regex("(?m)^\\s*#{1,6}\\s*"), "")
+            .replace(Regex("(?m)^\\s*[-*]\\s+"), "")
+            .replace("**", "")
+            .replace("\r", "\n")
+            .replace(Regex("\\n{3,}"), "\n\n")
+            .trim()
+        if (!subject.isNullOrBlank()) {
+            narrative = narrative.replace(subject, "你")
+        }
+        return narrative
     }
 
     private fun extractProfileTexts(
@@ -244,9 +310,14 @@ class ServerMemoryRepository(private val api: OctopApi) {
             .flatMap { itemObjects(it).asSequence() }
             .firstNotNullOfOrNull { item -> firstText(item, *structuredKeys.toTypedArray()) }
             ?.let(::cleanAddress)
+            ?.takeUnless(::isSelfReference)
             ?.let { return it }
 
-        val texts = payloads.flatMap { payload ->
+        val profileTexts = (about as? JsonObject)
+            ?.let { firstText(it, "profile_markdown", "profile_narrative", "about_me") }
+            ?.let(::listOf)
+            .orEmpty()
+        val texts = profileTexts + payloads.flatMap { payload ->
             itemObjects(payload)
                 .filterNot(::isScheduledTask)
                 .flatMap { item ->
@@ -257,7 +328,9 @@ class ServerMemoryRepository(private val api: OctopApi) {
         for (text in texts) {
             ADDRESS_PATTERNS.firstNotNullOfOrNull { pattern ->
                 pattern.find(text)?.groupValues?.getOrNull(1)?.let(::cleanAddress)
-            }?.let { return it }
+            }
+                ?.takeUnless(::isSelfReference)
+                ?.let { return it }
         }
         return null
     }
@@ -266,6 +339,9 @@ class ServerMemoryRepository(private val api: OctopApi) {
         .trim()
         .trim('「', '」', '“', '”', '"', '\'', '：', ':')
         .takeIf { it.length in 1..24 && it.any(Char::isLetter) }
+
+    private fun isSelfReference(value: String): Boolean =
+        value.trim() in setOf("你", "您", "我", "自己", "用户")
 
     private fun parseEpisodes(payload: JsonElement?): List<MemoryEpisode> {
         return itemObjects(payload)
@@ -302,6 +378,43 @@ class ServerMemoryRepository(private val api: OctopApi) {
             }
             .take(EPISODE_MAX)
     }
+
+    private fun parseDiaries(payload: JsonElement?): List<MemoryEpisode> {
+        return itemObjects(payload)
+            .mapNotNull { item ->
+                val summary = firstText(item, "summary", "story", "content", "text")
+                    ?: return@mapNotNull null
+                val dayKey = firstText(item, "period_key", "date")
+                MemoryEpisode(
+                    id = firstText(item, "id", "episode_id", "uuid")
+                        ?: stableEpisodeId(summary, item),
+                    title = firstText(item, "title", "headline", "subject")
+                        ?.takeUnless { it == summary },
+                    emotion = firstText(item, "emotion", "mood", "primary_emotion"),
+                    summary = summary,
+                    insight = firstText(item, "growth", "insight", "reflection", "learning")
+                        ?.takeUnless { it == summary },
+                    intensity = firstInt(item, "intensity", "intensity_score", "score", "level"),
+                    occurredAt = firstTimestamp(item, "occurred_at", "created_at", "updated_at", "timestamp")
+                        ?: dayKey?.let(::parseLocalDayStart),
+                )
+            }
+            .distinctBy { it.id }
+            .sortedWith(compareByDescending<MemoryEpisode> { it.occurredAt ?: Long.MIN_VALUE })
+            .distinctBy { episode ->
+                episode.occurredAt?.let {
+                    Instant.ofEpochMilli(it).atZone(ZoneId.systemDefault()).toLocalDate().toString()
+                } ?: "undated-${episode.id}"
+            }
+            .take(EPISODE_MAX)
+    }
+
+    private fun parseLocalDayStart(dayKey: String): Long? = runCatching {
+        java.time.LocalDate.parse(dayKey)
+            .atStartOfDay(ZoneId.systemDefault())
+            .toInstant()
+            .toEpochMilli()
+    }.getOrNull()
 
     private fun stableEpisodeId(summary: String, item: JsonObject): String =
         listOf(
@@ -605,9 +718,11 @@ class ServerMemoryRepository(private val api: OctopApi) {
             Regex("称(?:呼)?用户为[「“\\\"]?([^」”\\\"，,。；;]{1,24})"),
             Regex("(?:称呼我|叫我)(?:为|作|做|是|[：:])?[「“\\\"]?([^」”\\\"，,。；;\\s]{1,24})"),
             Regex("(?:惯用称呼|用户称呼)(?:是|为|[：:])[「“\\\"]?([^」”\\\"，,。；;]{1,24})"),
+            Regex("(?:被助手|助手|大家|别人|同事)?称(?:呼)?为[「“\\\"]?([^」”\\\"，,。；;）)]{1,24})"),
         )
         const val PORTRAIT_SUMMARY_MAX = 4
         const val PORTRAIT_LIST_MAX = 4
+        const val PORTRAIT_BRIEF_MAX = 180
         const val EPISODE_MAX = 60
         const val ARCHIVE_MAX = 8
         const val RECURSIVE_VALUE_LIMIT = 24
@@ -624,6 +739,7 @@ data class ServerMemorySnapshot(
 data class MemoryPortrait(
     val preferredAddress: String?,
     val summary: String,
+    val brief: String,
     val focus: List<String>,
     val truths: List<String>,
 )

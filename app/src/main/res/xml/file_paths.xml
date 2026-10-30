@@ -1,11 +1,13 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
-  FileProvider 能对外暴露的路径（拍照快捷方式用，见 AndroidManifest 里的 provider）。
-  只开 cacheDir/camera 一个子目录，拍完的照片读进内存上传后由 ChatViewModel 之外的
-  cache 清理机制自然回收，不需要额外权限。
+  FileProvider 能对外暴露的路径（拍照与会话产物预览共用，见 AndroidManifest 里的 provider）。
+  只开放 cacheDir 下两个临时子目录；文件由系统缓存清理机制自然回收，不需要额外权限。
 -->
 <paths>
     <cache-path
         name="camera"
         path="camera/" />
+    <cache-path
+        name="artifact_previews"
+        path="artifact_previews/" />
 </paths>

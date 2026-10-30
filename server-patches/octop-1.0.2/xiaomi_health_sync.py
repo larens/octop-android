@@ -217,6 +217,56 @@ def _daily_events(
     return drafts
 
 
+def _daily_goal_events(
+    client: MiHealthCloudClient,
+    start: datetime,
+    end: datetime,
+) -> list[EventDraft]:
+    reports = _latest_reports(
+        client.fetch_daily_reports(
+            "goal",
+            int(start.timestamp()),
+            int(end.timestamp()),
+            tag="daily_fitness",
+        )
+    )
+    drafts: list[EventDraft] = []
+    for day, report in sorted(reports.items()):
+        payload = parse_value(report)
+        active_minutes: int | None = None
+        goal_items = payload.get("goal_items")
+        if isinstance(goal_items, list):
+            for item in goal_items:
+                if (
+                    not isinstance(item, dict)
+                    or optional_int(item.get("field")) != 4
+                ):
+                    continue
+                active_minutes = optional_int(item.get("achieved_value"))
+                break
+        if active_minutes is None:
+            active_minutes = optional_int(payload.get("active_minutes"))
+        if active_minutes is None or active_minutes < 0:
+            continue
+        occurred_at = int(_day_start(day).timestamp() * 1000)
+        drafts.append(
+            EventDraft(
+                event_id=f"xiaomi-cloud:active-minutes:{day.isoformat()}",
+                source_record_id=f"daily_goal:{day.isoformat()}:active_minutes",
+                event_type="health.activity_minutes_daily",
+                occurred_at=occurred_at,
+                observed_at=_item_observed_ms(report, occurred_at),
+                payload=_event_payload(
+                    date=day.isoformat(),
+                    activity_minutes=active_minutes,
+                ),
+                title="小米运动健康云端",
+                summary=f"{day.isoformat()} · 中高强度活动 {active_minutes} 分钟",
+            )
+        )
+    return drafts
+
+
 def _sleep_events(
     client: MiHealthCloudClient,
     start: datetime,
@@ -308,7 +358,7 @@ def _daily_metric_events(
         payload = parse_value(item)
         raw_value = (
             payload.get("bpm")
-            if key == "heart_rate"
+            if key in ("heart_rate", "resting_heart_rate")
             else payload.get("spo2")
             if key == "spo2"
             else payload.get("stress")
@@ -331,7 +381,7 @@ def _daily_metric_events(
             "date": day.isoformat(),
             "measurements": len(numbers),
         }
-        if key == "heart_rate":
+        if key in ("heart_rate", "resting_heart_rate"):
             payload = _event_payload(
                 **common,
                 average_bpm=round(sum(numbers) / len(numbers)),
@@ -687,6 +737,13 @@ def sync(*, force_full: bool = False, publish_cards: bool = True) -> dict[str, i
         ) as client:
             drafts: list[EventDraft] = []
             drafts.extend(_daily_events(client, start, now))
+            try:
+                drafts.extend(_daily_goal_events(client, start, now))
+            except Exception:
+                LOG.warning(
+                    "Xiaomi daily activity goal is unavailable",
+                    exc_info=True,
+                )
             drafts.extend(_sleep_events(client, start, now))
             drafts.extend(
                 _daily_metric_events(
@@ -697,6 +754,21 @@ def sync(*, force_full: bool = False, publish_cards: bool = True) -> dict[str, i
                     now,
                 )
             )
+            try:
+                drafts.extend(
+                    _daily_metric_events(
+                        client,
+                        "resting_heart_rate",
+                        "health.resting_heart_rate_daily",
+                        start,
+                        now,
+                    )
+                )
+            except Exception:
+                LOG.warning(
+                    "Xiaomi resting heart rate is unavailable",
+                    exc_info=True,
+                )
             drafts.extend(
                 _daily_metric_events(
                     client,

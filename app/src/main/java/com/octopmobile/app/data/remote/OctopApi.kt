@@ -2,6 +2,8 @@ package com.octopmobile.app.data.remote
 
 import com.octopmobile.app.data.remote.dto.AgentDto
 import com.octopmobile.app.data.remote.dto.ApiErrorEnvelope
+import com.octopmobile.app.data.remote.dto.ArtifactShareBody
+import com.octopmobile.app.data.remote.dto.ArtifactShareDto
 import com.octopmobile.app.data.remote.dto.ConversationMode
 import com.octopmobile.app.data.remote.dto.CreateThreadResponse
 import com.octopmobile.app.data.remote.dto.CronJobCreateBody
@@ -159,6 +161,28 @@ class OctopApi(
         )
 
     /**
+     * 为会话里已经登记的 HTML 产物创建限时公开链接。
+     *
+     * 服务端只接受该 thread 已记录的 `artifact_refs`，不是任意 workspace 路径；公开页
+     * 无需登录，因此客户端必须把“任何人拿到链接都能查看”明确展示给用户。
+     */
+    suspend fun createArtifactShare(
+        agentId: String,
+        threadId: String,
+        body: ArtifactShareBody,
+    ): ApiResult<ArtifactShareDto> =
+        execute(
+            request = Request.Builder()
+                .url(url(API, AGENTS, agentId, THREADS, threadId, ARTIFACT_SHARES))
+                .post(
+                    json.encodeToString(ArtifactShareBody.serializer(), body)
+                        .toRequestBody(JSON_MEDIA_TYPE),
+                )
+                .build(),
+            deserializer = ArtifactShareDto.serializer(),
+        )
+
+    /**
      * 会话轨迹（`GET /api/agents/{agent_id}/threads/{thread_id}/trajectory`，
      * `routers/chat/trajectory.py:239-283`）。
      *
@@ -282,6 +306,7 @@ class OctopApi(
                 )
                 .build(),
             deserializer = JsonElement.serializer(),
+            readTimeoutSeconds = PROFILE_TIMEOUT_SECONDS,
         )
 
     /** 终端视图：当前关注。 */
@@ -328,6 +353,32 @@ class OctopApi(
                 )
                 .build(),
             deserializer = JsonElement.serializer(),
+        )
+
+    /**
+     * 按自然日生成的工作、学习与智能体成长日记。
+     *
+     * 旧版服务端没有这条路由；调用失败时仓库会回退到 Episode，避免记忆页整体不可用。
+     */
+    suspend fun memoryDiaries(
+        agentId: String,
+        days: Int = DEFAULT_DIARY_DAYS,
+        limit: Int = DEFAULT_DIARY_LIMIT,
+        refresh: Boolean = false,
+    ): ApiResult<JsonElement> =
+        execute(
+            request = Request.Builder()
+                .url(url(API, AGENTS, agentId, MEMORY, DIARIES, LIST))
+                .post(
+                    buildJsonObject {
+                        put("days", days)
+                        put("limit", limit)
+                        put("refresh", refresh)
+                    }.toString().toRequestBody(JSON_MEDIA_TYPE),
+                )
+                .build(),
+            deserializer = JsonElement.serializer(),
+            readTimeoutSeconds = DIARY_TIMEOUT_SECONDS,
         )
 
     /**
@@ -722,6 +773,7 @@ class OctopApi(
         private const val THREADS = "threads"
         private const val TURNS = "turns"
         private const val HISTORY = "history"
+        private const val ARTIFACT_SHARES = "artifact-shares"
         private const val TRAJECTORY = "trajectory"
         private const val READ = "read"
         private const val MEMORY = "memory"
@@ -731,6 +783,7 @@ class OctopApi(
         private const val THINGS_YOU_TOLD_ME = "things_you_told_me"
         private const val ENTITIES = "entities"
         private const val EPISODES = "episodes"
+        private const val DIARIES = "diaries"
         private const val ATOMS = "atoms"
         private const val LIST = "list"
         private const val UPLOAD = "upload"
@@ -752,6 +805,13 @@ class OctopApi(
         /** 画像与档案只需要首页摘要；日记列表多取一些，支持移动端直接翻阅。 */
         private const val DEFAULT_MEMORY_LIMIT = 6
         private const val DEFAULT_DIARY_LIMIT = 60
+        private const val DEFAULT_DIARY_DAYS = 7
+
+        /** 首次生成自然语言画像需要模型调用，不能复用普通 REST 的 30 秒读超时。 */
+        private const val PROFILE_TIMEOUT_SECONDS = 180L
+
+        /** 首次生成新日记可能需要多轮模型调用，不能复用普通 REST 的 30 秒读超时。 */
+        private const val DIARY_TIMEOUT_SECONDS = 180L
 
         /** 下载同理，再宽一点：服务端可能要先从 workspace 读文件再回传（docs/spec.md §13）。 */
         private const val DOWNLOAD_TIMEOUT_SECONDS = 240L

@@ -76,7 +76,7 @@ import java.time.ZoneId
 import java.util.Date
 import java.util.Locale
 
-private enum class MemoryPage { HOME, DIARIES, DIARY_DETAIL }
+private enum class MemoryPage { HOME, DIARIES, DIARY_DETAIL, PROFILE_DETAIL }
 
 /** 记忆页：画像是「我对你的了解」，日记是智能体每天根据会话形成的一页自我记录。 */
 @Composable
@@ -86,6 +86,7 @@ fun MemoryPane(
 ) {
     val viewModel: MemoryViewModel = viewModel(factory = MemoryViewModel.Factory)
     val state = viewModel.uiState
+    val snapshot = state.snapshot
     var page by remember { mutableStateOf(MemoryPage.HOME) }
     var selectedDiaryId by remember { mutableStateOf<String?>(null) }
 
@@ -119,11 +120,17 @@ fun MemoryPane(
             onBack = { page = MemoryPage.HOME },
             onOpenDiary = openDiary,
         )
+        page == MemoryPage.PROFILE_DETAIL && snapshot != null -> PortraitDetailPage(
+            portrait = snapshot.portrait,
+            updatedAt = latestMemoryActivity(snapshot),
+            onBack = { page = MemoryPage.HOME },
+        )
         else -> MemoryHome(
             state = state,
             onRefresh = viewModel::refresh,
             onOpenAllDiaries = { page = MemoryPage.DIARIES },
             onOpenDiary = openDiary,
+            onOpenProfile = { page = MemoryPage.PROFILE_DETAIL },
         )
     }
 }
@@ -134,6 +141,7 @@ private fun MemoryHome(
     onRefresh: () -> Unit,
     onOpenAllDiaries: () -> Unit,
     onOpenDiary: (MemoryEpisode) -> Unit,
+    onOpenProfile: () -> Unit,
 ) {
     val recentDiaries = remember(state.snapshot?.episodes) {
         recentDiaries(
@@ -189,6 +197,7 @@ private fun MemoryHome(
                 PortraitCard(
                     portrait = snapshot.portrait,
                     updatedAt = latestMemoryActivity(snapshot),
+                    onClick = onOpenProfile,
                 )
             }
         }
@@ -218,14 +227,28 @@ private fun MemoryHero(
             )
             .clipToBounds(),
     ) {
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(292.dp)
+                .background(
+                    Brush.radialGradient(
+                        listOf(
+                            MaterialTheme.colorScheme.primary.copy(alpha = 0.18f),
+                            MaterialTheme.colorScheme.tertiary.copy(alpha = 0.08f),
+                            Color.Transparent,
+                        ),
+                    ),
+                ),
+        )
         AgentHeroVideo(
             modifier = Modifier
                 .fillMaxWidth()
                 .height(292.dp)
                 .graphicsLayer {
-                    scaleX = 1.30f
-                    scaleY = 1.30f
-                    translationY = 32.dp.toPx()
+                    scaleX = 1.22f
+                    scaleY = 1.22f
+                    translationY = 26.dp.toPx()
                 },
         )
         Box(
@@ -312,7 +335,7 @@ private fun AgentHeroVideo(modifier: Modifier = Modifier) {
             ImageView(viewContext).apply {
                 scaleType = ImageView.ScaleType.FIT_CENTER
                 setBackgroundColor(android.graphics.Color.TRANSPARENT)
-                setImageResource(R.drawable.memory_agent_blink)
+                setImageResource(R.drawable.memory_agent_blink_soft)
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
                     (drawable as? AnimatedImageDrawable)?.apply {
                         repeatCount = AnimatedImageDrawable.REPEAT_INFINITE
@@ -334,10 +357,16 @@ private fun AgentHeroVideo(modifier: Modifier = Modifier) {
 private fun PortraitCard(
     portrait: com.octopmobile.app.data.repo.MemoryPortrait,
     updatedAt: Long?,
+    onClick: () -> Unit,
 ) {
+    val shape = RoundedCornerShape(26.dp)
     Surface(
-        modifier = Modifier.padding(horizontal = 16.dp).fillMaxWidth(),
-        shape = RoundedCornerShape(26.dp),
+        modifier = Modifier
+            .padding(horizontal = 16.dp)
+            .fillMaxWidth()
+            .clip(shape)
+            .clickable(onClick = onClick),
+        shape = shape,
         color = MaterialTheme.colorScheme.surface,
         tonalElevation = 1.dp,
         shadowElevation = 3.dp,
@@ -375,14 +404,97 @@ private fun PortraitCard(
                     }
                 }
             }
-            if (portrait.summary.isNotBlank()) {
-                Text(portrait.summary, style = MaterialTheme.typography.bodyLarge)
+            val preview = portrait.brief.ifBlank { portrait.summary }
+            if (preview.isNotBlank()) {
+                Text(
+                    preview,
+                    style = MaterialTheme.typography.bodyMedium.copy(
+                        lineHeight = MaterialTheme.typography.bodyMedium.lineHeight * 1.3f,
+                    ),
+                    maxLines = 6,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            } else {
+                if (portrait.focus.isNotEmpty()) {
+                    PortraitFacts(stringResource(R.string.memory_focus_title), portrait.focus)
+                }
+                if (portrait.truths.isNotEmpty()) {
+                    PortraitFacts(stringResource(R.string.memory_truths_title), portrait.truths)
+                }
             }
-            if (portrait.focus.isNotEmpty()) {
-                PortraitFacts(stringResource(R.string.memory_focus_title), portrait.focus)
+            Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    stringResource(R.string.memory_profile_view_detail),
+                    style = MaterialTheme.typography.labelLarge,
+                    color = MaterialTheme.colorScheme.primary,
+                )
+                Spacer(Modifier.weight(1f))
+                Icon(
+                    Icons.AutoMirrored.Filled.KeyboardArrowRight,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.primary,
+                )
             }
-            if (portrait.truths.isNotEmpty()) {
-                PortraitFacts(stringResource(R.string.memory_truths_title), portrait.truths)
+        }
+    }
+}
+
+@Composable
+private fun PortraitDetailPage(
+    portrait: com.octopmobile.app.data.repo.MemoryPortrait,
+    updatedAt: Long?,
+    onBack: () -> Unit,
+) {
+    val title = stringResource(
+        R.string.memory_profile_title,
+        portrait.preferredAddress ?: stringResource(R.string.memory_profile_self),
+    )
+    LazyColumn(
+        modifier = Modifier.fillMaxSize(),
+        contentPadding = PaddingValues(20.dp),
+        verticalArrangement = Arrangement.spacedBy(16.dp),
+    ) {
+        item { MemoryPageHeader(title, onBack) }
+        updatedAt?.let { timestamp ->
+            item {
+                Text(
+                    stringResource(
+                        R.string.memory_profile_updated,
+                        DateUtils.getRelativeTimeSpanString(timestamp).toString(),
+                    ),
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(horizontal = 4.dp),
+                )
+            }
+        }
+        item {
+            Surface(
+                shape = RoundedCornerShape(24.dp),
+                color = MaterialTheme.colorScheme.surface,
+                tonalElevation = 1.dp,
+                shadowElevation = 2.dp,
+            ) {
+                Column(
+                    modifier = Modifier.padding(20.dp),
+                    verticalArrangement = Arrangement.spacedBy(14.dp),
+                ) {
+                    if (portrait.summary.isNotBlank()) {
+                        Text(
+                            portrait.summary,
+                            style = MaterialTheme.typography.bodyLarge.copy(
+                                lineHeight = MaterialTheme.typography.bodyLarge.lineHeight * 1.32f,
+                            ),
+                        )
+                    } else {
+                        if (portrait.focus.isNotEmpty()) {
+                            PortraitFacts(stringResource(R.string.memory_focus_title), portrait.focus)
+                        }
+                        if (portrait.truths.isNotEmpty()) {
+                            PortraitFacts(stringResource(R.string.memory_truths_title), portrait.truths)
+                        }
+                    }
+                }
             }
         }
     }
@@ -478,7 +590,7 @@ private fun DiaryCard(diary: MemoryEpisode, onClick: () -> Unit) {
             .border(1.dp, accent.copy(alpha = 0.18f), shape)
             .clickable(onClick = onClick),
     ) {
-        Column(modifier = Modifier.padding(16.dp)) {
+        Column(modifier = Modifier.fillMaxSize().padding(16.dp)) {
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 verticalAlignment = Alignment.CenterVertically,
@@ -506,7 +618,8 @@ private fun DiaryCard(diary: MemoryEpisode, onClick: () -> Unit) {
                 diary.summary,
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
-                maxLines = 4,
+                modifier = Modifier.fillMaxWidth().weight(1f),
+                maxLines = 8,
                 overflow = TextOverflow.Ellipsis,
             )
         }
@@ -814,11 +927,13 @@ private fun emotionPresentation(raw: String): Pair<String, Color> = when (raw.tr
     "anxious", "anxiety" -> stringResource(R.string.memory_emotion_anxious) to MaterialTheme.colorScheme.error
     "happy", "joy", "joyful" -> stringResource(R.string.memory_emotion_happy) to MaterialTheme.colorScheme.tertiary
     "sad", "sadness" -> stringResource(R.string.memory_emotion_sad) to MaterialTheme.colorScheme.primary
-    "angry", "anger", "frustrated" -> stringResource(R.string.memory_emotion_angry) to MaterialTheme.colorScheme.error
+    "angry", "anger" -> stringResource(R.string.memory_emotion_angry) to MaterialTheme.colorScheme.error
+    "frustrated", "frustration" -> stringResource(R.string.memory_emotion_frustrated) to MaterialTheme.colorScheme.error
     "calm", "peaceful" -> stringResource(R.string.memory_emotion_calm) to MaterialTheme.colorScheme.tertiary
     "excited" -> stringResource(R.string.memory_emotion_excited) to MaterialTheme.colorScheme.tertiary
     "stressed", "stress", "overwhelmed" -> stringResource(R.string.memory_emotion_stressed) to MaterialTheme.colorScheme.error
     "tired", "fatigued" -> stringResource(R.string.memory_emotion_tired) to MaterialTheme.colorScheme.onSurfaceVariant
     "grateful", "gratitude" -> stringResource(R.string.memory_emotion_grateful) to MaterialTheme.colorScheme.tertiary
+    "reflective", "thoughtful" -> stringResource(R.string.memory_emotion_reflective) to MaterialTheme.colorScheme.primary
     else -> raw to MaterialTheme.colorScheme.onSurfaceVariant
 }

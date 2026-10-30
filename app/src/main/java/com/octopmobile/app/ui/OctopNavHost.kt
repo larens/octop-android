@@ -13,8 +13,14 @@ import androidx.navigation.navArgument
 import com.octopmobile.app.ui.chat.ChatScreen
 import com.octopmobile.app.ui.connect.ConnectScreen
 import com.octopmobile.app.ui.login.LoginScreen
+import com.octopmobile.app.ui.settings.AppearanceSettingsScreen
+import com.octopmobile.app.ui.settings.AboutSettingsScreen
 import com.octopmobile.app.ui.settings.MobileDataSettingsScreen
+import com.octopmobile.app.ui.settings.NotificationSettingsScreen
+import com.octopmobile.app.ui.settings.ProfileSettingsScreen
+import com.octopmobile.app.ui.settings.ServerSettingsScreen
 import com.octopmobile.app.ui.settings.SettingsScreen
+import com.octopmobile.app.ui.settings.VoiceSettingsScreen
 import com.octopmobile.app.ui.web.WebViewActivity
 import com.octopmobile.app.ui.workbench.WorkbenchScreen
 import com.octopmobile.app.ui.workbench.WorkbenchTab
@@ -128,26 +134,52 @@ fun OctopNavHost(
             )
         }
 
-        composable(Routes.SETTINGS) {
-            SettingsScreen(
-                onBack = { navController.popBackStack() },
-                // 换实例等于换登录态，会话缓存必须整体重来，所以直接清栈回向导
-                onHostCleared = {
-                    navController.navigate(Routes.CONNECT) { popUpTo(0) }
-                },
-                onLoggedOut = {
-                    navController.navigate(Routes.LOGIN) { popUpTo(0) }
-                },
-                onOpenMobileData = {
-                    navController.navigate(Routes.SETTINGS_MOBILE_DATA)
-                },
-            )
-        }
-
         composable(Routes.SETTINGS_MOBILE_DATA) {
             MobileDataSettingsScreen(
                 onBack = { navController.popBackStack() },
             )
+        }
+
+        // 兼容仍会导航到旧设置根路由的入口；正常工作台“我的”页使用内部子页面状态。
+        composable(Routes.SETTINGS) {
+            SettingsScreen(
+                onBack = { navController.popBackStack() },
+                onOpenMobileData = { navController.navigate(Routes.SETTINGS_MOBILE_DATA) },
+                onOpenProfile = { navController.navigate(Routes.SETTINGS_PROFILE) },
+                onOpenAppearance = { navController.navigate(Routes.SETTINGS_APPEARANCE) },
+                onOpenAbout = { navController.navigate(Routes.SETTINGS_ABOUT) },
+                onOpenNotifications = { navController.navigate(Routes.SETTINGS_NOTIFICATIONS) },
+            )
+        }
+
+        composable(Routes.SETTINGS_PROFILE) {
+            ProfileSettingsScreen(
+                onBack = { navController.popBackStack() },
+                onEditServer = { navController.navigate(Routes.SETTINGS_SERVER) },
+                onLoggedOut = {
+                    navController.navigate(Routes.LOGIN) { popUpTo(0) }
+                },
+            )
+        }
+
+        composable(Routes.SETTINGS_APPEARANCE) {
+            AppearanceSettingsScreen(onBack = { navController.popBackStack() })
+        }
+
+        composable(Routes.SETTINGS_ABOUT) {
+            AboutSettingsScreen(onBack = { navController.popBackStack() })
+        }
+
+        composable(Routes.SETTINGS_SERVER) {
+            ServerSettingsScreen(onBack = { navController.popBackStack() })
+        }
+
+        composable(Routes.SETTINGS_NOTIFICATIONS) {
+            NotificationSettingsScreen(onBack = { navController.popBackStack() })
+        }
+
+        composable(Routes.SETTINGS_VOICE) {
+            VoiceSettingsScreen(onBack = { navController.popBackStack() })
         }
     }
 

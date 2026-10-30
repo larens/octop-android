@@ -1,8 +1,13 @@
 package com.octopmobile.app.ui.chat
 
+import android.app.DownloadManager
+import android.content.ClipData
 import android.content.Context
+import android.content.Intent
 import android.net.Uri
+import android.os.Environment
 import android.provider.OpenableColumns
+import androidx.core.content.FileProvider
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
@@ -12,12 +17,16 @@ import androidx.lifecycle.viewModelScope
 import androidx.lifecycle.viewmodel.initializer
 import androidx.lifecycle.viewmodel.viewModelFactory
 import com.octopmobile.app.data.AppContainer
+import com.octopmobile.app.data.attachments.AttachmentRefs
 import com.octopmobile.app.data.db.AttachmentEntity
 import com.octopmobile.app.data.db.CompactMarkerEntity
 import com.octopmobile.app.data.db.MessageEntity
 import com.octopmobile.app.data.db.ThreadEntity
 import com.octopmobile.app.data.model.HitlPending
+import com.octopmobile.app.data.model.ChatArtifact
+import com.octopmobile.app.data.model.ArtifactPreviewKind
 import com.octopmobile.app.data.model.UploadedAttachment
+import com.octopmobile.app.data.model.artifactDownloadName
 import com.octopmobile.app.data.remote.ApiError
 import com.octopmobile.app.data.remote.ApiResult
 import com.octopmobile.app.data.remote.dto.AgentDto
@@ -34,6 +43,7 @@ import com.octopmobile.app.data.ws.ServerEvent
 import com.octopmobile.app.ui.appContainer
 import com.octopmobile.app.ui.AutoCreatedConversation
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -43,6 +53,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import java.io.File
 
 data class ChatUiState(
     /** 历史投影中（服务端在整理，`messages` 暂时为空 —— protocol.md §5.2）。 */
@@ -63,6 +74,12 @@ data class ChatModelOption(
     val label: String,
     val providerName: String,
     val reasoning: Boolean,
+)
+
+data class ArtifactShareLink(
+    val url: String,
+    val expiresAt: Long,
+    val filename: String,
 )
 
 internal fun todayActionState(event: ServerEvent): String? = when (event) {
@@ -170,6 +187,22 @@ class ChatViewModel(
     private val _deletingTurnIds = MutableStateFlow<Set<String>>(emptySet())
     val deletingTurnIds: StateFlow<Set<String>> = _deletingTurnIds.asStateFlow()
 
+    /** 当前会话生成的文件；来自历史响应顶层，不属于某一条消息。 */
+    private val _artifacts = MutableStateFlow<List<ChatArtifact>>(emptyList())
+    val artifacts: StateFlow<List<ChatArtifact>> = _artifacts.asStateFlow()
+
+    private val _previewingArtifactKey = MutableStateFlow<String?>(null)
+    val previewingArtifactKey: StateFlow<String?> = _previewingArtifactKey.asStateFlow()
+
+    private val _artifactPreview = MutableStateFlow<ArtifactPreview?>(null)
+    val artifactPreview: StateFlow<ArtifactPreview?> = _artifactPreview.asStateFlow()
+
+    private val _sharingArtifactKey = MutableStateFlow<String?>(null)
+    val sharingArtifactKey: StateFlow<String?> = _sharingArtifactKey.asStateFlow()
+
+    private val _artifactShare = MutableStateFlow<ArtifactShareLink?>(null)
+    val artifactShare: StateFlow<ArtifactShareLink?> = _artifactShare.asStateFlow()
+
     /** 一次性提示（离线排队、上传失败等）。文案在 UI 侧解析 —— 这里拿不到 `stringResource`。 */
     private val _notice = MutableStateFlow<ChatNotice?>(null)
     val notice: StateFlow<ChatNotice?> = _notice.asStateFlow()
@@ -202,6 +235,7 @@ class ChatViewModel(
             launch { repo.hitl.collect { _hitl.value = it } }
             launch { repo.errors.collect { uiState = uiState.copy(streamError = it) } }
             launch { repo.serverEvents.collect { reportTodayAction(instanceHost, repo, it) } }
+            launch { repo.artifacts.collect { _artifacts.value = it } }
             launch {
                 repo.observeAttachments().collect { list ->
                     _cachedAttachments.value = list.associateBy { it.id }
@@ -532,6 +566,184 @@ class ChatViewModel(
         viewModelScope.launch { repo.ensureAttachment(ref, mime) }
     }
 
+    /** 用系统下载器保存到公共 Downloads，并给请求补上当前实例的 Bearer 令牌。 */
+    fun downloadArtifact(context: Context, artifact: ChatArtifact) {
+        val host = baseUrl
+        val ref = artifact.downloadRef
+        val url = ref?.let { AttachmentRefs.absolute(host.orEmpty(), it) }
+        val token = host?.let(container.securePrefs::tokenFor)
+        val manager = context.getSystemService(Context.DOWNLOAD_SERVICE) as? DownloadManager
+        if (url.isNullOrBlank() || token.isNullOrBlank() || manager == null) {
+            _notice.value = ChatNotice.DownloadFailed
+            return
+        }
+
+        val filename = artifactDownloadName(artifact.filename, System.currentTimeMillis())
+        runCatching {
+            manager.enqueue(
+                DownloadManager.Request(Uri.parse(url)).apply {
+                    setTitle(artifact.filename)
+                    setDescription(artifact.formatLabel)
+                    setMimeType(artifact.mimeType)
+                    setNotificationVisibility(
+                        DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED,
+                    )
+                    setDestinationInExternalPublicDir(
+                        Environment.DIRECTORY_DOWNLOADS,
+                        "Octop/$filename",
+                    )
+                    addRequestHeader("Authorization", "Bearer $token")
+                },
+            )
+            _notice.value = ChatNotice.DownloadStarted
+        }.onFailure {
+            _notice.value = ChatNotice.DownloadFailed
+        }
+    }
+
+    /** Markdown / HTML 留在应用内预览；其他格式仍交给系统查看器。 */
+    fun previewArtifact(context: Context, artifact: ChatArtifact) {
+        if (_previewingArtifactKey.value != null) return
+        _previewingArtifactKey.value = artifact.key
+        _notice.value = null
+        viewModelScope.launch {
+            try {
+                val file = cacheArtifactForOpen(
+                    context,
+                    artifact,
+                    failureNotice = ChatNotice.PreviewFailed,
+                ) ?: return@launch
+                if (artifact.previewKind != ArtifactPreviewKind.EXTERNAL) {
+                    _artifactPreview.value = ArtifactPreview(artifact, file)
+                    return@launch
+                }
+                val uri = FileProvider.getUriForFile(
+                    context,
+                    "${context.packageName}.fileprovider",
+                    file,
+                )
+                val view = Intent(Intent.ACTION_VIEW).apply {
+                    setDataAndType(uri, artifact.mimeType)
+                    clipData = ClipData.newRawUri(artifact.filename, uri)
+                    addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                }
+                context.startActivity(
+                    Intent.createChooser(
+                        view,
+                        context.getString(com.octopmobile.app.R.string.chat_artifact_preview),
+                    ).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+                )
+            } catch (error: Exception) {
+                if (error is CancellationException) throw error
+                _notice.value = ChatNotice.PreviewFailed
+            } finally {
+                _previewingArtifactKey.value = null
+            }
+        }
+    }
+
+    fun closeArtifactPreview() {
+        _artifactPreview.value = null
+    }
+
+    /** 非 HTML 文件走系统分享；公开链接只适用于服务端登记过的 HTML。 */
+    fun shareArtifactFile(context: Context, artifact: ChatArtifact) {
+        if (_sharingArtifactKey.value != null) return
+        _sharingArtifactKey.value = artifact.key
+        _notice.value = null
+        viewModelScope.launch {
+            try {
+                val file = cacheArtifactForOpen(
+                    context,
+                    artifact,
+                    failureNotice = ChatNotice.ShareFailed,
+                ) ?: return@launch
+                val uri = FileProvider.getUriForFile(
+                    context,
+                    "${context.packageName}.fileprovider",
+                    file,
+                )
+                val send = Intent(Intent.ACTION_SEND).apply {
+                    type = artifact.mimeType
+                    putExtra(Intent.EXTRA_STREAM, uri)
+                    clipData = ClipData.newRawUri(artifact.filename, uri)
+                    addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                }
+                context.startActivity(
+                    Intent.createChooser(
+                        send,
+                        context.getString(com.octopmobile.app.R.string.chat_artifact_share),
+                    ).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+                )
+            } catch (error: Exception) {
+                if (error is CancellationException) throw error
+                _notice.value = ChatNotice.ShareFailed
+            } finally {
+                _sharingArtifactKey.value = null
+            }
+        }
+    }
+
+    private suspend fun cacheArtifactForOpen(
+        context: Context,
+        artifact: ChatArtifact,
+        failureNotice: ChatNotice,
+    ): File? {
+        val host = baseUrl ?: run {
+            _notice.value = failureNotice
+            return null
+        }
+        val ref = artifact.downloadRef ?: run {
+            _notice.value = failureNotice
+            return null
+        }
+        val url = AttachmentRefs.absolute(host, ref) ?: run {
+            _notice.value = failureNotice
+            return null
+        }
+        return when (val result = withContext(Dispatchers.IO) { container.api(host).download(url) }) {
+            is ApiResult.Failure -> {
+                _notice.value = artifactFailureNotice(result.error, failureNotice)
+                null
+            }
+            is ApiResult.Ok -> withContext(Dispatchers.IO) {
+                val directory = File(context.cacheDir, "artifact_previews").apply { mkdirs() }
+                File(
+                    directory,
+                    artifactDownloadName(artifact.filename, System.currentTimeMillis()),
+                ).apply { writeBytes(result.value) }
+            }
+        }
+    }
+
+    /** HTML 产物才允许创建公开链接；服务端会再次校验该路径确实属于当前 thread。 */
+    fun shareArtifact(artifact: ChatArtifact) {
+        val repo = repository ?: return
+        if (!artifact.isHtml || _sharingArtifactKey.value != null) return
+        _sharingArtifactKey.value = artifact.key
+        _notice.value = null
+        viewModelScope.launch {
+            when (val result = repo.createArtifactShare(artifact)) {
+                is ApiResult.Ok -> {
+                    _artifactShare.value = ArtifactShareLink(
+                        url = result.value.url,
+                        expiresAt = result.value.expiresAt,
+                        filename = result.value.filename ?: artifact.filename,
+                    )
+                }
+
+                is ApiResult.Failure -> {
+                    _notice.value = artifactFailureNotice(result.error, ChatNotice.ShareFailed)
+                }
+            }
+            _sharingArtifactKey.value = null
+        }
+    }
+
+    fun clearArtifactShare() {
+        _artifactShare.value = null
+    }
+
     fun clearNotice() {
         _notice.value = null
     }
@@ -651,9 +863,26 @@ sealed interface ChatNotice {
 
     data object TurnDeleted : ChatNotice
 
+    data object DownloadStarted : ChatNotice
+
+    data object DownloadFailed : ChatNotice
+
+    data object PreviewFailed : ChatNotice
+
+    data object ShareFailed : ChatNotice
+
+    data object ArtifactMissing : ChatNotice
+
     /** 上传接口失败。 */
     data class Failure(val error: ApiError) : ChatNotice
 }
+
+internal fun artifactFailureNotice(error: ApiError, fallback: ChatNotice): ChatNotice =
+    if (error is ApiError.Http && error.status == 404) {
+        ChatNotice.ArtifactMissing
+    } else {
+        fallback
+    }
 
 /**
  * `@专家` 的触发字符（spec §23.5）。

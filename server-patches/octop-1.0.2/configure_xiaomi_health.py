@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
 import time
 from pathlib import Path
@@ -31,7 +32,7 @@ def main() -> int:
         "agent_id": str(payload["agent_id"]),
         "user_id": int(payload["user_id"]),
     }
-    db_path = Path("/opt/octop/octop.db")
+    db_path = Path(os.environ.get("OCTOP_DB_PATH", "/opt/octop/octop.db"))
     pool = SqlitePool(db_path)
     try:
         secret_repo = SecretRepo(pool)
