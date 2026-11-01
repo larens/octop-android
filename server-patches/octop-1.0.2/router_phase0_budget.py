@@ -18,14 +18,6 @@ from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 try:
-    from octop.infra.conversation.service import (
-        BudgetExceededError,
-        ConversationService,
-        NotFoundError,
-        RouterPhase0Error,
-    )
-    from octop.infra.conversation.context import estimate_text_tokens
-except ImportError:  # Local patch-pack tests import modules by filename.
     from router_phase0_service import (
         BudgetExceededError,
         ConversationService,
@@ -33,6 +25,14 @@ except ImportError:  # Local patch-pack tests import modules by filename.
         RouterPhase0Error,
     )
     from router_phase0_context import estimate_text_tokens
+except ImportError:  # Local patch-pack tests import modules by filename.
+    from octop.infra.conversation.service import (
+        BudgetExceededError,
+        ConversationService,
+        NotFoundError,
+        RouterPhase0Error,
+    )
+    from octop.infra.conversation.context import estimate_text_tokens
 
 
 logger = logging.getLogger(__name__)

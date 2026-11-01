@@ -171,7 +171,6 @@ apply_patch_pack() {
     "$release/venv/bin/python" install_memory_diaries.py
     "$release/venv/bin/python" install_mobile_today_backport.py
     "$release/venv/bin/python" install_mobile_ingest_router.py
-    "$release/venv/bin/python" install_router_phase0.py
     "$release/venv/bin/python" install_artifact_shares.py
     "$release/venv/bin/python" install_artifact_lifecycle.py
     "$release/venv/bin/python" install_cron_isolation.py
@@ -184,6 +183,7 @@ apply_patch_pack() {
     "$release/venv/bin/python" install_feishu_user_auth_recovery.py
     "$release/venv/bin/python" install_mcp_connectors.py
     "$release/venv/bin/python" install_lifestyle_mcp_connectors.py
+    "$release/venv/bin/python" install_router_phase0.py
   )
   OCTOP_SITE_PACKAGES="$site" \
     OCTOP_BACKUPS_DIR="$release/patch-backups" \
@@ -198,6 +198,7 @@ apply_patch_pack() {
     "$site/octop/infra/conversation/context.py" \
     "$site/octop/infra/conversation/budget.py" \
     "$site/octop/infra/conversation/shadow.py" \
+    "$site/octop/infra/conversation/retention.py" \
     "$site/octop/api/routers/interest_monitors.py" \
     "$site/octop/api/routers/artifact_shares.py" \
     "$site/octop/api/app.py" \

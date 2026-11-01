@@ -7,6 +7,7 @@ import asyncio
 import json
 import os
 import sqlite3
+import tempfile
 import unittest
 from contextlib import contextmanager
 from pathlib import Path
@@ -28,6 +29,7 @@ from install_router_phase0 import (
 from patch_paths import octop_site
 from router_phase0_budget import RouterBudgetGate
 from router_phase0_context import compile_context_pack, estimate_text_tokens
+from router_phase0_retention import run_retention
 from router_phase0_service import (
     BudgetExceededError,
     ConversationService,
@@ -120,6 +122,122 @@ def available_router_source_root() -> Path | None:
 
 
 class RouterPhase0Test(unittest.TestCase):
+    def test_router_retention_is_dry_run_bounded_and_auditable(self) -> None:
+        now = 2_000_000_000
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "retention.db"
+            conn = sqlite3.connect(db_path)
+            conn.executescript(
+                """
+                PRAGMA foreign_keys = ON;
+                CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+                CREATE TABLE conversation_tasks (
+                    task_id TEXT PRIMARY KEY,
+                    status TEXT NOT NULL
+                );
+                CREATE TABLE task_runs (
+                    run_id TEXT PRIMARY KEY,
+                    task_id TEXT NOT NULL REFERENCES conversation_tasks(task_id),
+                    status TEXT NOT NULL,
+                    created_at INTEGER NOT NULL
+                );
+                CREATE TABLE conversation_events (
+                    event_id TEXT PRIMARY KEY,
+                    payload_ref TEXT,
+                    payload_json TEXT,
+                    created_at INTEGER NOT NULL
+                );
+                CREATE TABLE context_pack_manifests (
+                    pack_id TEXT PRIMARY KEY,
+                    created_at INTEGER NOT NULL
+                );
+                CREATE TABLE budget_ledgers (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    period_end INTEGER NOT NULL
+                );
+                CREATE TABLE audit_log (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    ts INTEGER NOT NULL,
+                    actor TEXT,
+                    action TEXT NOT NULL,
+                    target TEXT,
+                    payload TEXT
+                );
+                """
+            )
+            conn.execute("INSERT INTO conversation_tasks VALUES ('task_done', 'done')")
+            conn.execute(
+                "INSERT INTO conversation_tasks VALUES ('task_active', 'in_progress')"
+            )
+            conn.execute(
+                "INSERT INTO task_runs VALUES ('run_done', 'task_done', 'succeeded', ?)",
+                (now - 181 * 86400,),
+            )
+            conn.execute(
+                "INSERT INTO task_runs VALUES ('run_active', 'task_active', 'succeeded', ?)",
+                (now - 181 * 86400,),
+            )
+            conn.execute(
+                "INSERT INTO context_pack_manifests VALUES ('pack_old', ?)",
+                (now - 91 * 86400,),
+            )
+            conn.execute(
+                "INSERT INTO context_pack_manifests VALUES ('pack_new', ?)",
+                (now - 89 * 86400,),
+            )
+            conn.execute(
+                "INSERT INTO conversation_events VALUES "
+                "('event_old', 'context-pack://pack_old', '{\"private\":true}', ?)",
+                (now - 91 * 86400,),
+            )
+            conn.execute(
+                "INSERT INTO conversation_events VALUES "
+                "('event_middle', 'context-pack://pack_new', '{\"private\":true}', ?)",
+                (now - 31 * 86400,),
+            )
+            conn.execute(
+                "INSERT INTO conversation_events VALUES "
+                "('event_new', NULL, '{\"private\":true}', ?)",
+                (now - 29 * 86400,),
+            )
+            conn.execute(
+                "INSERT INTO budget_ledgers(period_end) VALUES (?)",
+                (now - 401 * 86400,),
+            )
+            conn.commit()
+
+            dry_run = run_retention(db_path, now=now)
+            self.assertFalse(dry_run["apply"])
+            self.assertEqual(dry_run["counts"]["conversation_events_deleted"], 1)
+            self.assertEqual(dry_run["counts"]["terminal_task_runs_deleted"], 1)
+            self.assertEqual(
+                conn.execute("SELECT COUNT(*) FROM conversation_events").fetchone()[0],
+                3,
+            )
+
+            applied = run_retention(db_path, now=now, apply=True)
+            self.assertTrue(applied["audit_recorded"])
+            self.assertEqual(applied["counts"]["event_payloads_redacted"], 2)
+            self.assertEqual(applied["counts"]["context_pack_refs_cleared"], 1)
+            self.assertEqual(applied["counts"]["conversation_events_deleted"], 1)
+            self.assertEqual(
+                conn.execute(
+                    "SELECT payload_json FROM conversation_events "
+                    "WHERE event_id = 'event_middle'"
+                ).fetchone()[0],
+                None,
+            )
+            self.assertEqual(
+                conn.execute("SELECT COUNT(*) FROM task_runs").fetchone()[0],
+                1,
+            )
+            audit = conn.execute(
+                "SELECT action, payload FROM audit_log ORDER BY id DESC LIMIT 1"
+            ).fetchone()
+            self.assertEqual(audit[0], "router.retention.applied")
+            self.assertEqual(json.loads(audit[1])["policy_days"]["event_days"], 90)
+            conn.close()
+
     def setUp(self) -> None:
         self.db = SqliteDB()
         self.db.conn.executescript(
@@ -687,12 +805,70 @@ class RouterPhase0Test(unittest.TestCase):
     def test_shadow_router_classifies_without_dispatch(self) -> None:
         self.assertEqual(classify_shadow_route("你好")["intent"], "direct_reply")
         self.assertEqual(
+            classify_shadow_route("请只回复 OK，不要调用任何工具。")["intent"],
+            "direct_reply",
+        )
+        self.assertEqual(
             classify_shadow_route("帮我看一下明天的日历")["intent"],
             "read_only_task",
         )
         self.assertEqual(
             classify_shadow_route("把总结发送给张三")["intent"],
             "side_effect_task",
+        )
+        self.assertEqual(
+            classify_shadow_route("读取文件后回复一句话")["intent"],
+            "read_only_task",
+        )
+        self.assertEqual(
+            classify_shadow_route(
+                "只做订单预览，搜索拿铁，绝对不要调用 createOrder。"
+            )["intent"],
+            "read_only_task",
+        )
+        self.assertEqual(
+            classify_shadow_route("汇总需要我回复的邮件")["intent"],
+            "read_only_task",
+        )
+        self.assertEqual(
+            classify_shadow_route("请发送邮件给张三")["intent"],
+            "side_effect_task",
+        )
+        self.assertEqual(
+            classify_shadow_route("删除这个任务")["intent"],
+            "side_effect_task",
+        )
+        self.assertEqual(
+            classify_shadow_route(
+                "只做订单预览，如果现在打烊，说明最早可取时间；不要提交订单。"
+            )["intent"],
+            "read_only_task",
+        )
+        self.assertEqual(
+            classify_shadow_route(
+                "取暖费1200，每年12月前在微信~支付~城市服务里缴纳。"
+            )["intent"],
+            "direct_reply",
+        )
+        self.assertEqual(
+            classify_shadow_route("帮忙看下失败的任务重新跑一下")["intent"],
+            "side_effect_task",
+        )
+        self.assertEqual(
+            classify_shadow_route("把这次讨论落入记忆里，敏感数据另存")["intent"],
+            "side_effect_task",
+        )
+        self.assertEqual(
+            classify_shadow_route("没有看到文件，给我一个可以直接下载的")["intent"],
+            "read_only_task",
+        )
+        self.assertEqual(
+            classify_shadow_route("怎么把修好的文件下载到手机里转发")["intent"],
+            "direct_reply",
+        )
+        self.assertEqual(
+            classify_shadow_route("知识库里怎么没有找到这些文档")["intent"],
+            "read_only_task",
         )
         mixed = classify_shadow_route("查一下后直接发送")
         self.assertEqual(mixed["intent"], "side_effect_task")

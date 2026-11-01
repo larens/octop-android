@@ -757,6 +757,7 @@ def main() -> None:
     context_target = site / "infra/conversation/context.py"
     budget_target = site / "infra/conversation/budget.py"
     shadow_target = site / "infra/conversation/shadow.py"
+    retention_target = site / "infra/conversation/retention.py"
     router_target = site / "api/routers/conversation_router.py"
     init_target = site / "infra/conversation/__init__.py"
 
@@ -764,6 +765,7 @@ def main() -> None:
     context_source = PACK_DIR / "router_phase0_context.py"
     budget_source = PACK_DIR / "router_phase0_budget.py"
     shadow_source = PACK_DIR / "router_phase0_shadow.py"
+    retention_source = PACK_DIR / "router_phase0_retention.py"
     router_source = PACK_DIR / "router_phase0_api.py"
     service_changed = not service_target.exists() or (
         service_target.read_bytes() != service_source.read_bytes()
@@ -780,6 +782,9 @@ def main() -> None:
     shadow_changed = not shadow_target.exists() or (
         shadow_target.read_bytes() != shadow_source.read_bytes()
     )
+    retention_changed = not retention_target.exists() or (
+        retention_target.read_bytes() != retention_source.read_bytes()
+    )
     changed = (
         any(patched != original for patched, original in (
             (source_updates[path], path.read_text(encoding="utf-8"))
@@ -789,6 +794,7 @@ def main() -> None:
         or context_changed
         or budget_changed
         or shadow_changed
+        or retention_changed
         or router_changed
         or not init_target.exists()
     )
@@ -807,6 +813,8 @@ def main() -> None:
             shutil.copy2(budget_target, backup / "conversation-budget.py")
         if shadow_target.exists() and shadow_changed:
             shutil.copy2(shadow_target, backup / "conversation-shadow.py")
+        if retention_target.exists() and retention_changed:
+            shutil.copy2(retention_target, backup / "conversation-retention.py")
         if router_target.exists() and router_changed:
             shutil.copy2(router_target, backup / "conversation-router.py")
 
@@ -825,6 +833,9 @@ def main() -> None:
     if shadow_changed:
         shadow_target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(shadow_source, shadow_target)
+    if retention_changed:
+        retention_target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(retention_source, retention_target)
     if router_changed:
         router_target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(router_source, router_target)

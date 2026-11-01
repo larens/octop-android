@@ -34,7 +34,6 @@ cp artifact_shares.py "$site/api/routers/artifact_shares.py"
 /opt/octop/venv/bin/python install_patch.py
 /opt/octop/venv/bin/python install_memory_diaries.py
 /opt/octop/venv/bin/python install_mobile_ingest_router.py
-/opt/octop/venv/bin/python install_router_phase0.py
 /opt/octop/venv/bin/python install_artifact_shares.py
 /opt/octop/venv/bin/python install_artifact_lifecycle.py
 /opt/octop/venv/bin/python install_cron_isolation.py
@@ -47,6 +46,7 @@ cp artifact_shares.py "$site/api/routers/artifact_shares.py"
 /opt/octop/venv/bin/python install_feishu_user_auth_recovery.py
 /opt/octop/venv/bin/python install_mcp_connectors.py
 /opt/octop/venv/bin/python install_lifestyle_mcp_connectors.py
+/opt/octop/venv/bin/python install_router_phase0.py
 /opt/octop/venv/bin/python migrate_existing_tasks.py
 OCTOP_HOME=/opt/octop OCTOP_DB_PATH=/opt/octop/octop.db \
   /opt/octop/venv/bin/python migrate_agent_tooling.py
@@ -64,6 +64,7 @@ OCTOP_HOME=/opt/octop OCTOP_DB_PATH=/opt/octop/octop.db \
   "$site/infra/conversation/context.py" \
   "$site/infra/conversation/budget.py" \
   "$site/infra/conversation/shadow.py" \
+  "$site/infra/conversation/retention.py" \
   "$site/api/routers/artifact_shares.py" \
   "$site/api/app.py" \
   "$site/api/deps.py" \

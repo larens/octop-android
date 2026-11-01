@@ -12,17 +12,18 @@ import hashlib
 import json
 import logging
 import os
+import re
 import time
 import uuid
 from collections.abc import Mapping, Sequence
 from typing import Any
 
 try:
-    from octop.infra.conversation.context import compile_context_pack, estimate_text_tokens
-    from octop.infra.conversation.service import ConversationService
-except ImportError:  # Local patch-pack tests import modules by filename.
     from router_phase0_context import compile_context_pack, estimate_text_tokens
     from router_phase0_service import ConversationService
+except ImportError:  # Installed modules import the site-package siblings.
+    from octop.infra.conversation.context import compile_context_pack, estimate_text_tokens
+    from octop.infra.conversation.service import ConversationService
 
 
 logger = logging.getLogger(__name__)
@@ -44,10 +45,18 @@ _READ_ONLY_TERMS = (
     "整理",
     "分析",
     "对比",
+    "读取",
+    "查看",
+    "列出",
+    "生成",
+    "制作",
+    "预览",
     "日历",
     "日程",
     "邮件",
     "文档",
+    "文件",
+    "下载",
     "知识库",
     "新闻",
     "search",
@@ -63,36 +72,65 @@ _READ_ONLY_TERMS = (
     "document",
     "knowledge base",
     "news",
+    "read only",
+    "only read",
+    "lookup",
+    "chart",
+    "html",
 )
-_SIDE_EFFECT_TERMS = (
-    "发送",
-    "发给",
-    "回复",
-    "删除",
-    "新建",
-    "创建",
-    "修改",
-    "更新",
-    "预约",
-    "预订",
-    "下单",
-    "支付",
-    "付款",
-    "提交",
-    "取消",
-    "提醒我",
-    "send ",
-    "reply",
-    "delete",
-    "create",
-    "update",
-    "book ",
-    "reserve",
-    "order ",
-    "pay ",
-    "submit",
-    "cancel",
-    "remind me",
+_SIDE_EFFECT_PATTERNS = (
+    ("send", re.compile(r"(?:发送给|发送到|发送邮件|发送消息|帮我发送|直接发送|并发送|再发送)")),
+    ("reply_external", re.compile(r"(?:帮我回复|回复邮件|回复消息|回复给|reply\s+to)", re.I)),
+    ("delete", re.compile(r"(?:删除|删掉|\bdelete\b|\bremove\b)", re.I)),
+    ("create_task", re.compile(r"(?:新建任务|创建任务|建一个任务|create\s+(?:a\s+)?task)", re.I)),
+    (
+        "modify",
+        re.compile(
+            r"(?:修改|更新|调整).{0,12}(?:日程|任务|会议|文件|设置|日历)"
+            r"|\b(?:update|modify)\s+(?:the\s+)?(?:calendar|event|task|file|setting)",
+            re.I,
+        ),
+    ),
+    ("reserve", re.compile(r"(?:预约|预订|\bbook\b|\breserve\b)", re.I)),
+    (
+        "order",
+        re.compile(
+            r"(?:帮我下单|直接下单|执行下单|现在就下单|确认下单|提交订单"
+            r"|\bplace\s+order\b|\bcreate\s*order\b|\bsubmit\s+order\b)",
+            re.I,
+        ),
+    ),
+    (
+        "pay",
+        re.compile(
+            r"(?:发起支付|完成支付|立即支付|帮我支付|付款给"
+            r"|\bpay\s+(?:for|the|with)\b)",
+            re.I,
+        ),
+    ),
+    ("submit", re.compile(r"(?:提交|\bsubmit\b)", re.I)),
+    ("cancel", re.compile(r"(?:取消|\bcancel\b)", re.I)),
+    ("reminder", re.compile(r"(?:提醒我|\bremind\s+me\b)", re.I)),
+    (
+        "retry",
+        re.compile(r"(?:重试|重新跑|重跑|重新执行|\bretry\b|\brerun\b)", re.I),
+    ),
+    (
+        "write_state",
+        re.compile(
+            r"(?:写入|另存|落入.{0,12}记忆|存到.{0,12}(?:记忆|知识库)"
+            r"|\bwrite\s+to\b|\bsave\s+to\s+(?:memory|the\s+knowledge\s+base)\b)",
+            re.I,
+        ),
+    ),
+)
+_NEGATION_RE = re.compile(
+    r"(?:不要|不用|无需|禁止|不允许|不能|别|do\s+not|don't|without)",
+    re.I,
+)
+_HOW_TO_RE = re.compile(
+    r"(?:(?:怎么|如何|怎样)把|^\s*how\s+(?:do|can|should|to)\b)",
+    re.I,
 )
 
 
@@ -402,7 +440,14 @@ def classify_shadow_route(
     normalized = str(text or "").strip()
     lowered = f" {normalized.lower()} "
     read_hits = [term for term in _READ_ONLY_TERMS if term in lowered]
-    side_effect_hits = [term for term in _SIDE_EFFECT_TERMS if term in lowered]
+    side_effect_hits: list[str] = []
+    for label, pattern in _SIDE_EFFECT_PATTERNS:
+        for match in pattern.finditer(lowered):
+            prefix = lowered[max(0, match.start() - 32) : match.start()]
+            if _NEGATION_RE.search(prefix):
+                continue
+            side_effect_hits.append(label)
+            break
     input_kinds = ["text"]
     if has_attachments:
         input_kinds.append("attachment")
@@ -413,7 +458,7 @@ def classify_shadow_route(
         intent = "side_effect_task"
         confidence = 0.86 if read_hits else 0.8
         task_type = "side_effect"
-    elif read_hits:
+    elif read_hits and not _HOW_TO_RE.search(normalized):
         intent = "read_only_task"
         confidence = 0.74
         task_type = "read_only"
@@ -433,7 +478,7 @@ def classify_shadow_route(
             "requires_user": intent == "side_effect_task",
         }
     return {
-        "policy_version": "shadow-heuristic-v1",
+        "policy_version": "shadow-heuristic-v2",
         "intent": intent,
         "confidence": confidence,
         "requires_task": requires_task,
