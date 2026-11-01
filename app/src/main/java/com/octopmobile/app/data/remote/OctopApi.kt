@@ -10,6 +10,9 @@ import com.octopmobile.app.data.remote.dto.CronJobCreateBody
 import com.octopmobile.app.data.remote.dto.CronJobDto
 import com.octopmobile.app.data.remote.dto.CronJobPatchBody
 import com.octopmobile.app.data.remote.dto.ConnectorInstanceDto
+import com.octopmobile.app.data.remote.dto.ConversationEventDto
+import com.octopmobile.app.data.remote.dto.ConversationTaskDto
+import com.octopmobile.app.data.remote.dto.ConversationTraceDto
 import com.octopmobile.app.data.remote.dto.HistoryResponse
 import com.octopmobile.app.data.remote.dto.HitlResumeBody
 import com.octopmobile.app.data.remote.dto.LoginRequest
@@ -20,6 +23,7 @@ import com.octopmobile.app.data.remote.dto.InterestMonitorPatchBody
 import com.octopmobile.app.data.remote.dto.InterestMonitorRunResponse
 import com.octopmobile.app.data.remote.dto.MobileIngestBatchBody
 import com.octopmobile.app.data.remote.dto.MobileIngestBatchResponse
+import com.octopmobile.app.data.remote.dto.MainConversationDto
 import com.octopmobile.app.data.remote.dto.ResolvedModelDto
 import com.octopmobile.app.data.remote.dto.RenameThreadBody
 import com.octopmobile.app.data.remote.dto.ThreadDto
@@ -139,6 +143,85 @@ class OctopApi(
                 )
                 .build(),
             deserializer = ListSerializer(ThreadDto.serializer()),
+        )
+
+    /** Router Phase 0: 用户在一个 agent 下的稳定主会话。 */
+    suspend fun mainConversation(agentId: String): ApiResult<MainConversationDto> =
+        execute(
+            request = Request.Builder()
+                .url(url(API, AGENTS, agentId, MAIN_CONVERSATION))
+                .build(),
+            deserializer = MainConversationDto.serializer(),
+        )
+
+    /** 主会话事件是投影后的有界时间线，不包含 Worker 原始工具日志。 */
+    suspend fun mainConversationEvents(
+        agentId: String,
+        afterSeq: Long = 0,
+        limit: Int = DEFAULT_PAGE_SIZE,
+    ): ApiResult<List<ConversationEventDto>> =
+        execute(
+            request = Request.Builder()
+                .url(
+                    url(API, AGENTS, agentId, MAIN_CONVERSATION, EVENTS)
+                        .newBuilder()
+                        .addQueryParameter("after_seq", afterSeq.toString())
+                        .addQueryParameter("limit", limit.toString())
+                        .build(),
+                )
+                .build(),
+            deserializer = ListSerializer(ConversationEventDto.serializer()),
+        )
+
+    suspend fun conversationTasks(
+        agentId: String,
+        status: String? = null,
+        limit: Int = DEFAULT_PAGE_SIZE,
+    ): ApiResult<List<ConversationTaskDto>> =
+        execute(
+            request = Request.Builder()
+                .url(
+                    url(API, AGENTS, agentId, TASKS)
+                        .newBuilder()
+                        .addQueryParameter("limit", limit.toString())
+                        .apply {
+                            if (!status.isNullOrBlank()) addQueryParameter("status", status)
+                        }
+                        .build(),
+                )
+                .build(),
+            deserializer = ListSerializer(ConversationTaskDto.serializer()),
+        )
+
+    suspend fun conversationTask(
+        agentId: String,
+        taskId: String,
+    ): ApiResult<ConversationTaskDto> =
+        execute(
+            request = Request.Builder()
+                .url(url(API, AGENTS, agentId, TASKS, taskId))
+                .build(),
+            deserializer = ConversationTaskDto.serializer(),
+        )
+
+    /** Trace 默认只返回摘要和引用；payload 详情仅管理员可请求。 */
+    suspend fun conversationTrace(
+        agentId: String,
+        traceId: String,
+        includePayload: Boolean = false,
+        limit: Int = 500,
+    ): ApiResult<ConversationTraceDto> =
+        execute(
+            request = Request.Builder()
+                .url(
+                    url(API, AGENTS, agentId, TRACES, traceId)
+                        .newBuilder()
+                        .addQueryParameter("include_payload", includePayload.toString())
+                        .addQueryParameter("limit", limit.toString())
+                        .build(),
+                )
+                .build(),
+            deserializer = ConversationTraceDto.serializer(),
         )
 
     suspend fun history(
@@ -773,6 +856,10 @@ class OctopApi(
         private const val THREADS = "threads"
         private const val TURNS = "turns"
         private const val HISTORY = "history"
+        private const val MAIN_CONVERSATION = "main-conversation"
+        private const val EVENTS = "events"
+        private const val TASKS = "tasks"
+        private const val TRACES = "traces"
         private const val ARTIFACT_SHARES = "artifact-shares"
         private const val TRAJECTORY = "trajectory"
         private const val READ = "read"

@@ -12,6 +12,7 @@ import com.octopmobile.app.data.repo.AutomationRepository
 import com.octopmobile.app.data.repo.ChatRepository
 import com.octopmobile.app.data.repo.InstanceRepository
 import com.octopmobile.app.data.repo.InterestMonitorRepository
+import com.octopmobile.app.data.repo.MainConversationRepository
 import com.octopmobile.app.data.repo.MemoryRepository
 import com.octopmobile.app.data.repo.NaturalLanguageTaskRepository
 import com.octopmobile.app.data.repo.ServerMemoryRepository
@@ -179,6 +180,14 @@ class AppContainer(context: Context) {
         database = database,
         json = json,
     )
+
+    /** Router Phase 0 只读镜像，不参与当前聊天路由。 */
+    fun mainConversationRepository(baseUrl: String, agentId: String): MainConversationRepository =
+        MainConversationRepository(
+            agentId = agentId,
+            api = api(baseUrl),
+            database = database,
+        )
 
     fun interestMonitorRepository(baseUrl: String, agentId: String): InterestMonitorRepository =
         InterestMonitorRepository(agentId, api(baseUrl))

@@ -34,6 +34,7 @@ cp artifact_shares.py "$site/api/routers/artifact_shares.py"
 /opt/octop/venv/bin/python install_patch.py
 /opt/octop/venv/bin/python install_memory_diaries.py
 /opt/octop/venv/bin/python install_mobile_ingest_router.py
+/opt/octop/venv/bin/python install_router_phase0.py
 /opt/octop/venv/bin/python install_artifact_shares.py
 /opt/octop/venv/bin/python install_artifact_lifecycle.py
 /opt/octop/venv/bin/python install_cron_isolation.py
@@ -58,6 +59,11 @@ OCTOP_HOME=/opt/octop OCTOP_DB_PATH=/opt/octop/octop.db \
   "$site/infra/today/cron_cards.py" \
   "$site/infra/today/health_cards.py" \
   "$site/api/routers/mobile_ingest.py" \
+  "$site/api/routers/conversation_router.py" \
+  "$site/infra/conversation/service.py" \
+  "$site/infra/conversation/context.py" \
+  "$site/infra/conversation/budget.py" \
+  "$site/infra/conversation/shadow.py" \
   "$site/api/routers/artifact_shares.py" \
   "$site/api/app.py" \
   "$site/api/deps.py" \

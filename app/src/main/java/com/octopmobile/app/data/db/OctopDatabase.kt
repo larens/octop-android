@@ -30,8 +30,11 @@ import androidx.room.withTransaction
         MobileOutboxEntity::class,
         MobileSyncStateEntity::class,
         TodayCardEntity::class,
+        MainConversationEntity::class,
+        ConversationTaskEntity::class,
+        ConversationEventEntity::class,
     ],
-    version = 8,
+    version = 9,
     exportSchema = true,
 )
 abstract class OctopDatabase : RoomDatabase() {
@@ -50,6 +53,9 @@ abstract class OctopDatabase : RoomDatabase() {
     abstract fun mobileOutbox(): MobileOutboxDao
     abstract fun mobileSyncState(): MobileSyncStateDao
     abstract fun todayCards(): TodayCardDao
+    abstract fun mainConversations(): MainConversationDao
+    abstract fun conversationTasks(): ConversationTaskDao
+    abstract fun conversationEvents(): ConversationEventDao
 
     /**
      * 清空本地镜像。退出登录时调用（docs/spec.md §15）—— 换个账号登录不该看到上一个账号的会话。
@@ -70,6 +76,9 @@ abstract class OctopDatabase : RoomDatabase() {
             mobileSyncState().clear()
             mobileSources().clear()
             todayCards().clear()
+            conversationEvents().clear()
+            conversationTasks().clear()
+            mainConversations().clear()
             instances().clear()
         }
     }
@@ -250,6 +259,107 @@ abstract class OctopDatabase : RoomDatabase() {
             }
         }
 
+        /**
+         * v9：为 Router Phase 0 增加主会话、任务和事件镜像。
+         *
+         * 只建表、不改现有聊天与 Today 读写路径；旧客户端数据因此可以原样保留。
+         */
+        val MIGRATION_8_9 = object : Migration(8, 9) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS `main_conversations` (
+                        `conversationId` TEXT NOT NULL,
+                        `agentId` TEXT NOT NULL,
+                        `userId` INTEGER NOT NULL,
+                        `routerThreadId` TEXT,
+                        `stateJson` TEXT NOT NULL,
+                        `summary` TEXT NOT NULL,
+                        `lastConversationSeq` INTEGER NOT NULL,
+                        `createdAt` INTEGER NOT NULL,
+                        `updatedAt` INTEGER NOT NULL,
+                        `archivedAt` INTEGER,
+                        PRIMARY KEY(`conversationId`)
+                    )
+                    """.trimIndent(),
+                )
+                db.execSQL(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS `index_main_conversations_agentId_userId` " +
+                        "ON `main_conversations` (`agentId`, `userId`)",
+                )
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS `conversation_tasks` (
+                        `taskId` TEXT NOT NULL,
+                        `conversationId` TEXT NOT NULL,
+                        `taskType` TEXT NOT NULL,
+                        `title` TEXT NOT NULL,
+                        `subjectKey` TEXT NOT NULL,
+                        `objective` TEXT NOT NULL,
+                        `status` TEXT NOT NULL,
+                        `requiresUser` INTEGER NOT NULL,
+                        `capsuleJson` TEXT NOT NULL,
+                        `priority` INTEGER NOT NULL,
+                        `createdAt` INTEGER NOT NULL,
+                        `updatedAt` INTEGER NOT NULL,
+                        `expiresAt` INTEGER,
+                        PRIMARY KEY(`taskId`)
+                    )
+                    """.trimIndent(),
+                )
+                db.execSQL(
+                    "CREATE INDEX IF NOT EXISTS `index_conversation_tasks_conversationId` " +
+                        "ON `conversation_tasks` (`conversationId`)",
+                )
+                db.execSQL(
+                    "CREATE INDEX IF NOT EXISTS `index_conversation_tasks_conversationId_status` " +
+                        "ON `conversation_tasks` (`conversationId`, `status`)",
+                )
+                db.execSQL(
+                    "CREATE INDEX IF NOT EXISTS `index_conversation_tasks_conversationId_subjectKey` " +
+                        "ON `conversation_tasks` (`conversationId`, `subjectKey`)",
+                )
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS `conversation_events` (
+                        `eventId` TEXT NOT NULL,
+                        `conversationId` TEXT NOT NULL,
+                        `traceId` TEXT NOT NULL,
+                        `taskId` TEXT,
+                        `runId` TEXT,
+                        `parentEventId` TEXT,
+                        `seq` INTEGER NOT NULL,
+                        `schemaVersion` INTEGER NOT NULL,
+                        `eventType` TEXT NOT NULL,
+                        `status` TEXT,
+                        `summary` TEXT NOT NULL,
+                        `payloadRef` TEXT,
+                        `payloadJson` TEXT,
+                        `usageJson` TEXT NOT NULL,
+                        `createdAt` INTEGER NOT NULL,
+                        PRIMARY KEY(`eventId`)
+                    )
+                    """.trimIndent(),
+                )
+                db.execSQL(
+                    "CREATE INDEX IF NOT EXISTS `index_conversation_events_conversationId` " +
+                        "ON `conversation_events` (`conversationId`)",
+                )
+                db.execSQL(
+                    "CREATE INDEX IF NOT EXISTS `index_conversation_events_traceId` " +
+                        "ON `conversation_events` (`traceId`)",
+                )
+                db.execSQL(
+                    "CREATE INDEX IF NOT EXISTS `index_conversation_events_taskId` " +
+                        "ON `conversation_events` (`taskId`)",
+                )
+                db.execSQL(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS `index_conversation_events_conversationId_seq` " +
+                        "ON `conversation_events` (`conversationId`, `seq`)",
+                )
+            }
+        }
+
         fun get(context: Context): OctopDatabase =
             instance ?: synchronized(this) {
                 instance ?: Room.databaseBuilder(
@@ -264,6 +374,7 @@ abstract class OctopDatabase : RoomDatabase() {
                     MIGRATION_5_6,
                     MIGRATION_6_7,
                     MIGRATION_7_8,
+                    MIGRATION_8_9,
                 )
                     .build()
                     .also { instance = it }

@@ -171,6 +171,7 @@ apply_patch_pack() {
     "$release/venv/bin/python" install_memory_diaries.py
     "$release/venv/bin/python" install_mobile_today_backport.py
     "$release/venv/bin/python" install_mobile_ingest_router.py
+    "$release/venv/bin/python" install_router_phase0.py
     "$release/venv/bin/python" install_artifact_shares.py
     "$release/venv/bin/python" install_artifact_lifecycle.py
     "$release/venv/bin/python" install_cron_isolation.py
@@ -192,6 +193,11 @@ apply_patch_pack() {
     "$site/octop/api/routers/chat/history.py" \
     "$site/octop/api/routers/update.py" \
     "$site/octop/api/routers/mobile_ingest.py" \
+    "$site/octop/api/routers/conversation_router.py" \
+    "$site/octop/infra/conversation/service.py" \
+    "$site/octop/infra/conversation/context.py" \
+    "$site/octop/infra/conversation/budget.py" \
+    "$site/octop/infra/conversation/shadow.py" \
     "$site/octop/api/routers/interest_monitors.py" \
     "$site/octop/api/routers/artifact_shares.py" \
     "$site/octop/api/app.py" \
@@ -223,6 +229,7 @@ run_patch_tests() {
     "$release/venv/bin/python" test_memory_diaries.py
     "$release/venv/bin/python" test_mobile_profiles.py
     "$release/venv/bin/python" test_mobile_today_backport.py
+    "$release/venv/bin/python" test_router_phase0.py
     "$release/venv/bin/python" test_artifact_shares.py
     "$release/venv/bin/python" test_artifact_lifecycle.py
     "$release/venv/bin/python" test_feishu_mcp.py

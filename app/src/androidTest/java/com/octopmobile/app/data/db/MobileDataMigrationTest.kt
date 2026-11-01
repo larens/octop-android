@@ -100,7 +100,7 @@ class MobileDataMigrationTest {
             execSQL(
                 "INSERT INTO today_cards VALUES (" +
                     "'card-1','agent-1','research','Title','Summary','Why',0.8,'read',1,NULL," +
-                    "'Prompt','[]',0,'web_search',NULL,NULL,NULL,0,1,1,NULL,NULL,NULL,NULL,NULL)"
+                    "'Prompt','[]',0,'web_search',NULL,NULL,NULL,0,NULL,NULL,NULL,NULL,NULL,1,1)"
             )
             close()
         }
@@ -115,11 +115,43 @@ class MobileDataMigrationTest {
         }
     }
 
+    @Test
+    fun migrate8To9_addsMainConversationCacheWithoutLosingThreads() {
+        helper.createDatabase(ROUTER_NAME, 8).apply {
+            execSQL(
+                "INSERT INTO threads VALUES (" +
+                    "'thread-1','agent-1','Keep me',NULL,0,1,1,0,NULL,'ask',0,0)"
+            )
+            close()
+        }
+
+        helper.runMigrationsAndValidate(ROUTER_NAME, 9, true, OctopDatabase.MIGRATION_8_9).apply {
+            query("SELECT title FROM threads WHERE threadId = 'thread-1'").use {
+                check(it.moveToFirst())
+                check(it.getString(0) == "Keep me")
+            }
+            query("SELECT COUNT(*) FROM main_conversations").use {
+                check(it.moveToFirst())
+                check(it.getInt(0) == 0)
+            }
+            query("SELECT COUNT(*) FROM conversation_tasks").use {
+                check(it.moveToFirst())
+                check(it.getInt(0) == 0)
+            }
+            query("SELECT COUNT(*) FROM conversation_events").use {
+                check(it.moveToFirst())
+                check(it.getInt(0) == 0)
+            }
+            close()
+        }
+    }
+
     private companion object {
         const val NAME = "mobile-data-migration-test"
         const val TODAY_NAME = "today-cards-migration-test"
         const val GOALS_NAME = "today-goals-migration-test"
         const val EXECUTION_NAME = "today-execution-migration-test"
         const val RISK_NAME = "today-risk-migration-test"
+        const val ROUTER_NAME = "router-phase0-migration-test"
     }
 }
