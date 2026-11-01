@@ -534,6 +534,10 @@
     <string name="memory_loading_body">先从服务端拉取画像、情绪和沉淀档案。</string>
     <string name="memory_agent_missing_title">还没有可用的记忆空间</string>
     <string name="memory_agent_missing_body">先连接并选中一个智能体，记忆页才能读取它的长期档案。</string>
+    <string name="memory_cached_title">当前显示本地缓存</string>
+    <string name="memory_cached_body">服务器暂时不可用，内容来自本地缓存。</string>
+    <string name="memory_cached_updated">上次同步于 %1$s</string>
+    <string name="memory_cached_retry">重试</string>
     <string name="memory_server_unavailable_title">暂时连不上服务端记忆</string>
     <string name="memory_server_empty_title">服务端还没有沉淀出记忆</string>
     <string name="memory_server_empty_body">继续对话、让会话跑一阵子后，画像、情绪日记和记忆沉淀会逐步出现。</string>

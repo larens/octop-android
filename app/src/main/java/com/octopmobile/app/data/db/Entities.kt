@@ -94,6 +94,16 @@ data class MemoryItemEntity(
     val updatedAt: Long,
 )
 
+/** 服务端记忆聚合的离线快照。只做展示缓存，服务端恢复后整条覆盖。 */
+@Entity(tableName = "server_memory_cache", primaryKeys = ["host", "agentId"])
+data class ServerMemoryCacheEntity(
+    val host: String,
+    val agentId: String,
+    val schemaVersion: Int,
+    val snapshotJson: String,
+    val cachedAt: Long,
+)
+
 /**
  * 自动任务。**真值在服务端**（`/api/agents/{id}/cron`）：服务端才是真正按点执行的那一方，
  * 本地这张表只是镜像，供列表离线可读（docs/protocol.md §5.5）。

@@ -20,6 +20,7 @@ import androidx.room.withTransaction
         ThreadEntity::class,
         ThreadTagEntity::class,
         MemoryItemEntity::class,
+        ServerMemoryCacheEntity::class,
         AutomationTaskEntity::class,
         MessageEntity::class,
         CompactMarkerEntity::class,
@@ -34,7 +35,7 @@ import androidx.room.withTransaction
         ConversationTaskEntity::class,
         ConversationEventEntity::class,
     ],
-    version = 9,
+    version = 10,
     exportSchema = true,
 )
 abstract class OctopDatabase : RoomDatabase() {
@@ -43,6 +44,7 @@ abstract class OctopDatabase : RoomDatabase() {
     abstract fun threads(): ThreadDao
     abstract fun threadTags(): ThreadTagDao
     abstract fun memoryItems(): MemoryItemDao
+    abstract fun serverMemoryCache(): ServerMemoryCacheDao
     abstract fun automationTasks(): AutomationTaskDao
     abstract fun messages(): MessageDao
     abstract fun attachments(): AttachmentDao
@@ -67,6 +69,7 @@ abstract class OctopDatabase : RoomDatabase() {
             threads().clear()
             threadTags().clear()
             memoryItems().clear()
+            serverMemoryCache().clear()
             automationTasks().clear()
             attachments().clear()
             compactMarkers().clear()
@@ -360,6 +363,23 @@ abstract class OctopDatabase : RoomDatabase() {
             }
         }
 
+        val MIGRATION_9_10 = object : Migration(9, 10) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS `server_memory_cache` (
+                        `host` TEXT NOT NULL,
+                        `agentId` TEXT NOT NULL,
+                        `schemaVersion` INTEGER NOT NULL,
+                        `snapshotJson` TEXT NOT NULL,
+                        `cachedAt` INTEGER NOT NULL,
+                        PRIMARY KEY(`host`, `agentId`)
+                    )
+                    """.trimIndent(),
+                )
+            }
+        }
+
         fun get(context: Context): OctopDatabase =
             instance ?: synchronized(this) {
                 instance ?: Room.databaseBuilder(
@@ -375,6 +395,7 @@ abstract class OctopDatabase : RoomDatabase() {
                     MIGRATION_6_7,
                     MIGRATION_7_8,
                     MIGRATION_8_9,
+                    MIGRATION_9_10,
                 )
                     .build()
                     .also { instance = it }

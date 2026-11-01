@@ -16,6 +16,7 @@ import com.octopmobile.app.data.repo.MainConversationRepository
 import com.octopmobile.app.data.repo.MemoryRepository
 import com.octopmobile.app.data.repo.NaturalLanguageTaskRepository
 import com.octopmobile.app.data.repo.ServerMemoryRepository
+import com.octopmobile.app.data.repo.ServerMemoryCacheRepository
 import com.octopmobile.app.data.repo.TagRepository
 import com.octopmobile.app.data.repo.ThreadRepository
 import com.octopmobile.app.data.repo.TodayRepository
@@ -150,6 +151,9 @@ class AppContainer(context: Context) {
 
     /** 服务端记忆聚合：把画像 / 情绪 / 记忆沉淀拉平成适合移动端的三块。 */
     fun serverMemoryRepository(baseUrl: String): ServerMemoryRepository = ServerMemoryRepository(api(baseUrl))
+
+    fun serverMemoryCacheRepository(): ServerMemoryCacheRepository =
+        ServerMemoryCacheRepository(database.serverMemoryCache(), json)
 
     /** 自动任务镜像。带实例与 agent —— 服务端 cron 是按 agent 分组的。 */
     fun automationRepository(baseUrl: String, agentId: String): AutomationRepository =

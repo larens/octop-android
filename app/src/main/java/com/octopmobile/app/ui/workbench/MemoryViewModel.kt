@@ -28,6 +28,7 @@ data class MemoryUiState(
     val agentId: String? = null,
     val agentName: String? = null,
     val snapshot: ServerMemorySnapshot? = null,
+    val cachedAt: Long? = null,
     val refreshing: Boolean = false,
     val error: ApiError? = null,
     val needsLogin: Boolean = false,
@@ -56,6 +57,7 @@ class MemoryViewModel(private val container: AppContainer) : ViewModel() {
                     agentId = agentId,
                     agentName = agentName,
                     snapshot = null,
+                    cachedAt = null,
                     error = null,
                     needsLogin = false,
                 )
@@ -116,16 +118,29 @@ class MemoryViewModel(private val container: AppContainer) : ViewModel() {
             error = null,
             needsLogin = false,
         )
+        if (uiState.snapshot == null) {
+            container.serverMemoryCacheRepository().read(host, agentId)?.let { cached ->
+                uiState = uiState.copy(
+                    snapshot = cached.snapshot,
+                    cachedAt = cached.cachedAt,
+                )
+            }
+        }
         when (
             val result = container.serverMemoryRepository(host)
                 .snapshot(agentId, refreshDiaries = refreshDiaries)
         ) {
-            is ApiResult.Ok -> uiState = uiState.copy(
-                refreshing = false,
-                snapshot = result.value,
-                error = null,
-                needsLogin = false,
-            )
+            is ApiResult.Ok -> {
+                val cachedAt = System.currentTimeMillis()
+                container.serverMemoryCacheRepository().write(host, agentId, result.value, cachedAt)
+                uiState = uiState.copy(
+                    refreshing = false,
+                    snapshot = result.value,
+                    cachedAt = cachedAt,
+                    error = null,
+                    needsLogin = false,
+                )
+            }
 
             is ApiResult.Failure -> uiState = uiState.copy(
                 refreshing = false,

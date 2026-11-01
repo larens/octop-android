@@ -33,6 +33,7 @@ import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.CalendarToday
 import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.CloudOff
 import androidx.compose.material.icons.filled.Psychology
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Today
@@ -143,6 +144,7 @@ private fun MemoryHome(
     onOpenDiary: (MemoryEpisode) -> Unit,
     onOpenProfile: () -> Unit,
 ) {
+    val showingCached = state.snapshot != null && state.error != null
     val recentDiaries = remember(state.snapshot?.episodes) {
         recentDiaries(
             diaries = state.snapshot?.episodes.orEmpty(),
@@ -184,8 +186,22 @@ private fun MemoryHome(
         }
 
         state.snapshot?.let { snapshot ->
+            if (showingCached) {
+                item {
+                    CachedMemoryNotice(
+                        cachedAt = state.cachedAt,
+                        onRefresh = onRefresh,
+                    )
+                }
+            }
             item {
-                Box(modifier = Modifier.overlapPrevious(40.dp)) {
+                Box(
+                    modifier = if (showingCached) {
+                        Modifier
+                    } else {
+                        Modifier.overlapPrevious(40.dp)
+                    },
+                ) {
                     DiaryShelf(
                         diaries = recentDiaries,
                         onOpenAll = onOpenAllDiaries,
@@ -199,6 +215,57 @@ private fun MemoryHome(
                     updatedAt = latestMemoryActivity(snapshot),
                     onClick = onOpenProfile,
                 )
+            }
+        }
+    }
+}
+
+@Composable
+private fun CachedMemoryNotice(
+    cachedAt: Long?,
+    onRefresh: () -> Unit,
+) {
+    Surface(
+        modifier = Modifier.padding(horizontal = 16.dp).fillMaxWidth(),
+        shape = RoundedCornerShape(20.dp),
+        color = MaterialTheme.colorScheme.tertiaryContainer.copy(alpha = 0.58f),
+    ) {
+        Row(
+            modifier = Modifier.padding(start = 16.dp, top = 14.dp, end = 8.dp, bottom = 14.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Icon(
+                Icons.Filled.CloudOff,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.onTertiaryContainer,
+                modifier = Modifier.size(22.dp),
+            )
+            Spacer(Modifier.width(12.dp))
+            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                Text(
+                    stringResource(R.string.memory_cached_title),
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.SemiBold,
+                    color = MaterialTheme.colorScheme.onTertiaryContainer,
+                )
+                Text(
+                    stringResource(R.string.memory_cached_body),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onTertiaryContainer.copy(alpha = 0.82f),
+                )
+                cachedAt?.let {
+                    Text(
+                        stringResource(
+                            R.string.memory_cached_updated,
+                            DateUtils.getRelativeTimeSpanString(it).toString(),
+                        ),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onTertiaryContainer.copy(alpha = 0.72f),
+                    )
+                }
+            }
+            TextButton(onClick = onRefresh) {
+                Text(stringResource(R.string.memory_cached_retry))
             }
         }
     }

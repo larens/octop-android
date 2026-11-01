@@ -146,6 +146,34 @@ class MobileDataMigrationTest {
         }
     }
 
+    @Test
+    fun migrate9To10_addsServerMemoryCacheWithoutLosingThreads() {
+        helper.createDatabase(SERVER_MEMORY_NAME, 9).apply {
+            execSQL(
+                "INSERT INTO threads VALUES (" +
+                    "'thread-1','agent-1','Keep me',NULL,0,1,1,0,NULL,'ask',0,0)"
+            )
+            close()
+        }
+
+        helper.runMigrationsAndValidate(
+            SERVER_MEMORY_NAME,
+            10,
+            true,
+            OctopDatabase.MIGRATION_9_10,
+        ).apply {
+            query("SELECT title FROM threads WHERE threadId = 'thread-1'").use {
+                check(it.moveToFirst())
+                check(it.getString(0) == "Keep me")
+            }
+            query("SELECT COUNT(*) FROM server_memory_cache").use {
+                check(it.moveToFirst())
+                check(it.getInt(0) == 0)
+            }
+            close()
+        }
+    }
+
     private companion object {
         const val NAME = "mobile-data-migration-test"
         const val TODAY_NAME = "today-cards-migration-test"
@@ -153,5 +181,6 @@ class MobileDataMigrationTest {
         const val EXECUTION_NAME = "today-execution-migration-test"
         const val RISK_NAME = "today-risk-migration-test"
         const val ROUTER_NAME = "router-phase0-migration-test"
+        const val SERVER_MEMORY_NAME = "server-memory-cache-migration-test"
     }
 }

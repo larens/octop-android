@@ -148,6 +148,22 @@ interface MemoryItemDao {
 }
 
 @Dao
+interface ServerMemoryCacheDao {
+
+    @Query("SELECT * FROM server_memory_cache WHERE host = :host AND agentId = :agentId LIMIT 1")
+    suspend fun find(host: String, agentId: String): ServerMemoryCacheEntity?
+
+    @Upsert
+    suspend fun upsert(entity: ServerMemoryCacheEntity)
+
+    @Query("DELETE FROM server_memory_cache WHERE host = :host AND agentId = :agentId")
+    suspend fun delete(host: String, agentId: String)
+
+    @Query("DELETE FROM server_memory_cache")
+    suspend fun clear()
+}
+
+@Dao
 interface AutomationTaskDao {
 
     /** 服务端 cron 列表是**全量**接口，所以镜像也按 agent 整体替换（见 `AutomationRepository.refresh`）。 */

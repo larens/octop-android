@@ -8,6 +8,7 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.supervisorScope
+import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonNull
@@ -730,12 +731,14 @@ class ServerMemoryRepository(private val api: OctopApi) {
     }
 }
 
+@Serializable
 data class ServerMemorySnapshot(
     val portrait: MemoryPortrait,
     val episodes: List<MemoryEpisode>,
     val archives: List<MemoryArchiveItem>,
 )
 
+@Serializable
 data class MemoryPortrait(
     val preferredAddress: String?,
     val summary: String,
@@ -744,6 +747,7 @@ data class MemoryPortrait(
     val truths: List<String>,
 )
 
+@Serializable
 data class MemoryEpisode(
     val id: String,
     val title: String?,
@@ -754,6 +758,7 @@ data class MemoryEpisode(
     val occurredAt: Long?,
 )
 
+@Serializable
 data class MemoryArchiveItem(
     val kind: String?,
     val title: String,

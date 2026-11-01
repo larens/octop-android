@@ -534,6 +534,10 @@
     <string name="memory_loading_body">Fetching portrait, emotions, and archive data from the server.</string>
     <string name="memory_agent_missing_title">No memory space yet</string>
     <string name="memory_agent_missing_body">Connect and select an agent first so the Memory tab can read its long-term archive.</string>
+    <string name="memory_cached_title">Showing saved memory</string>
+    <string name="memory_cached_body">The server is unavailable. This content comes from the local cache.</string>
+    <string name="memory_cached_updated">Last synced %1$s</string>
+    <string name="memory_cached_retry">Retry</string>
     <string name="memory_server_unavailable_title">Server memory is unavailable</string>
     <string name="memory_server_empty_title">No server memory yet</string>
     <string name="memory_server_empty_body">Keep chatting and let a few turns finish. Portrait, emotion diary, and archive data will show up here.</string>
