@@ -514,7 +514,8 @@ class RouterBudgetGate:
     def _finish_lease(self, lease: BudgetLease, *, failed: bool) -> None:
         if not lease.conversation_id:
             return
-        actual = max(0, min(lease.actual_tokens, lease.estimated_tokens))
+        actual = max(0, lease.actual_tokens)
+        enforced_tokens = min(actual, lease.estimated_tokens)
         status = "failed" if failed else "completed"
         if not lease.enforced:
             self._append_budget_event(
@@ -530,6 +531,9 @@ class RouterBudgetGate:
                     "surface": lease.surface,
                     "mode": lease.mode,
                     "actual_tokens": actual,
+                    "estimated_tokens": lease.estimated_tokens,
+                    "enforced_tokens": enforced_tokens,
+                    "overrun_tokens": max(0, actual - lease.estimated_tokens),
                     "would_block": lease.would_block,
                     "block_reasons": lease.block_reasons,
                 },
@@ -540,7 +544,7 @@ class RouterBudgetGate:
         if not reservations:
             return
         cost_rate = self.config_for(lease.surface).cost_per_1k_tokens_micros
-        actual_cost = actual * cost_rate // 1_000
+        actual_cost = enforced_tokens * cost_rate // 1_000
         settlements = [
             {
                 "scope_type": item["scope_type"],
@@ -549,7 +553,7 @@ class RouterBudgetGate:
                 "period_end": item["period_end"],
                 "reserved_tokens": item["reserved_tokens"],
                 "reserved_cost_micros": item["reserved_cost_micros"],
-                "spent_tokens": actual,
+                "spent_tokens": enforced_tokens,
                 "spent_cost_micros": actual_cost,
             }
             for item in reservations
@@ -571,7 +575,7 @@ class RouterBudgetGate:
                 summary=f"{lease.surface} budget settlement failed",
                 payload={
                     "surface": lease.surface,
-                    "actual_tokens": actual,
+                    "actual_tokens": enforced_tokens,
                     "overflow": lease._overflow,
                 },
             )
@@ -581,14 +585,14 @@ class RouterBudgetGate:
             trace_id=lease.trace_id,
             event_type="budget.settled",
             status=status,
-            summary=f"{lease.surface} used {actual} tokens",
+            summary=f"{lease.surface} used {enforced_tokens} tokens",
             payload={
                 "surface": lease.surface,
                 "mode": lease.mode,
-                "actual_tokens": actual,
+                "actual_tokens": enforced_tokens,
                 "overflow": lease._overflow,
             },
-            usage={"total_tokens": actual},
+            usage={"total_tokens": enforced_tokens},
         )
 
     def _append_budget_event(

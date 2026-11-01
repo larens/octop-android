@@ -597,7 +597,8 @@ class RouterPhase0Test(unittest.TestCase):
         settings = MemorySettings(
             {
                 "router.budget.mode": "shadow",
-                "router.budget.user_daily_tokens": "10",
+                    "router.budget.user_daily_tokens": "5",
+                    "router.budget.run_tokens.cron": "10",
             }
         )
         with clean_router_env():
@@ -615,7 +616,7 @@ class RouterPhase0Test(unittest.TestCase):
                 self.db.conn.execute("SELECT COUNT(*) FROM budget_ledgers").fetchone()[0],
                 0,
             )
-            lease.finish(actual_tokens=5)
+            lease.finish(actual_tokens=25)
 
         events = self.service.list_events(
             agent_id="agent-a",
@@ -628,7 +629,11 @@ class RouterPhase0Test(unittest.TestCase):
             ["budget.shadow_checked", "budget.shadow_settled"],
         )
         self.assertEqual(events[0]["status"], "would_block")
-        self.assertEqual(events[1]["usage"], {"total_tokens": 5})
+        self.assertEqual(events[1]["usage"], {"total_tokens": 25})
+        self.assertEqual(events[1]["payload"]["actual_tokens"], 25)
+        self.assertEqual(events[1]["payload"]["estimated_tokens"], 10)
+        self.assertEqual(events[1]["payload"]["enforced_tokens"], 10)
+        self.assertEqual(events[1]["payload"]["overrun_tokens"], 15)
 
     def test_enforce_mode_blocks_before_work_when_any_scope_is_exhausted(self) -> None:
         settings = MemorySettings(
