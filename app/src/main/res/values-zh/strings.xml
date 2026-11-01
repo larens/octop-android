@@ -154,6 +154,8 @@
     <string name="chat_refetch_turn">重新拉取该轮</string>
     <string name="chat_text_expand">展开全文（共 %1$d 字）</string>
     <string name="chat_text_collapse">收起</string>
+    <string name="chat_pickup_code_title">取餐码</string>
+    <string name="chat_pickup_code_hint">到店出示此码；订单实时状态以瑞幸 App 或门店屏幕为准。</string>
     <string name="settings_web_fallback">打开网页版</string>
     <string name="settings_web_fallback_summary">当原生界面缺少某个功能时，回退到内置的浏览器视图。</string>
     <string name="settings_data_sources">数据来源</string>
@@ -463,6 +465,7 @@
     <string name="today_weather_location">地点</string>
     <string name="today_weather_condition">天气</string>
     <string name="today_weather_temperature">温度</string>
+    <string name="today_weather_clothing">穿着</string>
     <string name="today_card_advice_review">花几分钟收尾，别让回顾继续堆积。</string>
     <string name="today_card_advice_default">把它交给 Agent 处理，有结果会回到这里。</string>
     <string name="mobile_data_title">手机数据</string>
@@ -581,11 +584,11 @@
     <string name="tasks_recommended_shuffle">换一批</string>
     <string name="tasks_rec_news_title">每日新闻简报</string>
     <string name="tasks_rec_news_body">整理当天的重要新闻、与你关注领域相关的变化和值得继续追踪的线索。</string>
-    <string name="tasks_rec_news_prompt">请使用新闻连接器整理今天的重要新闻。优先选择与我关注领域相关、可能影响我判断或值得继续追踪的内容，合并重复报道并保留来源。用简洁的要点输出：事件、为什么重要、后续关注什么。</string>
-    <string name="tasks_rec_news_natural">每天早上 8:00 整理当天重要新闻、我关注领域的变化和值得继续追踪的线索，并保留来源</string>
+    <string name="tasks_rec_news_prompt">请先使用 summarize 技能执行“信息聚合、同事件去重、分组核验、压缩输出”的摘要流程，再使用新闻连接器整理今天的重要新闻。优先选择与我关注领域相关、可能影响我判断或值得继续追踪的内容。同一事件被多家报道时合并为一条，只保留最直接、可打开的原始报道 URL，不得用搜索页、图片地址或编造链接代替。每条信息都要给出可打开的原文链接，并用简洁要点说明：事件、为什么重要、后续关注什么。</string>
+    <string name="tasks_rec_news_natural">每天早上 8:00 使用 summarize 技能配合新闻连接器整理当天重要新闻、我关注领域的变化和值得继续追踪的线索；同一事件先去重，每条都保留可直接打开的原文 URL</string>
     <string name="tasks_rec_signal_title">日间 AI 与科技行业信号</string>
     <string name="tasks_rec_signal_body">每天下午低频扫描头部 AI 与科技公司的实质进展，把可验证能力与厂商口径分开比较。</string>
-    <string name="tasks_rec_signal_natural">每天下午 2:00 检查 OpenAI、Anthropic、Google/DeepMind、Meta、Microsoft、NVIDIA、Apple 等重量级 AI 与科技公司的近期进展。只在出现真正重要且相对新的变化时整理 1–3 个信号；没有就只回复 NO_SIGNAL，不要生成空洞摘要。优先综合多家报道，不要复述发布会通稿；明确区分可验证进展、已有第三方验证和仅发布方口径，给出证据强度、关键变化、不确定性及对我的意义，保留真实来源链接。固定输出【总判断】【关键信号】【行动建议】。</string>
+    <string name="tasks_rec_signal_natural">每天下午 2:00 检查 OpenAI、Anthropic、Google/DeepMind、Meta、Microsoft、NVIDIA、Apple 等重量级 AI 与科技公司的近期进展。使用 summarize 技能合并重复报道并核验原始来源，只在出现真正重要且相对新的变化时整理 1–3 个信号；没有就只回复 NO_SIGNAL，不要生成空洞摘要。优先综合多家报道，不要复述发布会通稿；明确区分可验证进展、已有第三方验证和仅发布方口径，给出证据强度、关键变化、不确定性及对我的意义，每个信号保留至少一个可打开的真实原文 URL。固定输出【总判断】【关键信号】【行动建议】。</string>
     <string name="tasks_rec_mail_title">邮件今日速览</string>
     <string name="tasks_rec_mail_body">把新邮件按需要回复、需要行动、等待结果和仅供了解分类。</string>
     <string name="tasks_rec_mail_prompt">请使用邮箱连接器汇总今天的新邮件。按需要回复、需要行动、等待结果和仅供了解分类；每封只保留发件人、主题、关键事项与截止时间，不要代替我发送邮件。</string>
@@ -596,11 +599,11 @@
     <string name="tasks_rec_reading_natural">每天晚上 21:00 回顾今天的阅读，提炼重点、启发和仍值得思考的问题</string>
     <string name="tasks_rec_calendar_title">晨间今日安排与建议</string>
     <string name="tasks_rec_calendar_body">汇总今天的待办、日程、出行与活动，再把天气作为辅助条件，提醒带伞、添衣和会前准备。</string>
-    <string name="tasks_rec_calendar_prompt">请先根据当前日期、我最近明确的位置和记忆中的最新常住/出行地点确定今天查询的城市；若在北京与天津之间往返，按当天所在地查询；若只能确定到滨海等 Open-Meteo 无法精确匹配的区县，改用所属城市（如天津）查询并注明“天津市区，滨海附近趋势仅供参考”，不要直接查询“滨海”；若仍无法确定城市，明确询问我，不要猜。然后调用内置 get_weather(city, days=3) 查询今天的天气、降雨概率、最低/最高温和昼夜温差，再使用飞书日程连接器整理今天的会议与日程，并结合我明确提到的待办、出行和活动形成整体安排。天气只作为辅助信息：若有降雨或降雨概率明显，明确说明是否需要带伞；若气温偏低、降温或昼夜温差大，提醒多穿或注意保暖。按时间列出日程，标记需要准备的材料、潜在冲突和需要提前确认的事项。请固定输出【今日安排】【天气提醒】【行动建议】三个部分，先讲整体安排，再讲天气，最后给出可执行建议。</string>
-    <string name="tasks_rec_calendar_natural">每天早上 7:30 根据最近位置和记忆确定城市，调用 get_weather 查询今天有没有雨、气温和昼夜温差，再整理今天的待办、会议、日程、出行和活动，把天气作为辅助信息告诉我是否需要带伞或多穿；标记会前准备、时间冲突和待确认事项。城市不确定时先问我，不要猜；滨海等无法精确匹配的区县请改用天津并注明趋势仅供参考</string>
+    <string name="tasks_rec_calendar_prompt">请先根据当前日期、我最近明确的位置和记忆中的最新常住/出行地点确定今天查询的城市；若在北京与天津之间往返，按当天所在地查询；若只能确定到滨海等区县而天气服务无法精确匹配，改用所属城市（如天津）查询，不要猜测更细的位置；若仍无法确定城市，明确询问我。若今天包含滨海与北京两地行程，天气必须分别查询并列出两地结果。然后优先调用彩云天气 MCP（caiyun-weather）的实时天气、未来逐小时预报和预警，核对今天的降雨概率、最低/最高温、昼夜温差和短时变化；若彩云不可用或无法解析城市，再回退内置 get_weather(city, days=3)。不得编造预警。再使用飞书日程连接器整理今天的会议与日程，并结合我明确提到的待办、出行和活动形成整体安排。最终卡片只输出结果，不要写位置判断、查询城市、权限状态、连接器/MCP、工具调用、接口限流或回退过程；日程为空时只写“暂无已同步的日程安排”，不要解释权限。天气按地点分行，只保留天气、温度、降雨、穿衣和带伞结论。按时间列出日程，标记需要准备的材料、潜在冲突和需要提前确认的事项。请固定输出【今日安排】【天气提醒】【行动建议】三个部分，先讲整体安排，再讲天气结果，最后给出可执行建议。</string>
+    <string name="tasks_rec_calendar_natural">每天早上 7:30 根据最近位置和记忆确定城市，优先调用彩云天气查询实时天气、逐小时降雨、气温、昼夜温差和预警，彩云失败时回退内置天气；再整理今天的待办、会议、日程、出行和活动，把天气作为辅助信息告诉我是否需要带伞或多穿，并标记会前准备、时间冲突和待确认事项。城市不确定时先问我，不要猜；跨滨海与北京分别列出两地天气。最终只输出结果，不展示定位、权限、连接器、MCP、工具调用或回退过程</string>
     <string name="tasks_rec_news_weekly_title">本周新闻脉络</string>
     <string name="tasks_rec_news_weekly_body">把一周的重要变化串成脉络，过滤重复信息并给出后续观察点。</string>
-    <string name="tasks_rec_news_weekly_natural">每周五 18:00 回顾本周重要新闻，整理关键变化、相互关联和下周值得追踪的线索，并保留来源</string>
+    <string name="tasks_rec_news_weekly_natural">每周五 18:00 使用 summarize 技能配合新闻连接器回顾本周重要新闻：先按事件和时间线合并重复报道，再整理关键变化、相互关联和下周值得追踪的线索；每条信息保留可直接打开的原文 URL，并区分已确认事实、后续进展和仍待核实的信息</string>
     <string name="tasks_rec_mail_evening_title">未处理邮件收尾</string>
     <string name="tasks_rec_mail_evening_body">在下班前找出仍需回复、即将到期和容易遗漏的邮件。</string>
     <string name="tasks_rec_mail_evening_natural">每个工作日 17:30 检查仍未处理的邮件，列出需要回复、即将到期和容易遗漏的事项</string>
@@ -609,8 +612,8 @@
     <string name="tasks_rec_reading_weekly_natural">每周日 20:00 总结本周阅读，提炼核心观点、可行动的启发和下一步值得阅读的内容</string>
     <string name="tasks_rec_calendar_preview_title">夜间明日安排与准备</string>
     <string name="tasks_rec_calendar_preview_body">汇总明天的待办、日程、出行与活动，再结合天气，给出今晚就该完成的准备。</string>
-    <string name="tasks_rec_calendar_preview_prompt">请先根据当前日期、我最近明确的位置和记忆中的最新常住/出行地点确定查询城市；若在北京与天津之间往返，按当天所在地查询；若只能确定到滨海等 Open-Meteo 无法精确匹配的区县，改用所属城市（如天津）查询并注明“天津市区，滨海附近趋势仅供参考”，不要直接查询“滨海”；若仍无法确定城市，明确询问我，不要猜。然后调用内置 get_weather(city, days=2) 查询今天与明天天气，重点看明天的降雨概率、最低/最高温和降温幅度，再使用飞书日程连接器预览明天的会议与日程，并结合我明确提到的待办、出行和活动形成明天整体安排。天气只作为辅助信息：若明天有雨或降雨概率明显，提醒我今晚把折叠伞放进书包；若明天降温或早晚偏冷，提醒备好保暖衣物。按时间列出安排，标记需要提前准备的材料、时间冲突和待确认事项。请固定输出【明日安排】【天气与穿着】【今晚准备】三个部分，先讲安排，再讲天气，最后给出今晚能执行的动作。</string>
-    <string name="tasks_rec_calendar_preview_natural">每天晚上 21:30 根据最近位置和记忆确定城市，调用 get_weather 查看明天有没有雨、气温和降温幅度，再整理明天的待办、会议、日程、出行和活动并给出天气辅助建议；如果明天有雨，提醒我今晚把折叠伞放进书包，如果降温就提醒准备保暖衣物，并标记冲突和待确认事项。城市不确定时先问我，不要猜；滨海等无法精确匹配的区县请改用天津并注明趋势仅供参考</string>
+    <string name="tasks_rec_calendar_preview_prompt">请先根据当前日期、我最近明确的位置和记忆中的最新常住/出行地点确定查询城市；若在北京与天津之间往返，按当天所在地查询；若只能确定到滨海等区县而天气服务无法精确匹配，改用所属城市（如天津）查询，不要猜测更细的位置；若仍无法确定城市，明确询问我。若明天包含滨海与北京两地行程，天气必须分别查询并列出两地结果。然后优先调用彩云天气 MCP（caiyun-weather）的实时天气、逐小时预报和预警，重点核对明天的降雨概率、最低/最高温和降温幅度；若彩云不可用或无法解析城市，再回退内置 get_weather(city, days=2)。不得编造预警。再使用飞书日程连接器预览明天的会议与日程，并结合我明确提到的待办、出行和活动形成明天整体安排。最终卡片只输出结果，不要写位置判断、查询城市、权限状态、连接器/MCP、工具调用、接口限流或回退过程；日程为空时只写“暂无已同步的日程安排”，不要解释权限。若明日在滨海与北京之间移动，直接写明例如“明日上午在滨海，晚上返回北京”。天气按地点分行，只保留两地天气、温度、降雨、穿衣和带伞结论。按时间列出安排，标记需要提前准备的材料、时间冲突和待确认事项。请固定输出【明日安排】【天气与穿着】【今晚准备】三个部分，先讲安排，再讲天气结果，最后给出今晚能执行的动作。</string>
+    <string name="tasks_rec_calendar_preview_natural">每天晚上 21:30 根据最近位置和记忆确定城市，优先调用彩云天气查看明天有没有雨、气温、降温幅度和预警，彩云失败时回退内置天气；再整理明天的待办、会议、日程、出行和活动并给出天气辅助建议。如果明天有雨，提醒我今晚把折叠伞放进书包；如果降温就提醒准备保暖衣物，并标记冲突和待确认事项。城市不确定时先问我，不要猜；跨滨海与北京分别列出两地天气和穿着结论。最终只输出结果，不展示定位、权限、连接器、MCP、工具调用或回退过程</string>
     <string name="tasks_new">新建自动任务</string>
     <string name="tasks_edit">编辑自动任务</string>
     <string name="tasks_empty_title">还没有自动任务</string>

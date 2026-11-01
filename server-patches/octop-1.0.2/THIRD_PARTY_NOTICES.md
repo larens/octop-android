@@ -27,3 +27,16 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
+
+## Lifestyle MCP Packages
+
+The connector catalog launches these pinned third-party packages in separate
+stdio processes:
+
+- `12306-mcp@0.3.10`, MIT, https://github.com/Joooook/12306-mcp
+- `stock-sdk@2.4.6`, ISC, https://github.com/chengzuopeng/stock-sdk
+- `@antv/mcp-server-chart@0.9.10`, MIT,
+  https://github.com/antvis/mcp-server-chart
+
+They are not vendored or modified by Octop. Their own licenses and upstream
+service terms continue to apply.

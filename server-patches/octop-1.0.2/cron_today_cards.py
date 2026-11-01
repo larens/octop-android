@@ -22,10 +22,16 @@ logger = logging.getLogger(__name__)
 
 _URL_RE = re.compile(r"https?://[^\s<>\]\)\}]+")
 _ITEM_RE = re.compile(r"^(?:[-*+]\s+|\d+[.)、]\s*|\*\*\d+[.、]\s*)")
+_PAGE_HEADING_RE = re.compile(r"(?m)^#\s+(.+?)\s*$")
+_PAGE_SOURCE_URL_RE = re.compile(
+    r"(?m)^\s*(?:来源|source)\s*[：:]\s*(?:\[[^\]]*\]\()?(https?://[^)\s]+)",
+    re.IGNORECASE,
+)
 _HONORIFIC_LEAD_RE = re.compile(
     r"^(?:(?:早上|中午|下午|晚上)?好[，,]\s*)?[\u4e00-\u9fff]{1,4}(?:老师|先生|女士|总)[，,：:]"
 )
 _MARKDOWN_LINK_RE = re.compile(r"\[([^\]]+)\]\((https?://[^)]+)\)")
+_MARKDOWN_IMAGE_RE = re.compile(r"!\[([^\]]*)\]\([^)]*\)")
 _MAILTO_LINK_RE = re.compile(r"\[([^\]]+)\]\(mailto:[^)]+\)")
 _SENTENCE_SPLIT_RE = re.compile(r"(?<=[。；;])")
 _SECTION_HEADING_RE = re.compile(r"(?m)^\s*(?:\*\*)?【([^】]+)】(?:\*\*)?[ \t]*(.*)$")
@@ -36,6 +42,94 @@ _DATE_TIME_RE = re.compile(r"\d{1,2}-\d{1,2}\s+\d{1,2}:\d{2}")
 _QUOTED_RE = re.compile(r'"([^"]+)"')
 _PENDING_COUNT_RE = re.compile(r"待处理私人邮件\s*(\d+)\s*封")
 _TRAILING_URL_PUNCTUATION = ".,;:!?，。；：！？、）)]}>'\"*`"
+_FACT_TABLE_PREFIX_RE = re.compile(r"^\s*\|\s*S?\d+\s*\|\s*", re.IGNORECASE)
+_FACT_INLINE_NUMBER_RE = re.compile(r"^\s*S?\d+\s*[|｜]\s*", re.IGNORECASE)
+_FACT_SOURCE_LABEL_RE = re.compile(
+    r"^\s*[「【\[]?\s*(?:站点直读|连接器原文)\s*[」】\]]?\s*",
+    re.IGNORECASE,
+)
+_FACT_TRAILING_TABLE_RE = re.compile(r"(?:\s*[|｜]\s*)+$")
+_SOURCE_TIME_TITLE_RE = re.compile(
+    r"^(?:[^：:|｜]{1,24}\s+)?\d{1,2}[-/]\d{1,2}\s+\d{1,2}:\d{2}$"
+)
+_STRUCTURED_UI_TITLE_RE = re.compile(
+    r'^\s*\{.*?"octop_ui"\s*:',
+    re.DOTALL,
+)
+_NON_ARTICLE_PATH_RE = re.compile(
+    r"\.(?:avif|bmp|gif|ico|jpe?g|png|svg|tiff?|webp)$",
+    re.IGNORECASE,
+)
+_SECTION_PAGE_PATH_RE = re.compile(
+    r"^/(?:gtx|e/static_e)(?:/|$)",
+    re.IGNORECASE,
+)
+_SECTION_PAGE_TITLES = {
+    "移动",
+    "中国观察",
+    "中国日报网评",
+    "中国那些事儿",
+}
+_WEAK_WEB_TITLES = {
+    "首页",
+    "it圈",
+    "最会买",
+    "设置",
+    "投稿",
+    "订阅",
+    "软媒应用",
+    "寻求报道",
+    "站点直读",
+    "连接器原文",
+    "来源",
+    "source",
+}
+_IMAGE_HOST_PREFIXES = ("img.", "image.", "images.", "pic.", "wpimg-")
+_WEATHER_SENTENCE_RE = re.compile(r"[^。；;！？!?\n]+[。；;！？!?]?")
+_WEATHER_QUERY_ALIAS_RE = re.compile(
+    r"([\u4e00-\u9fff]{2,8})用[\u4e00-\u9fff]{2,8}代查"
+)
+_WEATHER_QUERY_CITY_RE = re.compile(r"查询城市\s*[：:]\s*([\u4e00-\u9fff]{2,8})")
+_WEATHER_CITY_COMPARISON_RE = re.compile(
+    r"^(\s*(?:[-*+]\s+)?)([\u4e00-\u9fff]{2,8})(?:对照|参考)"
+    r"(?:[（(]([^）)]*)[）)])?[：:]"
+)
+_WEATHER_CIRCLED_PROCESS_ITEM_RE = re.compile(
+    r"[①②③④⑤⑥⑦⑧⑨⑩]\s*[^①②③④⑤⑥⑦⑧⑨⑩。；;\n]*"
+    r"(?:飞书日历|连接器|权限|授权|MCP)"
+    r"[^①②③④⑤⑥⑦⑧⑨⑩。；;\n]*[；;]?",
+    re.IGNORECASE,
+)
+_WEATHER_DATA_RE = re.compile(r"(?:°\s*[CF]?|℃|降雨概率|降水概率|天气|温度)")
+_INTERNAL_WEATHER_MARKERS = (
+    "位置判断",
+    "查询城市",
+    "飞书日程",
+    "飞书日历",
+    "连接器",
+    "机器人身份",
+    "权限没",
+    "权限未",
+    "权限",
+    "授权",
+    "未接通",
+    "mcp",
+    "open-meteo",
+    "内置源",
+    "内置天气",
+    "只吃经纬度",
+    "我用的是",
+    "按你的规则",
+    "工具调用",
+    "调用过程",
+    "接口被限流",
+    "限流",
+    "实时报文",
+    "优先源",
+    "来源",
+    "no events in this time range",
+)
+_SOFT_WEATHER_SOURCE_MARKERS = ("彩云", "内置源")
 _TODAY_KIND_BY_TASK_KIND = {
     "news": "briefing",
     "weather": "briefing",
@@ -167,8 +261,88 @@ def _clean_mail_detail(value: str) -> str:
 
 
 def _weather_block(value: str, limit: int) -> str:
-    text = _clean_mail_detail(value)
+    text = _public_weather_text(value)
     return text if len(text) <= limit else text[: limit - 1].rstrip() + "…"
+
+
+def _public_weather_text(value: str) -> str:
+    """Remove tool, permission, location-selection and fallback chatter from a result."""
+    lines: list[str] = []
+    weather_place: str | None = None
+    needs_primary_place = False
+    for raw in _clean_mail_detail(value).splitlines():
+        line = raw.strip()
+        if not line:
+            continue
+        if "位置判断" in line:
+            route = re.search(r"(?:明天|明日)[^。；;\n]*", line)
+            if route:
+                lines.append(route.group(0).strip())
+            continue
+        if "查询城市" in line:
+            alias = _WEATHER_QUERY_ALIAS_RE.search(line)
+            city = _WEATHER_QUERY_CITY_RE.search(line)
+            weather_place = (
+                alias.group(1) if alias else city.group(1) if city else None
+            )
+            needs_primary_place = weather_place is not None
+            continue
+        line = _WEATHER_CITY_COMPARISON_RE.sub(
+            lambda match: (
+                f"{match.group(1)}{match.group(2)}："
+                f"{match.group(3) + '；' if match.group(3) else ''}"
+            ),
+            line,
+        )
+        line = _WEATHER_CIRCLED_PROCESS_ITEM_RE.sub("", line).strip()
+        if not line or line in {"待确认事项：", "待确认事项:"}:
+            continue
+        kept: list[str] = []
+        for sentence in _WEATHER_SENTENCE_RE.findall(line):
+            sentence = sentence.strip()
+            if not sentence:
+                continue
+            if any(marker.lower() in sentence.lower() for marker in _INTERNAL_WEATHER_MARKERS):
+                continue
+            if any(marker in sentence for marker in _SOFT_WEATHER_SOURCE_MARKERS):
+                if any(word in sentence for word in ("打架", "为准", "分歧", "不编造")):
+                    continue
+                sentence = re.sub(r"[（(]\s*彩云\s*[：:]\s*", "（", sentence)
+                sentence = re.sub(
+                    r"(?:彩云天气|彩云|内置源|内置天气)"
+                    r"(?:MCP|说|报|显示|给出)?\s*[：:]?",
+                    "",
+                    sentence,
+                    flags=re.IGNORECASE,
+                )
+            sentence = re.sub(
+                r"(?:这点我不含糊|不做夸张描述|我不编造)",
+                "",
+                sentence,
+            )
+            sentence = " ".join(sentence.split())
+            sentence = re.sub(r"[，,：:]\s*$", "。", sentence)
+            if sentence:
+                kept.append(sentence)
+        if not kept:
+            continue
+        cleaned = "".join(kept)
+        if (
+            needs_primary_place
+            and weather_place
+            and _WEATHER_DATA_RE.search(cleaned)
+            and not re.match(
+                r"^\s*(?:[-*+]\s+)?[\u4e00-\u9fff]{2,10}[：:]",
+                cleaned,
+            )
+        ):
+            bullet = re.match(r"^(\s*[-*+]\s+)", cleaned)
+            prefix = bullet.group(1) if bullet else ""
+            body = cleaned[len(prefix) :]
+            cleaned = f"{prefix}{weather_place}：{body}"
+            needs_primary_place = False
+        lines.append(cleaned)
+    return "\n".join(lines)
 
 
 def _split_weather_from_schedule(value: str) -> tuple[str, str]:
@@ -195,7 +369,13 @@ def _split_weather_from_schedule(value: str) -> tuple[str, str]:
     schedule_lines: list[str] = []
     weather_lines: list[str] = []
     for line in _clean_mail_detail(value).splitlines():
-        target = weather_lines if any(hint in line for hint in weather_hints) else schedule_lines
+        target = (
+            schedule_lines
+            if line.lstrip().startswith("|")
+            else weather_lines
+            if any(hint in line for hint in weather_hints)
+            else schedule_lines
+        )
         target.append(line)
     return "\n".join(schedule_lines), "\n".join(weather_lines)
 
@@ -299,7 +479,7 @@ def _signal_result_summary(text: str) -> str:
 def _weather_result_summary(text: str, *, task_name: str) -> str:
     is_tomorrow = _weather_plan_is_tomorrow(task_name, text)
     weather_parts = [
-        _weather_block(_section_body(text, heading), 180)
+        _weather_block(_section_body(text, heading), 1000)
         for heading in ("天气提醒", "天气与穿着", "天气", "今日天气", "明日天气", "天气概览")
     ]
     weather_parts = list(dict.fromkeys(part for part in weather_parts if part))
@@ -318,7 +498,7 @@ def _weather_result_summary(text: str, *, task_name: str) -> str:
                 "明日日程",
             ),
         ),
-        300,
+        1400,
     )
     schedule, schedule_weather = _split_weather_from_schedule(schedule)
     advice = _weather_block(
@@ -326,7 +506,7 @@ def _weather_result_summary(text: str, *, task_name: str) -> str:
             text,
             ("行动建议", "今晚准备", "处理建议", "晨间建议", "夜间建议", "出行建议"),
         ),
-        300,
+        900,
     )
 
     sections: list[str] = []
@@ -349,7 +529,7 @@ def _weather_result_summary(text: str, *, task_name: str) -> str:
         sections.append(f"【{heading}】\n{advice}")
 
     summary = "\n\n".join(sections)
-    return summary if len(summary) <= 1000 else summary[:999].rstrip() + "…"
+    return summary if len(summary) <= 3000 else summary[:2999].rstrip() + "…"
 
 
 def _mail_pending_detail(text: str) -> str:
@@ -594,6 +774,126 @@ def _web_title(raw_line: str, segment: str) -> str:
     return _compact(label, 120)
 
 
+def _clean_fact_title(value: Any) -> str:
+    label = _clean_inline(str(value or ""))
+    if _STRUCTURED_UI_TITLE_RE.match(label):
+        return ""
+    label = _MARKDOWN_IMAGE_RE.sub(r"\1", label)
+    label = _FACT_TABLE_PREFIX_RE.sub("", label)
+    label = _FACT_INLINE_NUMBER_RE.sub("", label)
+    label = _FACT_SOURCE_LABEL_RE.sub("", label)
+    label = _FACT_TRAILING_TABLE_RE.sub("", label)
+    return label.strip(" -—:：|｜[]")
+
+
+def _is_weak_web_title(value: str, url: str) -> bool:
+    label = _clean_fact_title(value)
+    if not label:
+        return True
+    if label.lower() in _WEAK_WEB_TITLES:
+        return True
+    if re.fullmatch(r"(?:来源|source)\s*[：:]\s*[^：:]{1,30}", label, re.IGNORECASE):
+        return True
+    if _SOURCE_TIME_TITLE_RE.match(label):
+        return True
+    host = _web_host(url)
+    residual = label.replace(host, "", 1) if host else label
+    residual = re.sub(
+        r"(?:站点直读|连接器原文|来源|source|\d{1,2}[-/]\d{1,2}|\d{1,2}:\d{2})",
+        "",
+        residual,
+        flags=re.IGNORECASE,
+    )
+    return not re.search(r"[A-Za-z\u4e00-\u9fff]", residual)
+
+
+def _is_non_article_evidence(url: str, title: str) -> bool:
+    parsed = urlsplit(url)
+    path = parsed.path
+    host = parsed.netloc.lower()
+    if not path or path == "/":
+        return True
+    if _NON_ARTICLE_PATH_RE.search(path):
+        return True
+    if (
+        _SECTION_PAGE_PATH_RE.search(path)
+        and _clean_fact_title(title).casefold() in _SECTION_PAGE_TITLES
+    ):
+        return True
+    if host.startswith(_IMAGE_HOST_PREFIXES):
+        return True
+    if re.search(r"(?:imageview|x-oss-process|thumbnail|resize)", parsed.query, re.IGNORECASE):
+        return True
+    return _clean_fact_title(title).lower() in _WEAK_WEB_TITLES
+
+
+def _web_title_score(value: str, url: str) -> int:
+    if _is_weak_web_title(value, url):
+        return 1
+    return len(_clean_fact_title(value))
+
+
+def _merge_web_evidence(
+    primary: list[TodayEvidenceInput],
+    discovered: list[TodayEvidenceInput],
+) -> list[TodayEvidenceInput]:
+    """Prefer connector-returned article titles while keeping the model's URL order."""
+    discovered_by_url = {
+        str(item.url or item.reference): item
+        for item in discovered
+        if item.url or item.reference
+    }
+    merged: list[TodayEvidenceInput] = []
+    seen_urls: set[str] = set()
+    for item in primary:
+        url = str(item.url or item.reference)
+        seen_urls.add(url)
+        title = str(item.title or "")
+        excerpt = item.excerpt
+        candidate = discovered_by_url.get(url)
+        if candidate is not None:
+            candidate_title = str(candidate.title or "")
+            if _web_title_score(candidate_title, url) > _web_title_score(title, url):
+                title = candidate_title
+                excerpt = excerpt or candidate.excerpt
+            elif _is_weak_web_title(title, url):
+                title = candidate_title
+        title = _clean_fact_title(title)
+        if _is_non_article_evidence(url, title) or _is_weak_web_title(title, url):
+            continue
+        merged.append(
+            TodayEvidenceInput(
+                source_type=item.source_type,
+                reference=item.reference,
+                url=item.url,
+                title=title,
+                excerpt=excerpt,
+                occurred_at=item.occurred_at,
+            )
+        )
+    for item in discovered:
+        url = str(item.url or item.reference)
+        if not url or url in seen_urls:
+            continue
+        seen_urls.add(url)
+        title = _clean_fact_title(item.title)
+        if _is_weak_web_title(title, url):
+            title = _web_host(url) or url
+        if _is_non_article_evidence(url, title) or _is_weak_web_title(title, url):
+            continue
+        merged.append(
+            TodayEvidenceInput(
+                source_type=item.source_type,
+                reference=item.reference,
+                url=item.url,
+                title=title,
+                excerpt=item.excerpt,
+                occurred_at=item.occurred_at,
+            )
+        )
+    return merged
+
+
 def _web_host(url: str) -> str:
     return urlsplit(url).netloc.removeprefix("www.")
 
@@ -605,6 +905,27 @@ def _meaningful_web_title(value: str, url: str) -> bool:
         label = re.sub(re.escape(host), "", label, flags=re.IGNORECASE)
     label = re.sub(r"[\s·|｜:：;；,，.。!?！？()（）\[\]【】<>《》\-—–]+", "", label)
     return bool(label)
+
+
+def _article_snapshot_item(content: str) -> tuple[str, str] | None:
+    """Read one article page's visible heading and canonical source URL."""
+    source = _PAGE_SOURCE_URL_RE.search(content)
+    if source is None:
+        return None
+    heading = _PAGE_HEADING_RE.search(content[: source.start()])
+    if heading is None:
+        return None
+    title = _clean_fact_title(
+        _MARKDOWN_LINK_RE.sub(r"\1", heading.group(1)).strip(" #*_")
+    )
+    url = _clean_url(source.group(1))
+    if (
+        not title
+        or _is_weak_web_title(title, url)
+        or _is_non_article_evidence(url, title)
+    ):
+        return None
+    return title, url
 
 
 def _web_evidence(text: str, *, occurred_at: int, limit: int = 99) -> list[TodayEvidenceInput]:
@@ -648,7 +969,11 @@ def _embedded_web_items(value: Any, *, limit: int = 12) -> list[tuple[str, str]]
 
     def visit(node: Any) -> bool:
         if isinstance(node, dict):
-            title = str(node.get("title") or "").strip()
+            title = str(
+                node.get("title")
+                or node.get("full_name")
+                or ""
+            ).strip()
             raw_url = node.get("url") or node.get("link")
             if title and isinstance(raw_url, str):
                 url = _clean_url(raw_url)
@@ -656,6 +981,7 @@ def _embedded_web_items(value: Any, *, limit: int = 12) -> list[tuple[str, str]]
                 if (
                     url.startswith(("http://", "https://"))
                     and "gtimg.com" not in host
+                    and not _is_non_article_evidence(url, title)
                     and url not in seen
                 ):
                     seen.add(url)
@@ -683,12 +1009,26 @@ def _thread_web_evidence(
 ) -> list[TodayEvidenceInput]:
     """Use the connector output as source evidence when the model omits links from its answer."""
     with db.connect() as conn:
-        rows = conn.execute(
-            "SELECT message_json FROM thread_messages "
-            "WHERE thread_id = ? AND role = 'tool' AND created_at >= ? "
-            "ORDER BY seq DESC LIMIT 40",
-            (thread_id, since),
-        ).fetchall()
+        last_human = conn.execute(
+            "SELECT seq FROM thread_messages "
+            "WHERE thread_id = ? AND role = 'human' "
+            "ORDER BY seq DESC LIMIT 1",
+            (thread_id,),
+        ).fetchone()
+        if last_human is not None:
+            rows = conn.execute(
+                "SELECT message_json FROM thread_messages "
+                "WHERE thread_id = ? AND role = 'tool' AND seq > ? "
+                "ORDER BY seq DESC LIMIT 80",
+                (thread_id, last_human["seq"]),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT message_json FROM thread_messages "
+                "WHERE thread_id = ? AND role = 'tool' AND created_at >= ? "
+                "ORDER BY seq DESC LIMIT 40",
+                (thread_id, since),
+            ).fetchall()
 
     evidence: list[TodayEvidenceInput] = []
     seen: set[str] = set()
@@ -702,11 +1042,25 @@ def _thread_web_evidence(
         except (TypeError, json.JSONDecodeError):
             pass
         if not items:
-            for item in _web_evidence(content, occurred_at=occurred_at, limit=limit):
-                url = str(item.url or item.reference)
-                items.append((str(item.title or url), url))
+            article = _article_snapshot_item(content)
+            if article is not None:
+                items.append(article)
+        if not items:
+            items.extend(
+                (str(item.title or item.url or item.reference), str(item.url or item.reference))
+                for item in _web_evidence(content, occurred_at=occurred_at, limit=limit)
+                if not _is_non_article_evidence(
+                    str(item.url or item.reference),
+                    str(item.title or ""),
+                )
+            )
         for title, url in items:
-            if not url or url in seen:
+            if (
+                not url
+                or url in seen
+                or _is_non_article_evidence(url, title)
+                or _is_weak_web_title(title, url)
+            ):
                 continue
             seen.add(url)
             evidence.append(
@@ -857,17 +1211,15 @@ def publish_cron_task_card(
         kind=task_kind,
     )
     web_evidence = _web_evidence(text, occurred_at=last_run_at)
-    if task_kind == "signal":
-        known_urls = {str(item.url or item.reference) for item in web_evidence}
-        web_evidence.extend(
-            item
-            for item in _thread_web_evidence(
+    if task_kind in {"news", "signal"}:
+        web_evidence = _merge_web_evidence(
+            web_evidence,
+            _thread_web_evidence(
                 db,
                 thread_id=thread_id,
                 occurred_at=last_run_at,
                 since=last_run_at,
-            )
-            if str(item.url or item.reference) not in known_urls
+            ),
         )
     if task_kind == "signal" and status == "ok" and (not summary or not web_evidence):
         return {

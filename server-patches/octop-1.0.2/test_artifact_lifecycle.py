@@ -8,7 +8,11 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from install_artifact_lifecycle import patch_middleware, patch_thread_repo
+from install_artifact_lifecycle import (
+    patch_artifact_source,
+    patch_middleware,
+    patch_thread_repo,
+)
 
 
 class _Store:
@@ -37,6 +41,18 @@ class _Store:
 
 class ArtifactLifecycleInstallerTest(unittest.TestCase):
     def test_installer_patches_are_idempotent(self) -> None:
+        artifact = '''
+ARTIFACT_TOOL_BASES = frozenset(
+    {
+        "write_file",
+        "mobile_screenshot",
+    }
+)
+_REL_DIR_RE = re.compile(
+    r"(?:^|[\\s\\"'`])((?:outbound|inbound|generated)/[^\\s\\"'<>]+)",
+    re.IGNORECASE,
+)
+'''
         middleware = """
 logger = logging.getLogger(__name__)
 
@@ -71,17 +87,36 @@ logger = logging.getLogger(__name__)
         pass
 """
 
+        patched_artifact = patch_artifact_source(artifact)
         patched_middleware = patch_middleware(middleware)
         patched_repo = patch_thread_repo(repo)
 
+        self.assertIn('"execute",', patched_artifact)
+        self.assertIn("\\s\\\"'`/]", patched_artifact)
         self.assertIn("_ARTIFACT_REMOVAL_TOOL_BASES", patched_middleware)
         self.assertIn("def _remove(", patched_middleware)
         self.assertIn("def remove_artifacts(", patched_repo)
+        self.assertEqual(patched_artifact, patch_artifact_source(patched_artifact))
         self.assertEqual(patched_middleware, patch_middleware(patched_middleware))
         self.assertEqual(patched_repo, patch_thread_repo(patched_repo))
 
 
 class ArtifactLifecycleBehaviorTest(unittest.TestCase):
+    def test_execute_output_registers_generated_html(self) -> None:
+        from octop.infra.agents.threads.artifact import extract_artifact_paths
+
+        workspace = Path("/data/agent-workspace/.octop/workspaces/agent-1")
+        paths = extract_artifact_paths(
+            tool_name="execute",
+            result=(
+                "saved: /.octop/workspaces/agent-1/generated/report.html "
+                "size: 144893"
+            ),
+            workspace_dir=workspace,
+        )
+
+        self.assertEqual([str(workspace / "generated/report.html")], paths)
+
     def test_successful_delete_removes_current_and_peer_artifact(self) -> None:
         from langchain_core.messages import ToolMessage
         from octop.infra.agents.middleware.thread_artifacts import (

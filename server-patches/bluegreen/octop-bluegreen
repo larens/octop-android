@@ -179,6 +179,10 @@ apply_patch_pack() {
     "$release/venv/bin/python" install_calendar_card_format.py
     "$release/venv/bin/python" install_today_feedback_semantics.py
     "$release/venv/bin/python" install_xiaomi_health_cloud.py
+    "$release/venv/bin/python" install_feishu_mcp.py
+    "$release/venv/bin/python" install_feishu_user_auth_recovery.py
+    "$release/venv/bin/python" install_mcp_connectors.py
+    "$release/venv/bin/python" install_lifestyle_mcp_connectors.py
   )
   OCTOP_SITE_PACKAGES="$site" \
     OCTOP_BACKUPS_DIR="$release/patch-backups" \
@@ -201,7 +205,15 @@ apply_patch_pack() {
     "$site/octop/infra/today/cards.py" \
     "$site/octop/infra/interest_monitor.py" \
     "$site/octop/infra/memory/mobile_diaries.py" \
-    "$site/octop/infra/memory/mobile_profiles.py"
+    "$site/octop/infra/memory/mobile_profiles.py" \
+    "$site/octop/infra/connectors/catalog.py" \
+    "$site/octop/infra/connectors/builder.py" \
+    "$site/octop/infra/connectors/probe.py" \
+    "$site/octop/infra/connectors/china_holidays_mcp.py" \
+    "$site/octop/infra/connectors/oauth/mcp.py" \
+    "$site/octop/infra/connectors/gateway/feishu_user_auth.py" \
+    "$site/octop/infra/connectors/gateway/adapters/feishu_cli.py" \
+    "$site/octop/api/routers/connectors.py"
 }
 
 run_patch_tests() {
@@ -213,6 +225,11 @@ run_patch_tests() {
     "$release/venv/bin/python" test_mobile_today_backport.py
     "$release/venv/bin/python" test_artifact_shares.py
     "$release/venv/bin/python" test_artifact_lifecycle.py
+    "$release/venv/bin/python" test_feishu_mcp.py
+    "$release/venv/bin/python" test_feishu_user_auth_recovery.py
+    "$release/venv/bin/python" test_mcp_connectors.py
+    "$release/venv/bin/python" test_lifestyle_mcp_connectors.py
+    "$release/venv/bin/python" test_agent_tooling.py
     "$release/venv/bin/python" -m unittest -v \
       test_cron_today_cards.py \
       test_health_today_cards.py \
@@ -251,6 +268,10 @@ verify_release() {
   OCTOP_DB_PATH="$home/octop.db" \
     "$release/venv/bin/python" "$release/patch-pack/migrate_existing_tasks.py" \
     >"$work/task-migration.log"
+  OCTOP_HOME="$home" \
+    OCTOP_DB_PATH="$home/octop.db" \
+    "$release/venv/bin/python" "$release/patch-pack/migrate_agent_tooling.py" \
+    >"$work/agent-tooling-migration.log"
 
   (
     export OCTOP_HOME="$home"
@@ -533,6 +554,10 @@ cmd_promote() {
   OCTOP_DB_PATH="$ROOT/octop.db" \
     "$release/venv/bin/python" "$release/patch-pack/migrate_existing_tasks.py" \
     >"$release/acceptance/promote-task-migration.log"
+  OCTOP_HOME="$ROOT" \
+    OCTOP_DB_PATH="$ROOT/octop.db" \
+    "$release/venv/bin/python" "$release/patch-pack/migrate_agent_tooling.py" \
+    >"$release/acceptance/promote-agent-tooling-migration.log"
 
   if [ -n "$before" ]; then
     atomic_symlink "$before" "$STATE/previous"

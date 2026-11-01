@@ -159,7 +159,7 @@ fun TodayPane(
             },
             onProcess = {
                 todayViewModel.markRead(card)
-                onProcessMobileSignal(card.actionPrompt, card.id)
+                onProcessMobileSignal(card.actionPromptForChat(), card.id)
             },
         )
     }
@@ -343,7 +343,7 @@ fun TodayPane(
             onProcess = {
                 selectedCardId = null
                 todayViewModel.markRead(card)
-                onProcessMobileSignal(card.actionPrompt, card.id)
+                onProcessMobileSignal(card.actionPromptForChat(), card.id)
             },
         )
     }

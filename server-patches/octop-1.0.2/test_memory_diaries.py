@@ -49,6 +49,8 @@ class FakeMemory:
 class FakeLLM:
     def call_llm(self, prompt, **_kwargs):
         assert "Technical work" in prompt
+        assert "Self-Improving + Proactive Agent" in prompt
+        assert "candidate lesson" in prompt
         return """{
           "diaries": [{
             "date": "2026-10-29",

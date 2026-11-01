@@ -23,7 +23,7 @@ from octop_memory.types import DigestRecord
 
 logger = logging.getLogger(__name__)
 
-DIARY_VERSION = "mobile-diary/v2"
+DIARY_VERSION = "mobile-diary/v3"
 DIARY_TZ = ZoneInfo("Asia/Shanghai")
 
 _EMOTIONS = {
@@ -59,9 +59,15 @@ For each day with meaningful material:
      about the user's preferences or working style.
   4. What remains open, risky, or worth following up next time.
   For a sparse day, write one short honest paragraph instead of padding.
-- growth: <= 180 Chinese characters describing the agent's own useful lesson:
+- growth: <= 180 Chinese characters following the
+  Self-Improving + Proactive Agent discipline. Describe a candidate lesson,
+  not a permanent rule:
   a better collaboration pattern, a corrected assumption, or a capability it
-  had to acquire. Leave empty if there is no real growth to report.
+  had to acquire. Prefer an explicit user correction, a repeated friction seen
+  on at least two occasions, or a verified discovery. Include the trigger,
+  correction, reusable rule, evidence, boundary, and what remains to verify.
+  Label it as "候选经验" or "观察"; never claim that a preference, persona, or
+  global rule was permanently adopted. Leave empty if there is no real growth.
 - emotion: one of neutral, happy, sad, angry, anxious, excited, frustrated,
   grateful, tired, reflective. This is the overall tone, not the user's mood.
 - source_count: the number of source excerpts used for that day.
@@ -73,6 +79,12 @@ Rules:
 - Scheduled-task output can be mentioned as work the agent completed, but do
   not expose internal prompts, secrets, tokens, or private URLs.
 - Keep personal details only when they are relevant to the day's progress.
+- A single ambiguous remark is not enough to infer a stable preference. A
+  correction only becomes a candidate rule when it has an explicit request or
+  repeated evidence. Do not silently promote candidate lessons into profile or
+  system settings.
+- Do not write credentials, account identifiers, precise health readings, or
+  other sensitive values into growth.
 - Output JSON only, with no markdown fences or commentary.
 - Return at most one entry per date.
 

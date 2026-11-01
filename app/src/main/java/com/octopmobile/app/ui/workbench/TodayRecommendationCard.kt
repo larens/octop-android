@@ -6,6 +6,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.IntrinsicSize
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -1649,7 +1650,15 @@ private fun DailyPlanPanel(
                             color = weatherAccent,
                         )
                         val parsedWeather = details.weatherDetails
-                        if (parsedWeather?.isStructured == true) {
+                        val multiCityWeather = details.multiCityWeather
+                        if (multiCityWeather != null) {
+                            Spacer(Modifier.height(7.dp))
+                            MultiCityWeatherPanel(
+                                weather = multiCityWeather,
+                                accent = weatherAccent,
+                                expanded = expanded,
+                            )
+                        } else if (parsedWeather?.isStructured == true) {
                             Spacer(Modifier.height(7.dp))
                             WeatherMetricRow(
                                 weather = parsedWeather,
@@ -1815,6 +1824,124 @@ private fun DailyPlanBody(
                         overflow = if (expanded) TextOverflow.Clip else TextOverflow.Ellipsis,
                     )
                 }
+            }
+        }
+    }
+}
+
+@Composable
+private fun MultiCityWeatherPanel(
+    weather: TodayMultiCityWeather,
+    accent: Color,
+    expanded: Boolean,
+) {
+    Column(verticalArrangement = Arrangement.spacedBy(7.dp)) {
+        weather.cities.chunked(2).forEach { rowCities ->
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(IntrinsicSize.Max),
+                horizontalArrangement = Arrangement.spacedBy(7.dp),
+            ) {
+                rowCities.forEach { city ->
+                    WeatherCityCard(
+                        weather = city,
+                        accent = accent,
+                        expanded = expanded,
+                        modifier = Modifier
+                            .weight(1f)
+                            .fillMaxHeight(),
+                    )
+                }
+                if (rowCities.size == 1) {
+                    Spacer(Modifier.weight(1f))
+                }
+            }
+        }
+        weather.clothing?.let { clothing ->
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(9.dp))
+                    .background(accent.copy(alpha = 0.07f))
+                    .padding(horizontal = 9.dp, vertical = 7.dp),
+                verticalAlignment = Alignment.Top,
+            ) {
+                Text(
+                    text = stringResource(R.string.today_weather_clothing),
+                    style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.SemiBold),
+                    color = accent,
+                )
+                Spacer(Modifier.width(7.dp))
+                Text(
+                    text = clothing,
+                    modifier = Modifier.weight(1f),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = if (expanded) 2 else 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun WeatherCityCard(
+    weather: TodayCityWeather,
+    accent: Color,
+    expanded: Boolean,
+    modifier: Modifier,
+) {
+    Surface(
+        modifier = modifier,
+        shape = RoundedCornerShape(11.dp),
+        color = accent.copy(alpha = 0.075f),
+    ) {
+        Column(
+            modifier = Modifier.padding(horizontal = 9.dp, vertical = 8.dp),
+            verticalArrangement = Arrangement.spacedBy(5.dp),
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    text = weather.city,
+                    style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold),
+                    color = accent,
+                )
+                Spacer(Modifier.weight(1f))
+                weather.precipitation?.let { precipitation ->
+                    Text(
+                        text = precipitation,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+            weather.condition?.let { condition ->
+                Text(
+                    text = condition,
+                    style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.SemiBold),
+                    color = MaterialTheme.colorScheme.onSurface,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+            weather.temperature?.let { temperature ->
+                Text(
+                    text = temperature,
+                    style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
+                    color = accent,
+                    maxLines = 1,
+                )
+            }
+            weather.note?.let { note ->
+                Text(
+                    text = note,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = if (expanded) 3 else 2,
+                    overflow = TextOverflow.Ellipsis,
+                )
             }
         }
     }

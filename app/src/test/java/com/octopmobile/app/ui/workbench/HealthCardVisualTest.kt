@@ -45,6 +45,32 @@ class HealthCardVisualTest {
     }
 
     @Test
+    fun combinesNightWakeupsAndWakeTimeIntoOneCompactMetric() {
+        val summary = """
+            【健康可视化】
+            {"w":"morning","m":[
+              {"k":"awake","v":0,"d":"0 分钟","u":"分钟","c":"line","s":[0,0,0,0,0,0,0]},
+              {"k":"wake_time","v":408,"d":"06:48","u":"","c":"line","s":[415,358,326,421,474,343,408]}
+            ]}
+        """.trimIndent()
+
+        val metrics = requireNotNull(parseHealthVisualization(summary)).metrics
+        val combined = consolidatedHealthMetrics(metrics).single()
+
+        assertEquals("sleep_end", combined.key)
+        assertEquals("06:48", combined.display)
+        assertEquals("", combined.unit)
+        assertEquals("睡醒", healthMetricTitle(combined))
+        assertEquals("", healthDisplayUnit(combined))
+        assertEquals(
+            "睡眠时长（夜醒 0 分钟）",
+            healthPrimaryTitle(HealthMetricVisual(key = "sleep"), metrics),
+        )
+        assertEquals(408.0, combined.value)
+        assertEquals(7, combined.series.size)
+    }
+
+    @Test
     fun parsesRicherXiaomiStyleHealthMetrics() {
         val richerSummary = """
             【趋势摘要】

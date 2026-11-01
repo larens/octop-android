@@ -24,6 +24,14 @@ _HEALTH_SOURCES = ("health_connect", "android_health_connect", "xiaomi_health")
 _LOOKBACK_DAYS = 16
 _ALERT_KINDS = ("sedentary", "stress", "heart", "oxygen")
 _MAX_VISUAL_METRICS = 8
+_HEALTH_ACTION_RULES = (
+    "优先使用已加载的个人健康技能（healthfit-cn / health-score-pro / "
+    "personal-health-journal），只依据卡片中的趋势和当天实际记录给建议。"
+    "先说明趋势依据，再给 1–2 项未来 24 小时可执行且保守的生活方式动作；"
+    "不做疾病诊断，不推销补剂或产品，数据不足时直接说明。"
+    "若出现胸闷、气短、晕厥等明确红旗信号，优先建议及时线下就医，"
+    "并说明这些建议不能替代专业诊疗。"
+)
 _EVENT_TITLES = {
     "health.steps_30d": "步数",
     "health.distance_daily": "活动距离",
@@ -107,6 +115,34 @@ class HealthCard:
     action_prompt: str
     occurred_at: int
     evidence: tuple[TodayEvidenceInput, ...]
+
+
+def _health_prompt_with_record(title: str, summary: str, instructions: str) -> str:
+    if "卡片记录：" in instructions:
+        return instructions
+    record = summary.split("【健康可视化】", 1)[0].strip()
+    if not record:
+        return instructions
+    return (
+        f"请结合健康卡片「{title}」和已加载的个人健康技能给我建议。\n"
+        f"卡片记录：\n{record}\n\n"
+        f"{instructions}"
+    )
+
+
+def _health_action_prompt(
+    goal: str,
+    *,
+    title: str = "",
+    summary: str = "",
+) -> str:
+    if not title or not summary:
+        return f"{goal}{_HEALTH_ACTION_RULES}"
+    return _health_prompt_with_record(
+        title,
+        summary,
+        f"{goal}{_HEALTH_ACTION_RULES}",
+    )
 
 
 def _as_int(value: Any, default: int = 0) -> int:
@@ -875,14 +911,16 @@ def build_morning_card(events: list[HealthEvent], local_now: datetime) -> Health
         )
         for event in sleep_events[:8]
     )
+    title = f"昨晚睡眠：{_duration_text(duration)}，质量{quality}"
     return HealthCard(
         dedupe_key=f"auto:health:morning:{local_now.date().isoformat()}",
-        title=f"昨晚睡眠：{_duration_text(duration)}，质量{quality}",
+        title=title,
         summary=summary,
         why_now="早晨适合回顾昨夜睡眠，并据此安排今天的精力与运动强度。",
-        action_prompt=(
-            "结合昨晚睡眠和今天的安排，给我 1–2 个具体可执行的作息调整建议；"
-            "不要做医疗诊断。"
+        action_prompt=_health_action_prompt(
+            "结合昨晚睡眠、今天的安排和近期恢复趋势，给我 1–2 个具体可执行的调整建议。",
+            title=title,
+            summary=summary,
         ),
         occurred_at=ends_at,
         evidence=evidence,
@@ -1493,14 +1531,17 @@ def build_daily_health_card(events: list[HealthEvent], local_now: datetime) -> H
         title_parts.append(steps)
     elif standing:
         title_parts.append(f"站立 {standing.split(' ', 1)[0]} 小时")
+    title = " · ".join(title_parts)
     return HealthCard(
         dedupe_key=f"auto:health:daily:{target_date.isoformat()}",
-        title=" · ".join(title_parts),
+        title=title,
         summary=summary,
         why_now="晚间适合收束昨晚睡眠、今天的活动、恢复状态与睡眠准备。",
-        action_prompt=(
-            "基于今天的压力、心率、血氧、步数和运动记录，给我 1–3 个可执行的生活建议；"
-            "不要做医疗诊断，缺少数据时直接说明。"
+        action_prompt=_health_action_prompt(
+            "基于今天的压力、心率、血氧、步数、运动和睡眠准备，"
+            "给我 1–3 个可执行的生活建议。",
+            title=title,
+            summary=summary,
         ),
         occurred_at=int(
             local_now.replace(hour=19, minute=0, second=0, microsecond=0).timestamp()
@@ -1852,9 +1893,10 @@ def build_weekly_health_card(
         title=title,
         summary=summary,
         why_now="每 7 天回看睡眠、活动量与恢复趋势，比只看单日波动更适合调整下周节奏。",
-        action_prompt=(
-            "基于这份 7 天健康趋势，给我 1–3 个下周可执行的生活方式建议；"
-            "不要做医疗诊断，缺少数据时直接说明。"
+        action_prompt=_health_action_prompt(
+            "比较这份 7 天趋势与实际作息，给我 1–3 个下周可执行的生活方式建议。",
+            title=title,
+            summary=summary,
         ),
         occurred_at=int(local_now.timestamp()),
         evidence=evidence,
@@ -1909,7 +1951,7 @@ def _alert_card(
         title=title,
         summary=summary,
         why_now=why_now,
-        action_prompt=action_prompt,
+        action_prompt=_health_prompt_with_record(title, summary, action_prompt),
         occurred_at=event.occurred_at,
         evidence=(
             TodayEvidenceInput(
@@ -1967,7 +2009,9 @@ def build_daytime_alert_cards(
                     ),
                     local_now=local_now,
                     why_now="当前血氧读数低于常用参考范围，值得先复测并观察身体感受。",
-                    action_prompt="结合今天的血氧读数，给我安全、保守的复测与就医判断建议；不要做诊断。",
+                    action_prompt=_health_action_prompt(
+                        "结合今天的血氧读数，给我安全、保守的复测与就医判断建议。"
+                    ),
                 )
             )
 
@@ -2023,7 +2067,9 @@ def build_daytime_alert_cards(
                     ),
                     local_now=local_now,
                     why_now="今天的心率与近期记录相比出现了值得复核的变化。",
-                    action_prompt="解释今天的心率变化，并给出复测和何时寻求医疗帮助的保守建议。",
+                    action_prompt=_health_action_prompt(
+                        "解释今天的心率变化，并给出复测和何时寻求医疗帮助的保守建议。"
+                    ),
                 )
             )
 
@@ -2066,7 +2112,9 @@ def build_daytime_alert_cards(
                     ),
                     local_now=local_now,
                     why_now="当前压力读数高于你的近期基线，短暂打断连续负荷更合适。",
-                    action_prompt="根据当前压力读数，给我一个 5–10 分钟内能完成的恢复动作。",
+                    action_prompt=_health_action_prompt(
+                        "根据当前压力读数，给我一个 5–10 分钟内能完成的恢复动作。"
+                    ),
                 )
             )
 
@@ -2099,7 +2147,9 @@ def build_daytime_alert_cards(
                     ),
                     local_now=local_now,
                     why_now="连续久坐已经超过 90 分钟，现在打断比晚上一次性补活动更有效。",
-                    action_prompt="结合当前久坐时长，给我一个 2–3 分钟就能完成的站立活动。",
+                    action_prompt=_health_action_prompt(
+                        "结合当前久坐时长，给我一个 2–3 分钟就能完成的站立活动。"
+                    ),
                 )
             )
 

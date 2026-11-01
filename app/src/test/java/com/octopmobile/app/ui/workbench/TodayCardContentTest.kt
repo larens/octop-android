@@ -539,6 +539,70 @@ class TodayCardContentTest {
     }
 
     @Test
+    fun sameDayHealthKeepsOnlyTheLatestCardInEachTimeWindow() {
+        val cards = listOf(
+            card(
+                "old-morning",
+                kind = "health",
+                occurredAt = at(2026, 10, 28, 7, 0),
+                summary = healthSummary("morning"),
+            ),
+            card(
+                "new-morning",
+                kind = "health",
+                occurredAt = at(2026, 10, 28, 8, 0),
+                summary = healthSummary("morning"),
+            ),
+            card(
+                "old-evening",
+                kind = "health",
+                occurredAt = at(2026, 10, 28, 18, 0),
+                summary = healthSummary("evening"),
+            ),
+            card(
+                "new-evening",
+                kind = "health",
+                occurredAt = at(2026, 10, 28, 19, 0),
+                summary = healthSummary("evening"),
+            ),
+        )
+
+        val groups = groupTodayCards(cards, at(2026, 10, 28, 20, 0), zone)
+
+        assertEquals(listOf("new-evening", "new-morning"), groups.current.map { it.id })
+        assertTrue(groups.history.isEmpty())
+    }
+
+    @Test
+    fun newMorningHealthHidesPreviousMorningButKeepsUnreplacedEveningHistory() {
+        val cards = listOf(
+            card(
+                "yesterday-morning",
+                kind = "health",
+                occurredAt = at(2026, 10, 27, 7, 30),
+                summary = healthSummary("morning"),
+            ),
+            card(
+                "yesterday-evening",
+                kind = "health",
+                occurredAt = at(2026, 10, 27, 19, 0),
+                summary = healthSummary("evening"),
+            ),
+            card(
+                "today-morning",
+                kind = "health",
+                occurredAt = at(2026, 10, 28, 7, 30),
+                summary = healthSummary("morning"),
+            ),
+        )
+
+        val groups = groupTodayCards(cards, at(2026, 10, 28, 9, 0), zone)
+
+        assertEquals(listOf("today-morning"), groups.current.map { it.id })
+        assertEquals(listOf("yesterday-evening"), groups.history.map { it.id })
+    }
+
+    @Test
     fun dailyReviewRollsToYesterdayBeforeFive() {
         val beforeCutoff = todayReviewPeriod(at(2026, 10, 28, 4, 59), zone)
         val afterCutoff = todayReviewPeriod(at(2026, 10, 28, 5, 0), zone)
@@ -623,10 +687,7 @@ class TodayCardContentTest {
         )
         assertFalse(weatherIndicatesRain("北京，晴，降雨概率 0%，不用带伞。"))
         assertTrue(weatherIndicatesRain("北京，小雨，降雨概率 60%。"))
-        assertEquals(
-            "暂无数据 · 飞书日历未接通",
-            normalizeDailyPlanLine("| — | 暂无数据 | — | 飞书日历未接通 |"),
-        )
+        assertEquals(null, normalizeDailyPlanLine("| — | 暂无数据 | — | 飞书日历未接通 |"))
         assertEquals(null, normalizeDailyPlanLine("|---|---|---|"))
     }
 
@@ -657,6 +718,124 @@ class TodayCardContentTest {
         assertEquals("11.2°C", summary?.temperature)
         assertEquals("降雨概率 0%。", summary?.detail)
         assertTrue(summary?.isStructured == true)
+    }
+
+    @Test
+    fun dailyPlanRemovesInternalProcessAndFallsBackToMultiCityWeatherText() {
+        val plan = card(
+            "daily-plan",
+            kind = "briefing",
+            occurredAt = at(2026, 10, 31, 22, 18),
+            summary = """
+                【明日安排】
+                明日上午在滨海，晚上返回北京。
+                位置判断：按你的规则今天在天津滨海，明天回北京。
+                飞书日程：连接器权限没接上，返回 No events in this time range。
+
+                | 时间 | 安排 | 备注 |
+                |---|---|---|
+                | 20:00 之后 | 滨海 → 北京南 | 订 20:00 后车次 |
+
+                【天气与穿着】
+                查询城市：天津（滨海用天津市区代查）——来源：彩云天气 MCP（实时 + 逐小时 + 3 日预报）。
+                - 滨海：明天多云转晴，降雨概率 0%，最低 8.4°C / 最高 17.4°C。
+                - 北京：明天多云，降雨概率 0%，最低 5.3°C / 最高 18.2°C。
+                穿着：早晚偏凉，带薄外套。
+
+                【今晚准备】
+                把折叠伞放进书包。
+            """.trimIndent(),
+        ).copy(title = "明日安排与准备")
+
+        val details = requireNotNull(parseTodayDailyPlan(plan))
+
+        assertTrue(details.focus.contains("明日上午在滨海，晚上返回北京"))
+        assertFalse(details.focus.contains("位置判断"))
+        assertFalse(details.focus.contains("飞书日程"))
+        assertTrue(details.weather.orEmpty().contains("滨海：明天多云转晴"))
+        assertTrue(details.weather.orEmpty().contains("北京：明天多云"))
+        assertFalse(details.weather.orEmpty().contains("MCP"))
+        assertEquals(null, details.weatherDetails)
+        assertTrue(details.advice.orEmpty().contains("把折叠伞放进书包"))
+    }
+
+    @Test
+    fun multiCityWeatherBecomesCompactCityCardsWithUsefulNotes() {
+        val plan = card(
+            "multi-city-weather",
+            kind = "briefing",
+            occurredAt = at(2026, 10, 31, 22, 18),
+            summary = """
+                【明日安排】
+                明天白天在滨海，晚上回北京。
+
+                【天气与穿着】
+                - 滨海：明天 11-01：天气 多云转晴（上午多云，15:00 前后转晴），降雨概率 0%，最低 8.4°C / 最高 17.4°C
+                - 与今天对比（今天 10-31 为 6.97~14.08°C、中雨、降雨概率 70%）：最高 升 3.3°C，最低 升 1.5°C → 不是降温，是回升。
+                - 今晚实时（22:18）：11.2°C，体感 9.2°C，正在下大雨；逐小时 23:00 转阴、此后到明早降雨概率 0%。
+                - 北京：你明晚到京；明天 5.3~18.2°C，多云，降雨概率 0%；夜里 21 点后约 10°C，站台上要穿外套
+                - 穿着：明早 8.4°C 偏凉，属于早晚偏凉；薄外套够，不用上厚羽绒。晚上到北京 10~11°C，外套随身别装箱底
+
+                【今晚准备】
+                把折叠伞放进书包。
+            """.trimIndent(),
+        ).copy(title = "明日安排与准备")
+
+        val details = requireNotNull(parseTodayDailyPlan(plan))
+        val weather = requireNotNull(parseMultiCityWeather(requireNotNull(details.weather)))
+
+        assertEquals(listOf("滨海", "北京"), weather.cities.map { it.city })
+        assertEquals("多云转晴", weather.cities[0].condition)
+        assertEquals("8.4–17.4°C", weather.cities[0].temperature)
+        assertEquals("降雨 0%", weather.cities[0].precipitation)
+        assertTrue(weather.cities[0].note.orEmpty().contains("今晚有雨转停"))
+        assertTrue(weather.cities[0].note.orEmpty().contains("较今天回升"))
+        assertEquals("多云", weather.cities[1].condition)
+        assertEquals("5.3~18.2°C", weather.cities[1].temperature)
+        assertEquals("到京后约 10°C，备外套", weather.cities[1].note)
+        assertEquals(
+            "早晚偏凉，薄外套即可；返京随身带",
+            weather.clothing,
+        )
+    }
+
+    @Test
+    fun newsFactTitlesUseTheArticleTitleWithoutSourceTimeOrTableNumber() {
+        val facts = todayNewsFacts(
+            decodeTodayCardEvidence(
+                """
+                    [
+                      {"source_type":"web_search","event_type":"web.search_result","occurred_at":1,"privacy_class":"public_web","title":"| S1 | 新华网·五中全会公报 | |","url":"https://www.news.cn/example"},
+                      {"source_type":"web_search","event_type":"web.search_result","occurred_at":2,"privacy_class":"public_web","title":"「站点直读」10-31 14:26","url":"https://www.ithome.com/example"}
+                    ]
+                """.trimIndent(),
+            ),
+        )
+
+        assertEquals("新华网·五中全会公报", facts[0].title)
+        assertEquals("ithome.com", facts[1].title)
+    }
+
+    @Test
+    fun newsFactTitlesRejectConnectorUiJsonAndKeepTheGitHubRepositoryName() {
+        val facts = todayNewsFacts(
+            decodeTodayCardEvidence(
+                """
+                    [
+                      {
+                        "source_type":"web_search",
+                        "event_type":"web.search_result",
+                        "occurred_at":1,
+                        "privacy_class":"public_web",
+                        "title":"{\"octop_ui\": {\"renderer\": \"github_trending_list\", \"version\": 1}, \"data\": {\"items\": [",
+                        "url":"https://github.com/heydamir/unslop"
+                      }
+                    ]
+                """.trimIndent(),
+            ),
+        )
+
+        assertEquals("heydamir/unslop", facts.single().title)
     }
 
     @Test

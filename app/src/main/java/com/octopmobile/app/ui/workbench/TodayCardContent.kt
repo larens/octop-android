@@ -54,13 +54,33 @@ internal fun groupTodayCards(
         .filter { card ->
             card.kind == "health" && card.localDate(zoneId).isBefore(today)
         }
-    val hasTodayEveningHealth = visibleCards.any { card ->
-        card.kind == "health" &&
-            card.localDate(zoneId) == today &&
-            card.isEveningHealthCard()
+    val todayHealth = visibleCards
+        .filter { card ->
+            card.kind == "health" && card.localDate(zoneId) == today
+        }
+    val latestTodayHealthByWindow = todayHealth
+        .filter { it.healthWindow() in TimeSensitiveHealthWindows }
+        .groupBy { requireNotNull(it.healthWindow()) }
+        .mapValues { (_, cards) -> cards.latestHealthCard() }
+    val staleTodayHealth = todayHealth.filter { card ->
+        val window = card.healthWindow()
+        window != null &&
+            window in TimeSensitiveHealthWindows &&
+            latestTodayHealthByWindow[window]?.id != card.id
     }
+    val latestPreviousHealthByWindow = previousHealth
+        .filter { it.healthWindow() in TimeSensitiveHealthWindows }
+        .groupBy { requireNotNull(it.healthWindow()) }
+        .mapValues { (_, cards) -> cards.latestHealthCard() }
     val history = previousHealth
-        .filterNot { hasTodayEveningHealth && it.isEveningHealthCard() }
+        .filter { card ->
+            val window = card.healthWindow()
+            when {
+                window == null || window !in TimeSensitiveHealthWindows -> true
+                latestTodayHealthByWindow.containsKey(window) -> false
+                else -> latestPreviousHealthByWindow[window]?.id == card.id
+            }
+        }
         .sortedWith(
             compareByDescending<TodayCardEntity>(TodayCardEntity::occurredAt)
                 .thenByDescending(TodayCardEntity::updatedAt),
@@ -69,7 +89,8 @@ internal fun groupTodayCards(
         past.toSet() +
         outsideWindow.toSet() +
         previousDays.toSet() +
-        previousHealth.toSet()
+        previousHealth.toSet() +
+        staleTodayHealth.toSet()
     val current = visibleCards
         .filterNot { it in excluded }
         .sortedWith(
@@ -83,6 +104,23 @@ internal fun groupTodayCards(
         past = past,
         history = history,
     )
+}
+
+private val TimeSensitiveHealthWindows = setOf("morning", "evening")
+
+private fun List<TodayCardEntity>.latestHealthCard(): TodayCardEntity =
+    maxWithOrNull(
+        compareBy<TodayCardEntity>(TodayCardEntity::occurredAt)
+            .thenBy(TodayCardEntity::updatedAt),
+    )!!
+
+private fun TodayCardEntity.healthWindow(): String? {
+    parseHealthVisualization(summary)?.window?.let { return it }
+    return when {
+        title.startsWith("晚间健康") -> "evening"
+        title.startsWith("昨晚睡眠") -> "morning"
+        else -> null
+    }
 }
 
 private val FailedExecutionSummaryPrefixes = listOf("本次执行失败：", "执行失败：")
@@ -112,12 +150,6 @@ private fun TodayCardEntity.hasInvalidConversationEvidence(): Boolean {
                 ?.lowercase()
                 ?.let { text -> FailedConversationExcerptPrefixes.any(text::startsWith) } == true
     }
-}
-
-private fun TodayCardEntity.isEveningHealthCard(): Boolean {
-    if (kind != "health") return false
-    return parseHealthVisualization(summary)?.window == "evening" ||
-        title.startsWith("晚间健康")
 }
 
 private fun TodayCardEntity.currentPriority(nowMillis: Long, zoneId: ZoneId): Int {
@@ -365,6 +397,19 @@ internal data class TodayWeatherDetails(
         get() = location != null && condition != null && temperature != null
 }
 
+internal data class TodayCityWeather(
+    val city: String,
+    val condition: String?,
+    val temperature: String?,
+    val precipitation: String?,
+    val note: String?,
+)
+
+internal data class TodayMultiCityWeather(
+    val cities: List<TodayCityWeather>,
+    val clothing: String?,
+)
+
 internal data class TodayDailyPlanDetails(
     val title: String,
     val focusHeading: String,
@@ -372,6 +417,7 @@ internal data class TodayDailyPlanDetails(
     val weatherHeading: String?,
     val weather: String?,
     val weatherDetails: TodayWeatherDetails?,
+    val multiCityWeather: TodayMultiCityWeather?,
     val adviceHeading: String?,
     val advice: String?,
     val isTomorrow: Boolean,
@@ -438,19 +484,21 @@ internal fun parseTodayDailyPlan(card: TodayCardEntity): TodayDailyPlanDetails? 
         card.summary.contains("【明日天气】") ||
         card.summary.contains("【天气与穿着】") ||
         card.summary.contains("【今晚准备】")
-    val focus = sectionBody(
-        sections,
-        "今日安排",
-        "明日安排",
-        "今日重点",
-        "明日重点",
-        "日程与出行",
-        "日程与准备",
-        "明日准备",
-        "今日日程",
-        "明日日程",
-    ) ?: sections.firstOrNull { it.heading == null }?.body
-        ?: "暂无已同步的日程安排。"
+    val focus = cleanTodayResultText(
+        sectionBody(
+            sections,
+            "今日安排",
+            "明日安排",
+            "今日重点",
+            "明日重点",
+            "日程与出行",
+            "日程与准备",
+            "明日准备",
+            "今日日程",
+            "明日日程",
+        ) ?: sections.firstOrNull { it.heading == null }?.body
+            ?: "暂无已同步的日程安排。",
+    ).ifBlank { "暂无已同步的日程安排。" }
     val weather = sectionBody(
         sections,
         "天气提醒",
@@ -458,7 +506,7 @@ internal fun parseTodayDailyPlan(card: TodayCardEntity): TodayDailyPlanDetails? 
         "天气",
         "今日天气",
         "明日天气",
-    )
+    )?.let(::cleanTodayResultText)?.takeIf(String::isNotBlank)
     val advice = sectionBody(
         sections,
         "行动建议",
@@ -467,7 +515,7 @@ internal fun parseTodayDailyPlan(card: TodayCardEntity): TodayDailyPlanDetails? 
         "晨间建议",
         "夜间建议",
         "出行建议",
-    )
+    )?.let(::cleanTodayResultText)?.takeIf(String::isNotBlank)
     return TodayDailyPlanDetails(
         title = if (isTomorrow) "明日安排与准备" else "今日安排与建议",
         focusHeading = if (isTomorrow) "明日安排" else "今日安排",
@@ -475,6 +523,7 @@ internal fun parseTodayDailyPlan(card: TodayCardEntity): TodayDailyPlanDetails? 
         weatherHeading = weather?.let { if (isTomorrow) "天气与穿着" else "天气提醒" },
         weather = weather,
         weatherDetails = weather?.let(::parseDailyWeather),
+        multiCityWeather = weather?.let(::parseMultiCityWeather),
         adviceHeading = advice?.let { if (isTomorrow) "今晚准备" else "行动建议" },
         advice = advice,
         isTomorrow = isTomorrow,
@@ -557,6 +606,17 @@ internal fun simplifySignalMaturity(value: String): String {
 }
 
 internal fun parseDailyWeather(value: String): TodayWeatherDetails? {
+    val weatherLines = value.lineSequence()
+        .mapNotNull(::normalizeDailyPlanLine)
+        .filter(String::isNotBlank)
+        .toList()
+    val cityWeatherLines = weatherLines.count { line ->
+        WeatherTemperaturePattern.containsMatchIn(line) &&
+            (WeatherCityPrefixPattern.containsMatchIn(line) ||
+                WeatherCityDayPattern.containsMatchIn(line))
+    }
+    if (cityWeatherLines >= 2) return null
+
     val labeledLocation = WeatherLocationLabelPattern.find(value)
         ?.groupValues
         ?.getOrNull(1)
@@ -633,6 +693,120 @@ internal fun parseDailyWeather(value: String): TodayWeatherDetails? {
     )
 }
 
+internal fun parseMultiCityWeather(value: String): TodayMultiCityWeather? {
+    val accumulators = mutableListOf<CityWeatherAccumulator>()
+    var current: CityWeatherAccumulator? = null
+    var clothing: String? = null
+
+    value.lineSequence()
+        .mapNotNull(::normalizeDailyPlanLine)
+        .filter(String::isNotBlank)
+        .forEach { line ->
+            val clothingMatch = WeatherClothingLinePattern.find(line)
+            if (clothingMatch != null) {
+                clothing = clothingMatch.groupValues[1].trim()
+                current = null
+                return@forEach
+            }
+            val cityMatch = WeatherCityLinePattern.find(line)
+            if (cityMatch != null && WeatherTemperaturePattern.containsMatchIn(line)) {
+                current = CityWeatherAccumulator(
+                    city = cityMatch.groupValues[1].trim(),
+                    initialLine = line,
+                    cityBody = cityMatch.groupValues[2].trim(),
+                ).also(accumulators::add)
+            } else {
+                current?.continuations?.add(line)
+            }
+        }
+
+    val cities = accumulators.mapNotNull(CityWeatherAccumulator::toCityWeather)
+    if (cities.size < 2) return null
+    return TodayMultiCityWeather(
+        cities = cities,
+        clothing = clothing?.let(::compactWeatherClothing),
+    )
+}
+
+private class CityWeatherAccumulator(
+    val city: String,
+    val initialLine: String,
+    val cityBody: String,
+) {
+    val continuations = mutableListOf<String>()
+
+    fun toCityWeather(): TodayCityWeather? {
+        val body = WeatherCityDatePrefixPattern.replace(cityBody, "").trim()
+        val temperature = WeatherMinMaxPattern.find(body)?.let { match ->
+            "${match.groupValues[1]}–${match.groupValues[2]}°C"
+        } ?: WeatherTemperaturePattern.find(body)?.value
+        if (temperature == null) return null
+        val condition = WeatherConditionLabelPattern.find(body)
+            ?.groupValues
+            ?.getOrNull(1)
+            ?.substringBefore("（")
+            ?.substringBefore("(")
+            ?.trim()
+            ?.takeIf(String::isNotBlank)
+            ?: WeatherConditionWords
+                .sortedByDescending(String::length)
+                .firstOrNull(body::contains)
+        val precipitation = WeatherProbabilityValuePattern.find(body)
+            ?.groupValues
+            ?.getOrNull(1)
+            ?.let { "降雨 $it%" }
+        val context = (listOf(initialLine) + continuations).joinToString("；")
+        return TodayCityWeather(
+            city = city,
+            condition = condition,
+            temperature = temperature,
+            precipitation = precipitation,
+            note = compactCityWeatherNote(context),
+        )
+    }
+}
+
+private fun compactCityWeatherNote(value: String): String? {
+    val nightTemperature = WeatherNightTemperaturePattern.find(value)
+        ?.groupValues
+        ?.getOrNull(1)
+    val hasCoat = value.contains("穿外套")
+    if (value.contains("到京")) {
+        return when {
+            nightTemperature != null && hasCoat -> "到京后约 ${nightTemperature}°C，备外套"
+            nightTemperature != null -> "到京后约 ${nightTemperature}°C"
+            else -> "你明晚到京"
+        }
+    }
+
+    val notes = mutableListOf<String>()
+    if (value.contains("正在下大雨") || value.contains("降水强度")) {
+        notes += "今晚有雨转停"
+    }
+    if (value.contains("回升") || WeatherTemperatureRisePattern.containsMatchIn(value)) {
+        notes += "较今天回升"
+    }
+    if (nightTemperature != null && hasCoat) {
+        notes += "夜里约 ${nightTemperature}°C，备外套"
+    }
+    return notes.distinct().joinToString(" · ").takeIf(String::isNotBlank)
+}
+
+private fun compactWeatherClothing(value: String): String? {
+    val text = cleanTodayResultText(value)
+    if (text.isBlank()) return null
+    val hints = mutableListOf<String>()
+    if (text.contains("薄外套")) {
+        hints += buildString {
+            if (text.contains("早晚偏凉")) append("早晚偏凉，")
+            append("薄外套即可")
+        }
+    }
+    if (text.contains("外套随身")) hints += "返京随身带"
+    return hints.distinct().joinToString("；").takeIf(String::isNotBlank)
+        ?: text.substringBefore("。").take(36).takeIf(String::isNotBlank)
+}
+
 internal fun phoneScheduleFallbackLines(
     cards: List<TodayCardEntity>,
     nowMillis: Long,
@@ -684,8 +858,28 @@ internal fun weatherIndicatesRain(value: String): Boolean {
     return RainWords.any(value::contains)
 }
 
+internal fun cleanTodayResultText(value: String): String =
+    value.lineSequence()
+        .mapNotNull { raw ->
+            val line = raw
+                .replace(TodaySourceSuffixPattern, "")
+                .trim()
+            when {
+                line.isBlank() -> null
+                InternalTodayProcessMarkers.any { line.contains(it, ignoreCase = true) } -> null
+                else -> line
+            }
+        }
+        .joinToString("\n")
+
 internal fun normalizeDailyPlanLine(raw: String): String? {
-    var line = raw.trim().trimStart('-', '•', '*').trim()
+    var line = cleanTodayResultText(raw)
+        .lineSequence()
+        .firstOrNull()
+        ?.trim()
+        ?.trimStart('-', '•', '*')
+        ?.trim()
+        ?: return null
     if (line.isBlank()) return null
     if (
         line.count { it == '|' } >= 2 &&
@@ -817,10 +1011,11 @@ internal fun todayCardFacts(evidence: List<TodayEvidenceDto>, limit: Int = 3): L
     return evidence.asSequence()
         .mapNotNull { item ->
             val url = item.url?.trim()?.takeIf(String::isNotBlank)
-            val title = item.title?.trim()
-                ?.takeIf { it.isMeaningfulTodayFactText(url) }
-                ?: item.excerpt?.trim()?.take(80)
-                    ?.takeIf { it.isMeaningfulTodayFactText(url) }
+            val title = normalizeTodayFactTitle(item.title, url)
+                .takeIf { it.isMeaningfulTodayFactText(url) }
+                ?: normalizeTodayFactTitle(item.excerpt, url)
+                    .take(80)
+                    .takeIf { it.isMeaningfulTodayFactText(url) }
                 ?: url?.todayFactFallbackTitle()
                 ?: return@mapNotNull null
             val key = url ?: title.lowercase()
@@ -839,6 +1034,19 @@ internal fun todayCardFacts(evidence: List<TodayEvidenceDto>, limit: Int = 3): L
         .toList()
 }
 
+internal fun normalizeTodayFactTitle(value: String?, url: String?): String {
+    var title = value.orEmpty().trim()
+    if (TodayStructuredUiTitlePattern.containsMatchIn(title)) return ""
+    title = TodayFactTablePrefixPattern.replace(title, "")
+    title = TodayFactInlineNumberPattern.replace(title, "")
+    title = TodayFactSourceLabelPattern.replace(title, "")
+    title = TodayFactTrailingTablePattern.replace(title, "")
+    title = title.trim(' ', '-', '—', ':', '：', '|', '｜')
+    if (TodaySourceTimeTitlePattern.matches(title)) return ""
+    if (title.lowercase() in TodayWeakFactTitles) return ""
+    return title
+}
+
 private fun String.isMeaningfulTodayFactText(url: String?): Boolean {
     val host = url?.todayFactHost()
     val withoutSourceLabel = replace(
@@ -854,7 +1062,22 @@ private fun String.isMeaningfulTodayFactText(url: String?): Boolean {
 }
 
 private fun String.todayFactFallbackTitle(): String? =
-    todayFactHost()?.takeIf(String::isNotBlank)
+    runCatching { URI(this) }
+        .getOrNull()
+        ?.let { uri ->
+            val host = uri.host?.removePrefix("www.")?.takeIf(String::isNotBlank)
+            val repository = if (host == "github.com") {
+                uri.path
+                    ?.trim('/')
+                    ?.split('/')
+                    ?.take(2)
+                    ?.takeIf { it.size == 2 }
+                    ?.joinToString("/")
+            } else {
+                null
+            }
+            repository ?: host
+        }
 
 private fun String.todayFactHost(): String? =
     runCatching { URI(this).host }
@@ -864,6 +1087,27 @@ private fun String.todayFactHost(): String? =
 
 private val TodayFactTitleNoisePattern =
     Regex("[\\s·|｜:：;；,，.。!?！？()（）\\[\\]【】<>《》\\-—–]+")
+private val TodayFactTablePrefixPattern =
+    Regex("""^\s*\|\s*S?\d+\s*\|\s*""", RegexOption.IGNORE_CASE)
+private val TodayFactInlineNumberPattern =
+    Regex("""^\s*S?\d+\s*[|｜]\s*""", RegexOption.IGNORE_CASE)
+private val TodayFactSourceLabelPattern = Regex(
+    """^\s*[「【\[]?\s*(?:站点直读|连接器原文)\s*[」】\]]?\s*""",
+    RegexOption.IGNORE_CASE,
+)
+private val TodayFactTrailingTablePattern = Regex("""(?:\s*[|｜]\s*)+$""")
+private val TodaySourceTimeTitlePattern =
+    Regex("""^(?:[^：:|｜]{1,24}\s+)?\d{1,2}[-/]\d{1,2}\s+\d{1,2}:\d{2}$""")
+private val TodayWeakFactTitles = setOf(
+    "站点直读",
+    "连接器原文",
+    "来源",
+    "source",
+)
+private val TodayStructuredUiTitlePattern = Regex(
+    """^\s*\{.*?"octop_ui"\s*:""",
+    setOf(RegexOption.IGNORE_CASE, RegexOption.DOT_MATCHES_ALL),
+)
 
 internal fun todayNewsFacts(evidence: List<TodayEvidenceDto>): List<TodayCardFact> =
     todayCardFacts(evidence, limit = Int.MAX_VALUE)
@@ -910,6 +1154,23 @@ private val WeatherTemperaturePattern =
     Regex("""-?\d+(?:\.\d+)?\s*(?:[~～\-至到]\s*-?\d+(?:\.\d+)?)?\s*(?:°\s*[CF]?|℃)""")
 private val WeatherProbabilityDetailPattern = Regex("(?:降雨|降水)概率[^。；;\\n]*[。]?")
 private val WeatherDetailSegmentPattern = Regex("(?:概率|带伞|伞|穿衣|保暖|湿度|紫外线|风力)")
+private val WeatherCityPrefixPattern = Regex("^[\\u4e00-\\u9fff]{2,10}\\s*[：:]")
+private val WeatherCityDayPattern = Regex("^[\\u4e00-\\u9fff]{2,10}(?:今天|今日|明天|明日)")
+private val WeatherCityLinePattern =
+    Regex("^([\\u4e00-\\u9fff]{2,10})\\s*[：:]\\s*(.*)$")
+private val WeatherClothingLinePattern = Regex("^穿着\\s*[：:]\\s*(.+)$")
+private val WeatherCityDatePrefixPattern =
+    Regex("^(?:今天|今日|明天|明日)?\\s*\\d{1,2}[-/]\\d{1,2}\\s*[：:]?\\s*")
+private val WeatherMinMaxPattern = Regex(
+    """最低\s*(-?\d+(?:\.\d+)?)\s*(?:°\s*C|℃)\s*[/／]\s*最高\s*(-?\d+(?:\.\d+)?)\s*(?:°\s*C|℃)""",
+    RegexOption.IGNORE_CASE,
+)
+private val WeatherProbabilityValuePattern =
+    Regex("""(?:降雨|降水)概率\s*(\d{1,3}(?:\.\d+)?)\s*%""")
+private val WeatherNightTemperaturePattern =
+    Regex("""夜里\s*\d{1,2}\s*点后约\s*(-?\d+(?:\.\d+)?)\s*(?:°C|℃)""")
+private val WeatherTemperatureRisePattern =
+    Regex("""最高\s*升\s*\d+(?:\.\d+)?\s*(?:°C|℃)""")
 private val WeatherConditionWords = listOf(
     "晴",
     "多云",
@@ -937,6 +1198,31 @@ private val MissingScheduleHints = listOf(
     "无法获取",
     "未接通",
     "未连接",
+)
+private val TodaySourceSuffixPattern = Regex(
+    """\s*(?:——|—|；|;)?\s*(?:来源|数据来源)\s*[：:][^。\n]*""",
+    RegexOption.IGNORE_CASE,
+)
+private val InternalTodayProcessMarkers = listOf(
+    "位置判断",
+    "查询城市",
+    "飞书日程",
+    "连接器",
+    "机器人身份",
+    "权限没",
+    "权限未",
+    "未接通",
+    "MCP",
+    "Open-Meteo",
+    "内置源",
+    "内置天气",
+    "只吃经纬度",
+    "我用的是",
+    "按你的规则",
+    "工具调用",
+    "调用过程",
+    "接口被限流",
+    "No events in this time range",
 )
 private val ClockTimePattern = Regex("""\d{1,2}:\d{2}""")
 private val ClockTimeFormatter = DateTimeFormatter.ofPattern("HH:mm")

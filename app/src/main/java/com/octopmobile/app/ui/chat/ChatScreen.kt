@@ -2602,6 +2602,7 @@ private fun MessageBubble(
     val interrupted = entities.any { it.status == MessageStatus.INTERRUPTED }
     // parts → 渲染块：把 reasoning 与工具调用并进同一个「思考过程」（见 [toBlocks]）。
     val blocks = remember(parts, streaming) { parts.toBlocks(streaming) }
+    val pickupCode = remember(parts) { if (isUser) null else pickupCodeFrom(parts) }
     // 这一轮「思考 + 工具」的耗时：见 [thinkingDurationMs]。
     val thinkingDuration = remember(entities) { entities.thinkingDurationMs() }
 
@@ -2633,6 +2634,11 @@ private fun MessageBubble(
                 if (parts.isEmpty()) {
                     // 服务端只给了非正文块（或历史还在投影）时，不留一个完全空白的气泡
                     Text(text = "…", style = MaterialTheme.typography.bodyMedium)
+                }
+
+                pickupCode?.let { code ->
+                    PickupCodeBanner(code)
+                    Spacer(Modifier.height(8.dp))
                 }
 
                 blocks.forEach { block ->
@@ -2690,6 +2696,44 @@ private fun MessageBubble(
                         )
                     }
                 }
+            }
+        }
+    }
+}
+
+@Composable
+private fun PickupCodeBanner(code: String) {
+    Surface(
+        shape = RoundedCornerShape(12.dp),
+        color = MaterialTheme.colorScheme.secondaryContainer,
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Icon(
+                imageVector = Icons.Filled.Check,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.onSecondaryContainer,
+            )
+            Spacer(Modifier.width(10.dp))
+            Column {
+                Text(
+                    text = stringResource(R.string.chat_pickup_code_title),
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSecondaryContainer,
+                )
+                Text(
+                    text = code,
+                    style = MaterialTheme.typography.headlineSmall,
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.onSecondaryContainer,
+                )
+                Text(
+                    text = stringResource(R.string.chat_pickup_code_hint),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSecondaryContainer,
+                )
             }
         }
     }

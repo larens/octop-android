@@ -23,6 +23,7 @@ def _request(
     token: str | None = None,
     body: dict[str, Any] | None = None,
     allowed_errors: frozenset[int] = frozenset(),
+    timeout: int = 60,
 ) -> tuple[int, Any]:
     data = None
     headers = {"Accept": "application/json"}
@@ -34,7 +35,7 @@ def _request(
     request = urllib.request.Request(base_url + path, data=data, headers=headers)
     try:
         # The update-status probe may wait on PyPI on a cold candidate cache.
-        with urllib.request.urlopen(request, timeout=60) as response:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
             payload = response.read()
             return response.status, json.loads(payload) if payload else None
     except urllib.error.HTTPError as exc:
@@ -54,8 +55,9 @@ def _expect_status(
     path: str,
     token: str | None = None,
     body: dict[str, Any] | None = None,
+    timeout: int = 60,
 ) -> Any:
-    status, payload = _request(base_url, path, token=token, body=body)
+    status, payload = _request(base_url, path, token=token, body=body, timeout=timeout)
     if status != 200:
         raise SmokeFailure(f"{path}: expected HTTP 200, got {status}")
     return payload
@@ -101,6 +103,7 @@ def run(base_url: str, credentials_path: Path) -> dict[str, Any]:
             f"/api/agents/{agent_id}/memory/diaries/list",
             token,
             {"days": 7, "limit": 1, "refresh": False},
+            timeout=180,
         ),
         "update": _expect_status(base_url, "/api/update/status", token),
     }

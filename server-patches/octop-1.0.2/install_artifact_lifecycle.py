@@ -9,6 +9,27 @@ from pathlib import Path
 from patch_paths import backups_dir, octop_site
 
 
+def patch_artifact_source(source: str) -> str:
+    if '"execute",\n    }\n)' in source:
+        return source
+    tool_anchor = '''        "mobile_screenshot",
+    }
+)'''
+    tool_patch = '''        "mobile_screenshot",
+        "execute",
+    }
+)'''
+    if tool_anchor not in source:
+        raise RuntimeError("thread artifact tool list anchor not found")
+    source = source.replace(tool_anchor, tool_patch, 1)
+
+    regex_anchor = '''    r"(?:^|[\\s\\"'`])((?:outbound|inbound|generated)/[^\\s\\"'<>]+)",'''
+    regex_patch = '''    r"(?:^|[\\s\\"'`/])((?:outbound|inbound|generated)/[^\\s\\"'<>]+)",'''
+    if regex_anchor not in source:
+        raise RuntimeError("thread artifact path regex anchor not found")
+    return source.replace(regex_anchor, regex_patch, 1)
+
+
 def patch_middleware(source: str) -> str:
     if "_ARTIFACT_REMOVAL_TOOL_BASES" in source:
         return source
@@ -172,6 +193,11 @@ def main() -> None:
     backup.mkdir(parents=True, exist_ok=True)
 
     targets = (
+        (
+            site / "infra/agents/threads/artifact.py",
+            patch_artifact_source,
+            "artifact.py",
+        ),
         (
             site / "infra/agents/middleware/thread_artifacts.py",
             patch_middleware,

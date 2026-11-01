@@ -86,6 +86,7 @@ internal fun healthMetricColor(key: String): Color = when (key) {
     "deep_ratio" -> Color(0xFF7069D8)
     "awake" -> Color(0xFFE4A84C)
     "wake_time" -> Color(0xFF9A7BD8)
+    "sleep_end" -> Color(0xFF9A7BD8)
     "standing" -> Color(0xFF1FB9C7)
     "sedentary" -> Color(0xFFD8912F)
     "heart" -> Color(0xFFF26868)
@@ -108,6 +109,33 @@ internal fun parseHealthVisualization(summary: String): HealthVisualization? {
     }.getOrNull()?.takeIf { it.metrics.isNotEmpty() }
 }
 
+internal fun consolidatedHealthMetrics(
+    metrics: List<HealthMetricVisual>,
+): List<HealthMetricVisual> {
+    val awake = metrics.firstOrNull { it.key == "awake" } ?: return metrics
+    val wakeTime = metrics.firstOrNull { it.key == "wake_time" } ?: return metrics
+    val combined = wakeTime.copy(
+        key = "sleep_end",
+        display = wakeTime.display,
+        unit = "",
+        target = null,
+    )
+    var combinedAdded = false
+    return buildList {
+        metrics.forEach { metric ->
+            when (metric.key) {
+                "awake",
+                "wake_time",
+                -> if (!combinedAdded) {
+                    add(combined)
+                    combinedAdded = true
+                }
+                else -> add(metric)
+            }
+        }
+    }
+}
+
 private data class HealthMetricStyle(
     val color: Color,
     val container: Color,
@@ -128,11 +156,13 @@ internal fun HealthVisualPanel(
     visualization: HealthVisualization,
     accent: Color,
 ) {
-    val primary = visualization.metrics.firstOrNull() ?: return
-    val gridMetrics = visualization.metrics
+    val displayMetrics = consolidatedHealthMetrics(visualization.metrics)
+    val primary = displayMetrics.firstOrNull() ?: return
+    val primaryTitle = healthPrimaryTitle(primary, visualization.metrics)
+    val gridMetrics = displayMetrics
         .drop(1)
         .filterNot { it.key == "stress" }
-    val auxiliaryMetric = visualization.metrics.firstOrNull { it.key == "stress" }
+    val auxiliaryMetric = displayMetrics.firstOrNull { it.key == "stress" }
     Surface(
         modifier = Modifier
             .fillMaxWidth()
@@ -152,9 +182,9 @@ internal fun HealthVisualPanel(
                 healthChartMode(primary.chart) == HealthChartMode.RING &&
                 (primary.target ?: 0.0) > 0.0
             ) {
-                HealthPrimaryRing(primary)
+                HealthPrimaryRing(primary, title = primaryTitle)
             } else {
-                HealthPrimaryTrend(primary, fallbackAccent = accent)
+                HealthPrimaryTrend(primary, title = primaryTitle, fallbackAccent = accent)
             }
             gridMetrics
                 .chunked(2)
@@ -207,6 +237,7 @@ private fun HealthMetricBadge(
 private fun HealthMetricHeading(
     metric: HealthMetricVisual,
     badgeSize: Dp = 28.dp,
+    title: String = healthMetricTitle(metric),
 ) {
     Row(
         verticalAlignment = Alignment.CenterVertically,
@@ -215,7 +246,7 @@ private fun HealthMetricHeading(
         HealthMetricBadge(metric, size = badgeSize)
         Column(modifier = Modifier.weight(1f)) {
             Text(
-                text = healthMetricLabel(metric.key),
+                text = title,
                 style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.SemiBold),
                 color = MaterialTheme.colorScheme.onSurface,
             )
@@ -233,7 +264,10 @@ private fun HealthMetricHeading(
 }
 
 @Composable
-private fun HealthPrimaryRing(metric: HealthMetricVisual) {
+private fun HealthPrimaryRing(
+    metric: HealthMetricVisual,
+    title: String,
+) {
     val target = metric.target ?: return
     val value = metric.value ?: 0.0
     val progress = (value / target).coerceIn(0.0, 1.0).toFloat()
@@ -284,7 +318,7 @@ private fun HealthPrimaryRing(metric: HealthMetricVisual) {
             }
             Spacer(Modifier.width(14.dp))
             Column(modifier = Modifier.weight(1f)) {
-                HealthMetricHeading(metric)
+                HealthMetricHeading(metric, title = title)
                 Spacer(Modifier.height(8.dp))
                 MetricTrend(metric = metric, height = 30.dp)
                 HealthSampleNote(metric)
@@ -296,6 +330,7 @@ private fun HealthPrimaryRing(metric: HealthMetricVisual) {
 @Composable
 private fun HealthPrimaryTrend(
     metric: HealthMetricVisual,
+    title: String,
     fallbackAccent: Color,
 ) {
     val style = healthMetricStyle(metric)
@@ -306,7 +341,7 @@ private fun HealthPrimaryTrend(
             Spacer(Modifier.width(9.dp))
             Column(modifier = Modifier.weight(1f)) {
                 Text(
-                    text = healthMetricLabel(metric.key),
+                    text = title,
                     style = MaterialTheme.typography.labelMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -667,12 +702,30 @@ private fun healthTargetText(metric: HealthMetricVisual, target: Double): String
     return "$targetText · $percent%"
 }
 
+internal fun healthMetricTitle(metric: HealthMetricVisual): String =
+    if (metric.key == "sleep_end" && metric.unit.isNotBlank()) {
+        "睡醒（${metric.unit}）"
+    } else {
+        healthMetricLabel(metric.key)
+    }
+
+internal fun healthPrimaryTitle(
+    metric: HealthMetricVisual,
+    metrics: List<HealthMetricVisual>,
+): String {
+    val title = healthMetricTitle(metric)
+    if (metric.key != "sleep") return title
+    val awake = metrics.firstOrNull { it.key == "awake" && it.display.isNotBlank() } ?: return title
+    return "$title（夜醒 ${awake.display}）"
+}
+
 private fun healthMetricLabel(key: String): String = when (key) {
     "sleep" -> "睡眠时长"
     "deep_sleep" -> "深睡"
     "deep_ratio" -> "深睡占比"
     "awake" -> "夜醒"
     "wake_time" -> "醒来时间"
+    "sleep_end" -> "睡醒"
     "steps" -> "今日步数"
     "calories" -> "活动热量"
     "exercise_minutes" -> "运动时长"
@@ -692,6 +745,7 @@ private fun healthMetricGlyph(key: String): String = when (key) {
     "deep_ratio" -> "深"
     "awake" -> "醒"
     "wake_time" -> "起"
+    "sleep_end" -> "醒"
     "steps" -> "步"
     "calories" -> "热"
     "exercise_minutes" -> "动"
@@ -705,11 +759,12 @@ private fun healthMetricGlyph(key: String): String = when (key) {
     else -> "健"
 }
 
-private fun healthDisplayUnit(metric: HealthMetricVisual): String = when (metric.key) {
+internal fun healthDisplayUnit(metric: HealthMetricVisual): String = when (metric.key) {
     "sleep",
     "deep_sleep",
     "awake",
     "wake_time",
+    "sleep_end",
     -> ""
     else -> metric.unit
 }

@@ -42,7 +42,13 @@ cp artifact_shares.py "$site/api/routers/artifact_shares.py"
 /opt/octop/venv/bin/python install_calendar_card_format.py
 /opt/octop/venv/bin/python install_today_feedback_semantics.py
 /opt/octop/venv/bin/python install_xiaomi_health_cloud.py
+/opt/octop/venv/bin/python install_feishu_mcp.py
+/opt/octop/venv/bin/python install_feishu_user_auth_recovery.py
+/opt/octop/venv/bin/python install_mcp_connectors.py
+/opt/octop/venv/bin/python install_lifestyle_mcp_connectors.py
 /opt/octop/venv/bin/python migrate_existing_tasks.py
+OCTOP_HOME=/opt/octop OCTOP_DB_PATH=/opt/octop/octop.db \
+  /opt/octop/venv/bin/python migrate_agent_tooling.py
 /opt/octop/venv/bin/python -m py_compile \
   "$site/api/routers/chat/history.py" \
   "$site/infra/cron/tools.py" \
@@ -60,6 +66,14 @@ cp artifact_shares.py "$site/api/routers/artifact_shares.py"
   "$site/infra/agents/threads/turn_delete.py" \
   "$site/infra/memory/mobile_diaries.py" \
   "$site/infra/memory/mobile_profiles.py" \
+  "$site/infra/connectors/catalog.py" \
+  "$site/infra/connectors/builder.py" \
+  "$site/infra/connectors/probe.py" \
+  "$site/infra/connectors/china_holidays_mcp.py" \
+  "$site/infra/connectors/oauth/mcp.py" \
+  "$site/infra/connectors/gateway/feishu_user_auth.py" \
+  "$site/infra/connectors/gateway/adapters/feishu_cli.py" \
+  "$site/api/routers/connectors.py" \
   "$site/../octop_memory/application/dashboard_data.py" \
   "$site/../octop_memory/adapters/bridge/handlers.py" \
   "$site/api/routers/memory.py" \
