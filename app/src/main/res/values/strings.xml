@@ -265,15 +265,15 @@
     <string name="err_voice_note_unavailable">No recorder app is available.</string>
 
     <string name="today_hero_title">What is worth moving forward today?</string>
-    <string name="today_hero_body">Start from the threads that are still running, waiting on you, or recently active. Tags, memory, and automations are all reachable from the bottom bar.</string>
+    <string name="today_hero_body">Start with the tasks that need you or are still running. Their execution details stay in the background.</string>
     <string name="today_header_summary">%1$d to handle now · %2$d in the next 3 days</string>
     <string name="today_header_clear">Nothing urgent today. Stay with what matters.</string>
     <string name="today_waiting_title">Waiting On You</string>
-    <string name="today_waiting_subtitle">This thread is paused until you reply or confirm.</string>
+    <string name="today_waiting_subtitle">This task needs more information or confirmation.</string>
     <string name="today_running_title">Still Running</string>
-    <string name="today_running_subtitle">The server is still working on it. Jump back in for the latest progress.</string>
+    <string name="today_running_subtitle">The server is still working on this task.</string>
     <string name="today_recent_title">Recent Momentum</string>
-    <string name="today_recent_subtitle">Open the thread and keep the next step moving.</string>
+    <string name="today_recent_subtitle">Keep the next step moving without opening an execution session.</string>
     <string name="today_empty_title">Nothing to organize yet</string>
     <string name="today_empty_body">Run a few real tasks first. This page will then start surfacing progress, waiting items, and next steps.</string>
     <string name="today_unread_count">%1$d unread</string>
@@ -340,7 +340,7 @@
     <string name="today_card_news_list_title">All news · %1$d items</string>
     <string name="today_card_view_all_news">View all %1$d news items</string>
     <string name="today_card_snooze">Remind me tomorrow</string>
-    <string name="today_card_dismiss">Dismiss</string>
+    <string name="today_card_dismiss">Remove from inbox</string>
     <string name="today_card_feedback">Feedback</string>
     <string name="today_card_feedback_useful">Recommend</string>
     <string name="today_card_feedback_irrelevant">Invalid</string>
@@ -454,7 +454,7 @@
     <string name="today_card_action_conversation">Continue</string>
     <string name="today_card_action_mail">Review mail</string>
     <string name="today_card_action_news">See highlights</string>
-    <string name="today_card_action_task">Continue</string>
+    <string name="today_card_action_task">Handle in main conversation</string>
     <string name="today_card_action_review">Start review</string>
     <string name="today_card_action_default">Ask Agent</string>
     <string name="today_card_advice_past">This has ended. Keep it as a record only.</string>
@@ -463,7 +463,14 @@
     <string name="today_card_advice_health">Choose one realistic adjustment based on today’s schedule.</string>
     <string name="today_card_advice_research">Turn the most relevant item into a decision or action list.</string>
     <string name="today_card_advice_inbox">Extract the action first, then archive it or ask Agent.</string>
-    <string name="today_card_advice_conversation">Close the latest thread first so useful context does not stay scattered.</string>
+    <string name="today_card_advice_conversation">Continue from the current task; its evidence stays attached in Today.</string>
+    <string name="today_task_status_needs_user">Needs you</string>
+    <string name="today_task_status_in_progress">Running</string>
+    <string name="today_task_status_open">Queued</string>
+    <string name="today_task_status_other">Recorded</string>
+    <string name="today_task_updated">Updated %1$s</string>
+    <string name="today_task_open_main">Open main conversation</string>
+    <string name="today_task_close_detail">Close details</string>
     <string name="today_card_advice_mail">Start with the clearest sender and subject; confirm any reply yourself.</string>
     <string name="today_card_advice_news">Open the item most relevant to your current decision and keep the rest as sources.</string>
     <string name="today_signal_judgment">Core judgment</string>

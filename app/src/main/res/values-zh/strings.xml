@@ -265,15 +265,15 @@
     <string name="err_voice_note_unavailable">没有可用的录音应用。</string>
 
     <string name="today_hero_title">今天值得推进什么？</string>
-    <string name="today_hero_body">先从正在执行、等你确认和最近活跃的会话里挑重点。标签、记忆和自动任务都在底部的其他几栏。</string>
+    <string name="today_hero_body">先处理需要你确认或仍在运行的任务；具体的执行会话留在后台，不再成为操作负担。</string>
     <string name="today_header_summary">%1$d 件事现在要处理 · 接下来 3 天 %2$d 件</string>
     <string name="today_header_clear">今天没有紧急事项，可以专注手头的事</string>
     <string name="today_waiting_title">等你确认</string>
-    <string name="today_waiting_subtitle">这个会话正在等待你的回复或确认。</string>
+    <string name="today_waiting_subtitle">这个任务需要你补充信息或确认。</string>
     <string name="today_running_title">正在执行</string>
-    <string name="today_running_subtitle">服务端还在继续跑，适合回来查看最新进展。</string>
+    <string name="today_running_subtitle">服务端仍在执行这个任务。</string>
     <string name="today_recent_title">最近推进</string>
-    <string name="today_recent_subtitle">打开会话继续推进下一步。</string>
+    <string name="today_recent_subtitle">继续推进下一步，不需要打开具体执行会话。</string>
     <string name="today_empty_title">还没有可整理的会话</string>
     <string name="today_empty_body">先发起几个真实任务，Today 页就能开始把最近进展和待确认事项整理出来。</string>
     <string name="today_unread_count">%1$d 条未读</string>
@@ -340,7 +340,7 @@
     <string name="today_card_news_list_title">完整新闻清单 · %1$d 条</string>
     <string name="today_card_view_all_news">查看全部 %1$d 条新闻</string>
     <string name="today_card_snooze">明日再提醒</string>
-    <string name="today_card_dismiss">关闭</string>
+    <string name="today_card_dismiss">移出 Today 收件箱</string>
     <string name="today_card_feedback">反馈</string>
     <string name="today_card_feedback_useful">推荐</string>
     <string name="today_card_feedback_irrelevant">无效</string>
@@ -454,7 +454,7 @@
     <string name="today_card_action_conversation">继续跟进</string>
     <string name="today_card_action_mail">整理邮件</string>
     <string name="today_card_action_news">看重点</string>
-    <string name="today_card_action_task">继续推进</string>
+    <string name="today_card_action_task">在主会话处理</string>
     <string name="today_card_action_review">开始回顾</string>
     <string name="today_card_action_default">让 Agent 处理</string>
     <string name="today_card_advice_past">这件事已经结束，仅保留记录。</string>
@@ -463,7 +463,14 @@
     <string name="today_card_advice_health">结合今天的安排，选择一个真正能执行的调整。</string>
     <string name="today_card_advice_research">把最相关的一条继续整理成判断或行动清单。</string>
     <string name="today_card_advice_inbox">先提炼行动项，再决定归档还是交给 Agent。</string>
-    <string name="today_card_advice_conversation">从最近一轮继续收尾，避免线索散落在多个会话里。</string>
+    <string name="today_card_advice_conversation">从当前任务继续处理，相关依据会保留在 Today。</string>
+    <string name="today_task_status_needs_user">等你确认</string>
+    <string name="today_task_status_in_progress">执行中</string>
+    <string name="today_task_status_open">待开始</string>
+    <string name="today_task_status_other">已记录</string>
+    <string name="today_task_updated">更新于 %1$s</string>
+    <string name="today_task_open_main">在主会话处理</string>
+    <string name="today_task_close_detail">关闭详情</string>
     <string name="today_card_advice_mail">先看发件人和主题最明确的一封；任何回复都先由你确认。</string>
     <string name="today_card_advice_news">优先打开与你当前判断最相关的一条，其余保留来源即可。</string>
     <string name="today_signal_judgment">核心判断</string>

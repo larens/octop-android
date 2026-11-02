@@ -34,7 +34,7 @@ class ThreadVisibilityTest {
                 ),
             ),
         )
-        assertTrue(
+        assertFalse(
             isVisibleConversation(
                 ThreadDto(
                     threadId = "cron",

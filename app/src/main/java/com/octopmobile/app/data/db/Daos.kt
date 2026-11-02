@@ -54,6 +54,10 @@ interface ThreadDao {
     @Query("DELETE FROM threads WHERE agentId = :agentId")
     suspend fun deleteAllByAgent(agentId: String)
 
+    /** 删除服务端明确返回、但当前产品不再展示的会话（例如 cron 执行记录）。 */
+    @Query("DELETE FROM threads WHERE agentId = :agentId AND threadId IN (:threadIds)")
+    suspend fun deleteByIds(agentId: String, threadIds: List<String>)
+
     /** 清掉该 agent 下所有的本地草稿会话（id 带 [prefix]）。 */
     @Query("DELETE FROM threads WHERE agentId = :agentId AND threadId LIKE :prefix || '%'")
     suspend fun deleteDrafts(agentId: String, prefix: String)

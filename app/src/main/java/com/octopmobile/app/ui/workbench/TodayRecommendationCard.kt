@@ -938,7 +938,7 @@ internal fun TodayRecommendationDetail(
     onDismiss: () -> Unit,
     onSnooze: () -> Unit,
     onFeedback: (String) -> Unit,
-    onOpenEvidenceThread: (String) -> Unit,
+    onOpenEvidenceThread: ((String) -> Unit)?,
     onOpenExecution: (() -> Unit)?,
     onReply: ((String) -> Unit)? = null,
     onProcess: () -> Unit,
@@ -1197,9 +1197,14 @@ internal fun TodayRecommendationDetail(
                                         fact.url != null -> {
                                             { uriHandler.openUri(requireNotNull(fact.url)) }
                                         }
-                                        fact.sourceType == "conversation" &&
+                                        onOpenEvidenceThread != null &&
+                                            fact.sourceType == "conversation" &&
                                             !fact.sourceRecordId.isNullOrBlank() -> {
-                                            { onOpenEvidenceThread(requireNotNull(fact.sourceRecordId)) }
+                                            {
+                                                onOpenEvidenceThread(
+                                                    requireNotNull(fact.sourceRecordId),
+                                                )
+                                            }
                                         }
                                         else -> null
                                     }

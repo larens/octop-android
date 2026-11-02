@@ -49,6 +49,8 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.octopmobile.app.R
+import com.octopmobile.app.data.db.ConversationTaskEntity
+import com.octopmobile.app.data.db.ConversationTaskStatus
 import com.octopmobile.app.data.db.MemoryItemEntity
 import com.octopmobile.app.data.db.ThreadEntity
 import com.octopmobile.app.data.db.TodayCardEntity
@@ -68,7 +70,7 @@ import kotlinx.coroutines.delay
 @Composable
 fun TodayPane(
     onOpenThread: (agentId: String, threadId: String) -> Unit,
-    onReplyToTask: (TodayCardEntity, String) -> Unit,
+    onReplyToTask: (TodayCardEntity, String, String) -> Unit,
     onOpenMemory: () -> Unit,
     onProcessMobileSignal: (String, String?) -> Unit,
     onNeedsLogin: () -> Unit,
@@ -80,9 +82,12 @@ fun TodayPane(
     val threads by viewModel.threads.collectAsStateWithLifecycle()
     val memories by memoryViewModel.items.collectAsStateWithLifecycle()
     val todayCards by todayViewModel.cards.collectAsStateWithLifecycle()
+    val mainConversation by todayViewModel.mainConversation.collectAsStateWithLifecycle()
+    val conversationTasks by todayViewModel.conversationTasks.collectAsStateWithLifecycle()
     val todayState = todayViewModel.uiState
     val pendingTodayCard by PendingTodayCard.pending.collectAsStateWithLifecycle()
     var selectedCardId by rememberSaveable { mutableStateOf<String?>(null) }
+    var selectedTaskId by rememberSaveable { mutableStateOf<String?>(null) }
 
     LaunchedEffect(state.needsLogin) {
         if (state.needsLogin) onNeedsLogin()
@@ -103,10 +108,11 @@ fun TodayPane(
         }
     }
 
-    val active = threads.filter { it.turnActive }
-    val awaiting = threads.filter { it.awaitingUser }
+    val taskGroups = remember(conversationTasks) { groupTodayTasks(conversationTasks) }
+    val activeTasks = taskGroups.active
+    val awaitingTasks = taskGroups.needsUser
     val recentMemory = memories.take(TODAY_MEMORY_LIMIT)
-    val agentId = state.selectedAgentId
+    val routerThreadId = mainConversation?.routerThreadId?.takeIf(String::isNotBlank)
     var nowMillis by remember { mutableLongStateOf(System.currentTimeMillis()) }
     LaunchedEffect(Unit) {
         while (true) {
@@ -155,10 +161,14 @@ fun TodayPane(
             onSnooze = { todayViewModel.snooze(card) },
             onFeedback = { todayViewModel.sendFeedback(card, it) },
             onClose = { todayViewModel.dismiss(card) },
-            onOpenExecution = card.executionThreadId?.let { threadId ->
-                { onOpenThread(card.agentId, threadId) }
+            onOpenExecution = if (card.kind == "task" && routerThreadId != null) {
+                { onOpenThread(card.agentId, routerThreadId) }
+            } else {
+                null
             },
-            onReply = { message -> onReplyToTask(card, message) },
+            onReply = { message ->
+                if (routerThreadId != null) onReplyToTask(card, message, routerThreadId)
+            },
             onProcess = {
                 todayViewModel.markRead(card)
                 onProcessMobileSignal(card.actionPromptForChat(), card.id)
@@ -255,32 +265,28 @@ fun TodayPane(
                     }
                 }
 
-                if (awaiting.isNotEmpty()) {
+                if (awaitingTasks.isNotEmpty()) {
                     item {
                         SectionTitle(stringResource(R.string.today_waiting_title))
                     }
-                    items(awaiting, key = { it.threadId }) { thread ->
-                        ThreadSummaryCard(
-                            thread = thread,
+                    items(awaitingTasks, key = { it.taskId }) { task ->
+                        ConversationTaskSummaryCard(
+                            task = task,
                             subtitle = stringResource(R.string.today_waiting_subtitle),
-                            onClick = {
-                                if (agentId != null) onOpenThread(agentId, thread.threadId)
-                            },
+                            onClick = { selectedTaskId = task.taskId },
                         )
                     }
                 }
 
-                if (active.isNotEmpty()) {
+                if (activeTasks.isNotEmpty()) {
                     item {
                         SectionTitle(stringResource(R.string.today_running_title))
                     }
-                    items(active, key = { it.threadId }) { thread ->
-                        ThreadSummaryCard(
-                            thread = thread,
+                    items(activeTasks, key = { it.taskId }) { task ->
+                        ConversationTaskSummaryCard(
+                            task = task,
                             subtitle = stringResource(R.string.today_running_subtitle),
-                            onClick = {
-                                if (agentId != null) onOpenThread(agentId, thread.threadId)
-                            },
+                            onClick = { selectedTaskId = task.taskId },
                         )
                     }
                 }
@@ -332,24 +338,68 @@ fun TodayPane(
                     selectedCardId = null
                 }
             },
-            onOpenEvidenceThread = { threadId ->
-                selectedCardId = null
-                onOpenThread(card.agentId, threadId)
-            },
-            onOpenExecution = card.executionThreadId?.let { threadId ->
+            onOpenEvidenceThread = null,
+            onOpenExecution = if (card.kind == "task" && routerThreadId != null) {
                 {
                     selectedCardId = null
-                    onOpenThread(card.agentId, threadId)
+                    onOpenThread(card.agentId, routerThreadId)
                 }
+            } else {
+                null
             },
             onReply = { message ->
                 selectedCardId = null
-                onReplyToTask(card, message)
+                if (routerThreadId != null) onReplyToTask(card, message, routerThreadId)
             },
             onProcess = {
                 selectedCardId = null
                 todayViewModel.markRead(card)
                 onProcessMobileSignal(card.actionPromptForChat(), card.id)
+            },
+        )
+    }
+
+    conversationTasks.firstOrNull { it.taskId == selectedTaskId }?.let { task ->
+        val agentId = mainConversation?.agentId ?: state.selectedAgentId
+        androidx.compose.material3.AlertDialog(
+            onDismissRequest = { selectedTaskId = null },
+            title = { Text(task.title) },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Text(
+                        text = stringResource(todayTaskStatusLabel(task.status)),
+                        style = MaterialTheme.typography.labelLarge,
+                        color = MaterialTheme.colorScheme.primary,
+                    )
+                    if (task.objective.isNotBlank()) {
+                        Text(task.objective, style = MaterialTheme.typography.bodyMedium)
+                    }
+                    Text(
+                        text = stringResource(
+                            R.string.today_task_updated,
+                            DateUtils.getRelativeTimeSpanString(task.updatedAt).toString(),
+                        ),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            },
+            confirmButton = {
+                if (routerThreadId != null && agentId != null) {
+                    TextButton(
+                        onClick = {
+                            selectedTaskId = null
+                            onOpenThread(agentId, routerThreadId)
+                        },
+                    ) {
+                        Text(stringResource(R.string.today_task_open_main))
+                    }
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { selectedTaskId = null }) {
+                    Text(stringResource(R.string.today_task_close_detail))
+                }
             },
         )
     }
@@ -515,8 +565,8 @@ fun SectionTitle(text: String, modifier: Modifier = Modifier) {
 }
 
 @Composable
-private fun ThreadSummaryCard(
-    thread: ThreadEntity,
+private fun ConversationTaskSummaryCard(
+    task: ConversationTaskEntity,
     subtitle: String,
     onClick: () -> Unit,
 ) {
@@ -530,23 +580,21 @@ private fun ThreadSummaryCard(
         Column(modifier = Modifier.padding(16.dp)) {
             Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                 Text(
-                    text = thread.title?.takeIf { it.isNotBlank() } ?: thread.threadId,
+                    text = task.title,
                     style = MaterialTheme.typography.titleSmall,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                     modifier = Modifier.weight(1f),
                 )
-                if (thread.unreadCount > 0) {
-                    Text(
-                        text = stringResource(R.string.today_unread_count, thread.unreadCount),
-                        style = MaterialTheme.typography.labelMedium,
-                        color = MaterialTheme.colorScheme.primary,
-                    )
-                }
+                Text(
+                    text = stringResource(todayTaskStatusLabel(task.status)),
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.primary,
+                )
             }
             Spacer(Modifier.height(6.dp))
             Text(
-                text = subtitle,
+                text = task.objective.takeIf(String::isNotBlank) ?: subtitle,
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 maxLines = 2,
@@ -554,6 +602,27 @@ private fun ThreadSummaryCard(
             )
         }
     }
+}
+
+internal data class TodayTaskGroups(
+    val needsUser: List<ConversationTaskEntity>,
+    val active: List<ConversationTaskEntity>,
+)
+
+internal fun groupTodayTasks(tasks: List<ConversationTaskEntity>): TodayTaskGroups =
+    TodayTaskGroups(
+        needsUser = tasks.filter { it.status == ConversationTaskStatus.NEEDS_USER },
+        active = tasks.filter {
+            it.status == ConversationTaskStatus.OPEN ||
+                it.status == ConversationTaskStatus.IN_PROGRESS
+        },
+    )
+
+private fun todayTaskStatusLabel(status: String): Int = when (status) {
+    ConversationTaskStatus.NEEDS_USER -> R.string.today_task_status_needs_user
+    ConversationTaskStatus.IN_PROGRESS -> R.string.today_task_status_in_progress
+    ConversationTaskStatus.OPEN -> R.string.today_task_status_open
+    else -> R.string.today_task_status_other
 }
 
 /** Today 上的记忆提炼卡：与主动建议使用同一套信息层级，整理动作留在记忆页。 */

@@ -42,8 +42,14 @@ class ThreadRepository(
         when (val result = api.threads(agentId, limit)) {
             is ApiResult.Ok -> {
                 val local = threadDao.listByAgent(agentId).associateBy { it.threadId }
-                // Android task drafts are implementation details; scheduled cron output is user-visible.
+                // Cron sessions are execution details; their outcomes belong in Today, not history.
                 val visible = result.value.filter(::isVisibleConversation)
+                val hiddenIds = result.value
+                    .filterNot(::isVisibleConversation)
+                    .map { it.threadId }
+                if (hiddenIds.isNotEmpty()) {
+                    threadDao.deleteByIds(agentId, hiddenIds)
+                }
                 val entities = visible.map { it.toEntity(agentId, local[it.threadId]) }
                 threadDao.upsertAll(entities)
                 // 只有「这一页没满」才能确定是全量；满页说明服务端可能还有更多，不能动手。
@@ -276,8 +282,7 @@ private fun ThreadDto.toEntity(agentId: String, local: ThreadEntity?): ThreadEnt
  */
 internal fun isVisibleConversation(thread: ThreadDto): Boolean {
     val isConversation = thread.channelType == null ||
-        thread.channelType == "dashboard" ||
-        thread.channelType == "cron"
+        thread.channelType == "dashboard"
     val userRelevant = thread.hasMessages ||
         thread.isActive ||
         thread.turnActive ||

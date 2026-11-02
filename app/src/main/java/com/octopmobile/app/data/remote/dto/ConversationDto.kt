@@ -84,6 +84,9 @@ data class ContextPackManifestDto(
     val sections: JsonArray = JsonArray(emptyList()),
     @SerialName("included_refs") val includedRefs: JsonArray = JsonArray(emptyList()),
     @SerialName("omitted_refs") val omittedRefs: JsonArray = JsonArray(emptyList()),
+    @SerialName("omitted_count") val omittedCount: Int = 0,
+    @SerialName("omitted_by_reason") val omittedByReason: JsonObject = JsonObject(emptyMap()),
+    @SerialName("omitted_refs_truncated") val omittedRefsTruncated: Boolean = false,
     @SerialName("created_at") val createdAt: Long,
 )
 

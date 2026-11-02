@@ -9,6 +9,8 @@ import androidx.lifecycle.viewModelScope
 import androidx.lifecycle.viewmodel.initializer
 import androidx.lifecycle.viewmodel.viewModelFactory
 import com.octopmobile.app.data.AppContainer
+import com.octopmobile.app.data.db.ConversationTaskEntity
+import com.octopmobile.app.data.db.MainConversationEntity
 import com.octopmobile.app.data.db.TodayCardEntity
 import com.octopmobile.app.data.db.TodayCardLifecycle
 import com.octopmobile.app.data.remote.ApiError
@@ -47,6 +49,29 @@ class TodayViewModel(private val container: AppContainer) : ViewModel() {
     var coverage by mutableStateOf<List<TodaySourceCoverageDto>>(emptyList())
         private set
 
+    val mainConversation: StateFlow<MainConversationEntity?> =
+        combine(host, agentId, ::Pair)
+            .flatMapLatest { (baseUrl, id) ->
+                if (baseUrl.isNullOrBlank() || id.isNullOrBlank()) flowOf(null)
+                else container.mainConversationRepository(baseUrl, id).observeConversation()
+            }
+            .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
+
+    val conversationTasks: StateFlow<List<ConversationTaskEntity>> =
+        combine(host, agentId, ::Pair)
+            .flatMapLatest { (baseUrl, id) ->
+                if (baseUrl.isNullOrBlank() || id.isNullOrBlank()) {
+                    flowOf(emptyList())
+                } else {
+                    val repository = container.mainConversationRepository(baseUrl, id)
+                    repository.observeConversation().flatMapLatest { conversation ->
+                        if (conversation == null) flowOf(emptyList())
+                        else repository.observeTasks(conversation.conversationId)
+                    }
+                }
+            }
+            .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
+
     val cards: StateFlow<List<TodayCardEntity>> = combine(host, agentId, ::Pair)
         .flatMapLatest { (baseUrl, id) ->
             if (baseUrl.isNullOrBlank() || id.isNullOrBlank()) flowOf(emptyList())
@@ -82,6 +107,9 @@ class TodayViewModel(private val container: AppContainer) : ViewModel() {
             val repository = container.todayRepository(baseUrl, id)
             uiState = when (val result = repository.refresh()) {
                 is ApiResult.Ok -> {
+                    // Task capsules are a projection of the main conversation. Older
+                    // servers may not expose them yet; Today still works in that case.
+                    container.mainConversationRepository(baseUrl, id).refreshAll()
                     val coverageResult = repository.refreshCoverage()
                     if (coverageResult is ApiResult.Ok) {
                         coverage = coverageResult.value
