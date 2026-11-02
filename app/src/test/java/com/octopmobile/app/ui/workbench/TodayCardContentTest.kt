@@ -169,6 +169,28 @@ class TodayCardContentTest {
     }
 
     @Test
+    fun hidesLegacyConversationFollowUpCards() {
+        val groups = groupTodayCards(
+            listOf(
+                card(
+                    "legacy-conversation",
+                    kind = "conversation",
+                    occurredAt = at(2026, 10, 27, 17, 0),
+                ),
+                card(
+                    "current-signal",
+                    kind = "signal",
+                    occurredAt = at(2026, 10, 27, 17, 30),
+                ),
+            ),
+            now,
+            zone,
+        )
+
+        assertEquals(listOf("current-signal"), groups.current.map { it.id })
+    }
+
+    @Test
     fun dailyReviewHidesInternalThreadIdsAndFallsBackToReadableMessages() {
         val draftId = "draft-b0db105e-364f-4e62-8c9a-ab535f36346c"
         val orphanId = "23bd4744-9e1b-4c08-b93b-dcebf7d142a2"
@@ -247,6 +269,22 @@ class TodayCardContentTest {
         assertEquals(2, facts.size)
         assertEquals("GPT-6 Astra Pro", facts[0].title)
         assertTrue(facts[1].title.contains("只有摘要"))
+    }
+
+    @Test
+    fun hidesSessionOnlyExecutionEvidenceButKeepsUsefulConversationContext() {
+        val evidence = decodeTodayCardEvidence(
+            """
+            [
+              {"source_type":"conversation","source_record_id":"thread-1","event_type":"conversation.context","occurred_at":1,"privacy_class":"private_user_content","title":"定时任务结果","excerpt":"完整执行记录、过程与来源保留在会话中。"},
+              {"source_type":"conversation","source_record_id":"thread-2","event_type":"conversation.context","occurred_at":2,"privacy_class":"private_user_content","title":"讨论结论","excerpt":"本周先验证主会话链路。"}
+            ]
+            """.trimIndent(),
+        )
+
+        val facts = todayCardFacts(evidence)
+
+        assertEquals(listOf("讨论结论"), facts.map { it.title })
     }
 
     @Test

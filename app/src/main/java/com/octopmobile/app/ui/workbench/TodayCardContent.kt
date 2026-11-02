@@ -29,7 +29,11 @@ internal fun groupTodayCards(
     // Old clients persisted execution failures as cards. They are not user-facing
     // information and must disappear even before the server-side cleanup reaches Room.
     val visibleCards = cards.filterNot { card ->
-        card.isInvalidExecutionFailure() || card.hasInvalidConversationEvidence()
+        // Conversation follow-up cards belong to the old session-centric model.
+        // Conversation Task projections replace them in the router UI.
+        card.kind == "conversation" ||
+            card.isInvalidExecutionFailure() ||
+            card.hasInvalidConversationEvidence()
     }
     val upcoming = visibleCards
         .filter { card ->
@@ -1297,6 +1301,7 @@ internal fun decodeTodayCardEvidence(evidenceJson: String): List<TodayEvidenceDt
 internal fun todayCardFacts(evidence: List<TodayEvidenceDto>, limit: Int = 3): List<TodayCardFact> {
     val seen = mutableSetOf<String>()
     return evidence.asSequence()
+        .filterNot(TodayEvidenceDto::isSessionOnlyExecutionEvidence)
         .mapNotNull { item ->
             val url = item.url?.trim()?.takeIf(String::isNotBlank)
             val title = normalizeTodayFactTitle(item.title, url)
@@ -1321,6 +1326,11 @@ internal fun todayCardFacts(evidence: List<TodayEvidenceDto>, limit: Int = 3): L
         .take(limit)
         .toList()
 }
+
+private fun TodayEvidenceDto.isSessionOnlyExecutionEvidence(): Boolean =
+    sourceType == "conversation" &&
+        title?.trim() == "定时任务结果" &&
+        excerpt?.contains("保留在会话中") == true
 
 internal fun normalizeTodayFactTitle(value: String?, url: String?): String {
     var title = value.orEmpty().trim()
