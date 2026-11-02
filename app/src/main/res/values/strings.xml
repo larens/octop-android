@@ -224,6 +224,15 @@
     <string name="chat_uploading">Uploading…</string>
     <string name="chat_attach_failed">Could not read that file.</string>
     <string name="chat_queued">Offline. Will send when reconnected.</string>
+    <string name="chat_background_tasks">Background tasks</string>
+    <string name="chat_router_task_queued">Queued</string>
+    <string name="chat_router_task_running">Reading and analyzing</string>
+    <string name="chat_router_task_gathering">Gathering information</string>
+    <string name="chat_router_task_retrying">Retrying after a temporary issue</string>
+    <string name="chat_more_background_tasks">And %1$d more</string>
+    <string name="chat_router_task_result_done">Background task finished</string>
+    <string name="chat_router_task_result_failed">Background task stopped</string>
+    <string name="chat_router_task_result_dismiss">Dismiss</string>
     <string name="chat_tool_call">Tool call</string>
     <string name="chat_tool_args">Arguments</string>
     <string name="chat_tool_result">Result</string>

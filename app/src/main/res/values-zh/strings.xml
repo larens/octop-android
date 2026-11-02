@@ -224,6 +224,15 @@
     <string name="chat_uploading">正在上传…</string>
     <string name="chat_attach_failed">无法读取该文件。</string>
     <string name="chat_queued">当前离线，恢复连接后自动发送。</string>
+    <string name="chat_background_tasks">后台任务</string>
+    <string name="chat_router_task_queued">已加入队列</string>
+    <string name="chat_router_task_running">正在读取和分析</string>
+    <string name="chat_router_task_gathering">正在整理信息</string>
+    <string name="chat_router_task_retrying">遇到暂时问题，正在重试</string>
+    <string name="chat_more_background_tasks">另有 %1$d 个任务</string>
+    <string name="chat_router_task_result_done">后台任务已完成</string>
+    <string name="chat_router_task_result_failed">后台任务未能完成</string>
+    <string name="chat_router_task_result_dismiss">关闭</string>
     <string name="chat_tool_call">工具调用</string>
     <string name="chat_tool_args">参数</string>
     <string name="chat_tool_result">结果</string>

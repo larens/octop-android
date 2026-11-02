@@ -39,7 +39,7 @@ class MainConversationRepository(
         afterSeq: Long = 0,
         limit: Int = DEFAULT_EVENT_LIMIT,
     ): Flow<List<ConversationEventEntity>> =
-        eventDao.observeAfter(conversationId, afterSeq, limit)
+        eventDao.observeRecent(conversationId, afterSeq, limit)
 
     suspend fun refreshConversation(): ApiResult<MainConversationEntity> =
         when (val result = api.mainConversation(agentId)) {

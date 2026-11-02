@@ -254,6 +254,8 @@ fun ChatScreen(
     val connection by viewModel.connection.collectAsStateWithLifecycle()
     val turnActive by viewModel.turnActive.collectAsStateWithLifecycle()
     val pending by viewModel.hitl.collectAsStateWithLifecycle()
+    val activeRouterTasks by viewModel.activeRouterTasks.collectAsStateWithLifecycle()
+    val routerTaskResult by viewModel.routerTaskResult.collectAsStateWithLifecycle()
     val attachments by viewModel.attachments.collectAsStateWithLifecycle()
     val generatedArtifacts by viewModel.artifacts.collectAsStateWithLifecycle()
     val previewingArtifactKey by viewModel.previewingArtifactKey.collectAsStateWithLifecycle()
@@ -287,7 +289,11 @@ fun ChatScreen(
     var deleteTarget by remember { mutableStateOf<ConversationTurn?>(null) }
 
     // 挂起期间服务端会拒绝新回合（`SteerRejectReason.HITL_PAUSED`），所以和「回合中」一样禁用输入。
-    val blocked = turnActive || pending != null
+    val blocked = shouldBlockChatInput(
+        turnActive = turnActive,
+        hasPendingHitl = pending != null,
+        activeRouterTaskCount = activeRouterTasks.size,
+    )
 
     val filePicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         if (uri != null) viewModel.attach(context, uri)
@@ -546,6 +552,9 @@ fun ChatScreen(
                     ChatBottomBar(
                         blocked = blocked,
                         pending = pending,
+                        activeRouterTasks = activeRouterTasks,
+                        routerTaskResult = routerTaskResult,
+                        onDismissRouterTaskResult = viewModel::dismissRouterTaskResult,
                         attachments = attachments,
                         busy = busy,
                         mentionSuggestions = mentionCandidates,
@@ -1164,6 +1173,9 @@ private fun HistoryDrawerRow(
 private fun ChatBottomBar(
     blocked: Boolean,
     pending: HitlPending?,
+    activeRouterTasks: List<ActiveRouterTask>,
+    routerTaskResult: RouterTaskResult?,
+    onDismissRouterTaskResult: () -> Unit,
     attachments: List<UploadedAttachment>,
     busy: Boolean,
     mentionSuggestions: List<AgentDto>,
@@ -1196,6 +1208,17 @@ private fun ChatBottomBar(
                 .imePadding()
                 .padding(horizontal = 8.dp, vertical = 6.dp),
         ) {
+            if (activeRouterTasks.isNotEmpty()) {
+                ActiveRouterTasksCard(tasks = activeRouterTasks)
+                Spacer(Modifier.height(6.dp))
+            }
+            if (routerTaskResult != null) {
+                RouterTaskResultCard(
+                    result = routerTaskResult,
+                    onDismiss = onDismissRouterTaskResult,
+                )
+                Spacer(Modifier.height(6.dp))
+            }
             if (pending != null) {
                 HitlCard(pending = pending, onResolve = onResolve)
             } else {
@@ -1236,6 +1259,129 @@ private fun ChatBottomBar(
             }
         }
     }
+}
+
+@Composable
+private fun RouterTaskResultCard(
+    result: RouterTaskResult,
+    onDismiss: () -> Unit,
+) {
+    Surface(
+        shape = RoundedCornerShape(16.dp),
+        color = if (result.failed) {
+            MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.58f)
+        } else {
+            MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.72f)
+        },
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(start = 12.dp, end = 4.dp, top = 9.dp, bottom = 6.dp),
+            verticalArrangement = Arrangement.spacedBy(4.dp),
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    text = stringResource(
+                        if (result.failed) {
+                            R.string.chat_router_task_result_failed
+                        } else {
+                            R.string.chat_router_task_result_done
+                        },
+                    ),
+                    style = MaterialTheme.typography.labelLarge,
+                    fontWeight = FontWeight.SemiBold,
+                    modifier = Modifier.weight(1f),
+                )
+                TextButton(onClick = onDismiss) {
+                    Text(stringResource(R.string.chat_router_task_result_dismiss))
+                }
+            }
+            Text(
+                text = result.title,
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+            Text(
+                text = result.summary,
+                style = MaterialTheme.typography.bodySmall,
+                maxLines = 5,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.padding(end = 8.dp),
+            )
+        }
+    }
+}
+
+@Composable
+private fun ActiveRouterTasksCard(tasks: List<ActiveRouterTask>) {
+    Surface(
+        shape = RoundedCornerShape(16.dp),
+        color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.55f),
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 12.dp, vertical = 9.dp),
+            verticalArrangement = Arrangement.spacedBy(5.dp),
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                CircularProgressIndicator(
+                    modifier = Modifier.size(14.dp),
+                    strokeWidth = 2.dp,
+                )
+                Spacer(Modifier.width(7.dp))
+                Text(
+                    text = stringResource(R.string.chat_background_tasks),
+                    style = MaterialTheme.typography.labelLarge,
+                    fontWeight = FontWeight.SemiBold,
+                )
+                Spacer(Modifier.weight(1f))
+                Text(
+                    text = tasks.size.toString(),
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            tasks.take(2).forEach { task ->
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = task.title,
+                            style = MaterialTheme.typography.bodySmall,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                        Text(
+                            text = stringResource(task.progress.labelRes()),
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
+                }
+            }
+            if (tasks.size > 2) {
+                Text(
+                    text = stringResource(R.string.chat_more_background_tasks, tasks.size - 2),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
+    }
+}
+
+private fun RouterTaskProgress.labelRes(): Int = when (this) {
+    RouterTaskProgress.QUEUED -> R.string.chat_router_task_queued
+    RouterTaskProgress.RUNNING -> R.string.chat_router_task_running
+    RouterTaskProgress.GATHERING -> R.string.chat_router_task_gathering
+    RouterTaskProgress.RETRYING -> R.string.chat_router_task_retrying
 }
 
 @Composable

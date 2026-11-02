@@ -49,6 +49,7 @@ cp artifact_shares.py "$site/api/routers/artifact_shares.py"
 /opt/octop/venv/bin/python install_mcp_connectors.py
 /opt/octop/venv/bin/python install_lifestyle_mcp_connectors.py
 /opt/octop/venv/bin/python install_router_phase0.py
+/opt/octop/venv/bin/python install_router_phase3.py
 /opt/octop/venv/bin/python migrate_existing_tasks.py
 OCTOP_HOME=/opt/octop OCTOP_DB_PATH=/opt/octop/octop.db \
   /opt/octop/venv/bin/python migrate_agent_tooling.py
@@ -69,6 +70,7 @@ OCTOP_HOME=/opt/octop OCTOP_DB_PATH=/opt/octop/octop.db \
   "$site/infra/conversation/budget.py" \
   "$site/infra/conversation/shadow.py" \
   "$site/infra/conversation/retention.py" \
+  "$site/infra/conversation/orchestrator.py" \
   "$site/api/routers/artifact_shares.py" \
   "$site/api/app.py" \
   "$site/api/deps.py" \
@@ -77,6 +79,10 @@ OCTOP_HOME=/opt/octop OCTOP_DB_PATH=/opt/octop/octop.db \
   "$site/infra/agents/middleware/coffee_order_today.py" \
   "$site/infra/db/repos/threads.py" \
   "$site/infra/agents/threads/turn_delete.py" \
+  "$site/infra/gateway/process/message_keys.py" \
+  "$site/infra/gateway/process/processor.py" \
+  "$site/infra/gateway/threads.py" \
+  "$site/infra/server.py" \
   "$site/infra/memory/mobile_diaries.py" \
   "$site/infra/memory/mobile_profiles.py" \
   "$site/infra/connectors/catalog.py" \

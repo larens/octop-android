@@ -2,21 +2,30 @@
 
 from __future__ import annotations
 
-from typing import Any, Literal
+from typing import Any, Literal, cast
 
 from fastapi import APIRouter, Depends, Query
+from pydantic import BaseModel, Field
 
 from octop.api.common.agent import require_agent_row
 from octop.api.deps import current_user, get_server
+from octop.infra.conversation.orchestrator import (
+    RouterWorkerService,
+    WorkerDispatchRejected,
+    WorkerDispatchUnavailable,
+)
 from octop.infra.conversation.service import ConversationService, NotFoundError
 from octop.infra.errors import ErrorCode, OctopError
 from octop.infra.gateway.threads import ThreadRegistry
 
-
 router = APIRouter()
-TaskStatus = Literal[
-    "open", "in_progress", "needs_user", "done", "failed", "cancelled", "expired"
-]
+TaskStatus = Literal["open", "in_progress", "needs_user", "done", "failed", "cancelled", "expired"]
+
+
+class ReadOnlyTaskBody(BaseModel):
+    title: str = Field(min_length=1, max_length=200)
+    objective: str = Field(min_length=1, max_length=20_000)
+    subject_key: str | None = Field(default=None, max_length=500)
 
 
 def _effective_user_id(user: Any, as_user: int | None) -> int:
@@ -31,6 +40,18 @@ def _service(server: Any) -> ConversationService:
 
 def _not_found(message: str) -> OctopError:
     return OctopError(ErrorCode.NOT_FOUND, message)
+
+
+def _worker_service(server: Any) -> RouterWorkerService:
+    runtime = getattr(server, "app_runtime", None)
+    worker = getattr(runtime, "router_worker_service", None)
+    if worker is None:
+        raise OctopError(
+            ErrorCode.INTERNAL_ERROR,
+            "Router Worker service is unavailable",
+            status=503,
+        )
+    return cast(RouterWorkerService, worker)
 
 
 def _conversation(
@@ -77,9 +98,7 @@ async def list_main_conversation_events(
     user: Any = Depends(current_user),
     server: Any = Depends(get_server),
 ) -> list[dict[str, Any]]:
-    conversation = _conversation(
-        agent_id=agent_id, user=user, as_user=as_user, server=server
-    )
+    conversation = _conversation(agent_id=agent_id, user=user, as_user=as_user, server=server)
     return _service(server).list_events(
         agent_id=agent_id,
         user_id=_effective_user_id(user, as_user),
@@ -108,6 +127,50 @@ async def list_tasks(
         status=status,
         limit=limit,
     )
+
+
+@router.get(
+    "/agents/{agent_id}/tasks/worker-status",
+    summary="Read the read-only Worker dispatch status",
+)
+async def get_worker_status(
+    agent_id: str,
+    as_user: int | None = None,
+    user: Any = Depends(current_user),
+    server: Any = Depends(get_server),
+) -> dict[str, Any]:
+    require_agent_row(agent_id, user=user, as_user=as_user, server=server)
+    return _worker_service(server).status()
+
+
+@router.post(
+    "/agents/{agent_id}/tasks/read-only",
+    summary="Queue one bounded read-only Worker task",
+)
+async def submit_read_only_task(
+    agent_id: str,
+    body: ReadOnlyTaskBody,
+    as_user: int | None = None,
+    user: Any = Depends(current_user),
+    server: Any = Depends(get_server),
+) -> dict[str, Any]:
+    require_agent_row(agent_id, user=user, as_user=as_user, server=server)
+    try:
+        return await _worker_service(server).submit_read_only(
+            agent_id=agent_id,
+            user_id=_effective_user_id(user, as_user),
+            title=body.title,
+            objective=body.objective,
+            subject_key=body.subject_key,
+        )
+    except WorkerDispatchUnavailable as exc:
+        raise OctopError(
+            ErrorCode.INTERNAL_ERROR,
+            f"read-only Worker dispatch is unavailable: {exc}",
+            status=503,
+        ) from exc
+    except WorkerDispatchRejected as exc:
+        raise OctopError(ErrorCode.FORBIDDEN, str(exc)) from exc
 
 
 @router.get(

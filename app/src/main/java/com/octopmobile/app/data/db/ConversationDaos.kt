@@ -48,13 +48,16 @@ interface ConversationTaskDao {
 interface ConversationEventDao {
     @Query(
         """
-        SELECT * FROM conversation_events
-        WHERE conversationId = :conversationId AND seq > :afterSeq
+        SELECT * FROM (
+            SELECT * FROM conversation_events
+            WHERE conversationId = :conversationId AND seq > :afterSeq
+            ORDER BY seq DESC
+            LIMIT :limit
+        )
         ORDER BY seq ASC
-        LIMIT :limit
         """,
     )
-    fun observeAfter(
+    fun observeRecent(
         conversationId: String,
         afterSeq: Long,
         limit: Int,

@@ -20,6 +20,9 @@ import com.octopmobile.app.data.AppContainer
 import com.octopmobile.app.data.attachments.AttachmentRefs
 import com.octopmobile.app.data.db.AttachmentEntity
 import com.octopmobile.app.data.db.CompactMarkerEntity
+import com.octopmobile.app.data.db.ConversationEventEntity
+import com.octopmobile.app.data.db.ConversationTaskEntity
+import com.octopmobile.app.data.db.ConversationTaskStatus
 import com.octopmobile.app.data.db.MessageEntity
 import com.octopmobile.app.data.db.ThreadEntity
 import com.octopmobile.app.data.model.HitlPending
@@ -36,6 +39,7 @@ import com.octopmobile.app.data.remote.dto.TodayCardActionBody
 import com.octopmobile.app.data.remote.dto.TodayCardActionState
 import com.octopmobile.app.data.repo.ChatRepository
 import com.octopmobile.app.data.repo.ConversationTurn
+import com.octopmobile.app.data.repo.MainConversationRepository
 import com.octopmobile.app.data.repo.ThreadRepository
 import com.octopmobile.app.data.repo.conversationTurnFor
 import com.octopmobile.app.data.ws.ChatSocket
@@ -45,13 +49,22 @@ import com.octopmobile.app.ui.AutoCreatedConversation
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.flatMapLatest
+import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.coroutines.withContext
 import java.io.File
 
@@ -74,6 +87,26 @@ data class ChatModelOption(
     val label: String,
     val providerName: String,
     val reasoning: Boolean,
+)
+
+enum class RouterTaskProgress {
+    QUEUED,
+    RUNNING,
+    GATHERING,
+    RETRYING,
+}
+
+data class ActiveRouterTask(
+    val taskId: String,
+    val title: String,
+    val progress: RouterTaskProgress,
+)
+
+data class RouterTaskResult(
+    val taskId: String,
+    val title: String,
+    val summary: String,
+    val failed: Boolean,
 )
 
 data class ArtifactShareLink(
@@ -105,6 +138,7 @@ internal fun todayActionState(event: ServerEvent): String? = when (event) {
  * 「回合进行中」由 [turnActive] 表达，UI 据此把输入框置灰、发送按钮换成中止
  * （docs/spec.md §18.1：本轮不做 steer）。
  */
+@OptIn(ExperimentalCoroutinesApi::class)
 class ChatViewModel(
     private val container: AppContainer,
     private val agentId: String,
@@ -112,6 +146,7 @@ class ChatViewModel(
 ) : ViewModel() {
 
     private var repository: ChatRepository? = null
+    private var mainConversationRepository: MainConversationRepository? = null
     private var threadRepository: ThreadRepository? = null
     private var baseUrl: String? = null
     private val cleanupScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -207,6 +242,13 @@ class ChatViewModel(
     private val _notice = MutableStateFlow<ChatNotice?>(null)
     val notice: StateFlow<ChatNotice?> = _notice.asStateFlow()
 
+    /** Hidden Worker runs stay out of the message timeline; only their task cards are projected. */
+    private val _activeRouterTasks = MutableStateFlow<List<ActiveRouterTask>>(emptyList())
+    val activeRouterTasks: StateFlow<List<ActiveRouterTask>> = _activeRouterTasks.asStateFlow()
+    private val _routerTaskResult = MutableStateFlow<RouterTaskResult?>(null)
+    val routerTaskResult: StateFlow<RouterTaskResult?> = _routerTaskResult.asStateFlow()
+    private var dismissedRouterTaskResultId: String? = null
+
     init {
         viewModelScope.launch {
             val instanceHost = container.prefs.currentHost()
@@ -217,8 +259,10 @@ class ChatViewModel(
 
             val repo = container.chatRepository(instanceHost, agentId, threadId)
             val threadRepo = container.threadRepository(instanceHost, agentId)
+            val mainRepo = container.mainConversationRepository(instanceHost, agentId)
             baseUrl = instanceHost
             repository = repo
+            mainConversationRepository = mainRepo
             threadRepository = threadRepo
 
             launch {
@@ -242,6 +286,35 @@ class ChatViewModel(
                 }
             }
             launch { repo.observeCompactMarkers().collect { _compactMarkers.value = it } }
+            launch {
+                combine(
+                    mainRepo.observeConversation(),
+                    repo.observeThread(),
+                ) { conversation, currentThread ->
+                    conversation?.takeIf {
+                        it.routerThreadId != null && it.routerThreadId == currentThread?.threadId
+                    }
+                }.flatMapLatest { conversation ->
+                    if (conversation == null) {
+                        flowOf(RouterTaskProjection(active = emptyList(), result = null))
+                    } else {
+                        combine(
+                            mainRepo.observeTasks(conversation.conversationId),
+                            mainRepo.observeEvents(conversation.conversationId),
+                        ) { tasks, events ->
+                            RouterTaskProjection(
+                                active = projectActiveRouterTasks(tasks, events),
+                                result = projectLatestRouterTaskResult(tasks, events),
+                            )
+                        }
+                    }
+                }.collect { projection ->
+                    _activeRouterTasks.value = projection.active
+                    _routerTaskResult.value = projection.result?.takeIf {
+                        it.taskId != dismissedRouterTaskResultId
+                    }
+                }
+            }
 
             // `@专家` 候选：一次只读请求，失败就当作「没有别的专家」—— 不打扰用户，
             // 输入栏也只是不出现那个入口（spec §23.5）。
@@ -250,6 +323,15 @@ class ChatViewModel(
 
             // 永不返回：连接 + 订阅 + 持续消费事件
             launch { repo.run() }
+
+            launch {
+                mainRepo.refreshAll()
+                while (true) {
+                    delay(if (_activeRouterTasks.value.isEmpty()) 30_000 else 4_000)
+                    mainRepo.refreshTasks()
+                    mainRepo.refreshEvents()
+                }
+            }
 
             loadFirstPage()
 
@@ -317,6 +399,16 @@ class ChatViewModel(
      */
     fun reconnect() {
         repository?.reconnectNow()
+        val mainRepo = mainConversationRepository ?: return
+        viewModelScope.launch {
+            mainRepo.refreshTasks()
+            mainRepo.refreshEvents()
+        }
+    }
+
+    fun dismissRouterTaskResult() {
+        dismissedRouterTaskResultId = _routerTaskResult.value?.taskId
+        _routerTaskResult.value = null
     }
 
     // ------------------------------------------------------------ 发送 / 中止 / 确认
@@ -842,6 +934,108 @@ private fun ResolvedModelDto.toChatOption(): ChatModelOption = ChatModelOption(
     providerName = providerName,
     reasoning = reasoning,
 )
+
+internal fun projectActiveRouterTasks(
+    tasks: List<ConversationTaskEntity>,
+    events: List<ConversationEventEntity>,
+): List<ActiveRouterTask> {
+    val latestEventByTask = events
+        .mapNotNull { event -> event.taskId?.let { it to event } }
+        .groupBy({ it.first }, { it.second })
+        .mapValues { (_, taskEvents) -> taskEvents.maxBy { it.seq } }
+    return tasks.mapNotNull { task ->
+        if (
+            task.taskType != "read_only" ||
+            task.status !in setOf(
+                ConversationTaskStatus.OPEN,
+                ConversationTaskStatus.IN_PROGRESS,
+                ConversationTaskStatus.NEEDS_USER,
+            )
+        ) {
+            return@mapNotNull null
+        }
+        val latest = latestEventByTask[task.taskId]
+        ActiveRouterTask(
+            taskId = task.taskId,
+            title = task.title,
+            progress = when (latest?.eventType) {
+                "worker.retry_scheduled" -> RouterTaskProgress.RETRYING
+                "worker.progress" -> RouterTaskProgress.GATHERING
+                "worker.started" -> RouterTaskProgress.RUNNING
+                "worker.queued" -> RouterTaskProgress.QUEUED
+                else -> when (task.status) {
+                    ConversationTaskStatus.OPEN -> RouterTaskProgress.QUEUED
+                    else -> RouterTaskProgress.RUNNING
+                }
+            },
+        )
+    }
+}
+
+internal fun projectLatestRouterTaskResult(
+    tasks: List<ConversationTaskEntity>,
+    events: List<ConversationEventEntity>,
+    nowMillis: Long = System.currentTimeMillis(),
+): RouterTaskResult? {
+    val lookbackStart = nowMillis - ROUTER_TASK_RESULT_LOOKBACK_MILLIS
+    return tasks
+        .asSequence()
+        .filter {
+            it.taskType == "read_only" &&
+                it.status in setOf(ConversationTaskStatus.DONE, ConversationTaskStatus.FAILED) &&
+                it.updatedAt >= lookbackStart
+        }
+        .mapNotNull { task ->
+            val terminalEvent = events
+                .asSequence()
+                .filter {
+                    it.taskId == task.taskId &&
+                        it.eventType in setOf("worker.completed", "worker.failed")
+                }
+                .maxByOrNull { it.seq }
+                ?: return@mapNotNull null
+            val summary = terminalEvent.summary.trim().ifBlank {
+                task.capsuleField("result")
+            }
+            if (summary.isBlank()) {
+                return@mapNotNull null
+            }
+            task.updatedAt to RouterTaskResult(
+                taskId = task.taskId,
+                title = task.title,
+                summary = summary,
+                failed = terminalEvent.eventType == "worker.failed",
+            )
+        }
+        .maxByOrNull { it.first }
+        ?.second
+}
+
+private data class RouterTaskProjection(
+    val active: List<ActiveRouterTask>,
+    val result: RouterTaskResult?,
+)
+
+private fun ConversationTaskEntity.capsuleField(name: String): String =
+    runCatching {
+        Json.parseToJsonElement(capsuleJson)
+            .jsonObject[name]
+            ?.jsonPrimitive
+            ?.contentOrNull
+    }.getOrNull()
+        .orEmpty()
+
+private const val ROUTER_TASK_RESULT_LOOKBACK_MILLIS = 24 * 60 * 60 * 1_000L
+
+@Suppress("UNUSED_PARAMETER")
+internal fun shouldBlockChatInput(
+    turnActive: Boolean,
+    hasPendingHitl: Boolean,
+    activeRouterTaskCount: Int,
+): Boolean {
+    // Worker Runs are background-only: their count is accepted to make the boundary explicit.
+    return turnActive || hasPendingHitl
+}
 
 internal fun shouldDeleteUntouchedConversation(
     isNewConversation: Boolean,

@@ -186,6 +186,7 @@ apply_patch_pack() {
     "$release/venv/bin/python" install_mcp_connectors.py
     "$release/venv/bin/python" install_lifestyle_mcp_connectors.py
     "$release/venv/bin/python" install_router_phase0.py
+    "$release/venv/bin/python" install_router_phase3.py
   )
   OCTOP_SITE_PACKAGES="$site" \
     OCTOP_BACKUPS_DIR="$release/patch-backups" \
@@ -201,6 +202,7 @@ apply_patch_pack() {
     "$site/octop/infra/conversation/budget.py" \
     "$site/octop/infra/conversation/shadow.py" \
     "$site/octop/infra/conversation/retention.py" \
+    "$site/octop/infra/conversation/orchestrator.py" \
     "$site/octop/api/routers/interest_monitors.py" \
     "$site/octop/api/routers/artifact_shares.py" \
     "$site/octop/api/app.py" \
@@ -208,6 +210,9 @@ apply_patch_pack() {
     "$site/octop/infra/agents/middleware/thread_artifacts.py" \
     "$site/octop/infra/agents/middleware/didi_ride_today.py" \
     "$site/octop/infra/agents/middleware/coffee_order_today.py" \
+    "$site/octop/infra/gateway/process/message_keys.py" \
+    "$site/octop/infra/gateway/process/processor.py" \
+    "$site/octop/infra/gateway/threads.py" \
     "$site/octop/infra/db/repos/threads.py" \
     "$site/octop/infra/agents/threads/turn_delete.py" \
     "$site/octop/infra/today/cron_cards.py" \
@@ -226,6 +231,7 @@ apply_patch_pack() {
     "$site/octop/infra/connectors/oauth/mcp.py" \
     "$site/octop/infra/connectors/gateway/feishu_user_auth.py" \
     "$site/octop/infra/connectors/gateway/adapters/feishu_cli.py" \
+    "$site/octop/infra/server.py" \
     "$site/octop/api/routers/connectors.py"
 }
 
@@ -237,6 +243,7 @@ run_patch_tests() {
     "$release/venv/bin/python" test_mobile_profiles.py
     "$release/venv/bin/python" test_mobile_today_backport.py
     "$release/venv/bin/python" test_router_phase0.py
+    "$release/venv/bin/python" test_router_phase3.py
     "$release/venv/bin/python" test_artifact_shares.py
     "$release/venv/bin/python" test_artifact_lifecycle.py
     "$release/venv/bin/python" test_feishu_mcp.py
