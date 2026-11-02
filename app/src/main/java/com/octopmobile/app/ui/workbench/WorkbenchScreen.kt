@@ -152,6 +152,19 @@ fun WorkbenchScreen(
                     mobileDataOpen -> MobileDataPane(onBack = { mobileDataOpen = false })
                     else -> TodayPane(
                         onOpenThread = onOpenThread,
+                        onReplyToTask = { card, message ->
+                            val threadId = card.executionThreadId
+                            if (threadId != null) {
+                                PendingChatStart.arm(
+                                    com.octopmobile.app.ui.Handoff(
+                                        text = message,
+                                        action = AppActions.TASK_REPLY,
+                                        todayCardId = card.id,
+                                    ),
+                                )
+                                onOpenThread(card.agentId, threadId)
+                            }
+                        },
                         onOpenMemory = { tab = WorkbenchTab.MEMORY },
                         onProcessMobileSignal = { prompt, todayCardId ->
                             PendingHandoff.arm(

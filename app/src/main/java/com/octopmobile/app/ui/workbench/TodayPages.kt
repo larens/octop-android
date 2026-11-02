@@ -68,6 +68,7 @@ import kotlinx.coroutines.delay
 @Composable
 fun TodayPane(
     onOpenThread: (agentId: String, threadId: String) -> Unit,
+    onReplyToTask: (TodayCardEntity, String) -> Unit,
     onOpenMemory: () -> Unit,
     onProcessMobileSignal: (String, String?) -> Unit,
     onNeedsLogin: () -> Unit,
@@ -157,6 +158,7 @@ fun TodayPane(
             onOpenExecution = card.executionThreadId?.let { threadId ->
                 { onOpenThread(card.agentId, threadId) }
             },
+            onReply = { message -> onReplyToTask(card, message) },
             onProcess = {
                 todayViewModel.markRead(card)
                 onProcessMobileSignal(card.actionPromptForChat(), card.id)
@@ -339,6 +341,10 @@ fun TodayPane(
                     selectedCardId = null
                     onOpenThread(card.agentId, threadId)
                 }
+            },
+            onReply = { message ->
+                selectedCardId = null
+                onReplyToTask(card, message)
             },
             onProcess = {
                 selectedCardId = null

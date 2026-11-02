@@ -410,6 +410,56 @@ internal data class TodayMultiCityWeather(
     val clothing: String?,
 )
 
+internal data class TodayReadingMetric(
+    val label: String,
+    val value: String,
+)
+
+internal data class TodayReadingBook(
+    val date: String,
+    val title: String,
+    val marks: String,
+)
+
+internal data class TodayReadingSummary(
+    val metrics: List<TodayReadingMetric>,
+    val books: List<TodayReadingBook>,
+    val remainingSections: List<TodayCardSummarySection>,
+)
+
+internal data class TodayRideDetails(
+    val status: String,
+    val plate: String?,
+    val carModel: String?,
+    val driver: String?,
+    val distance: String?,
+    val eta: String?,
+    val route: String?,
+    val orderId: String?,
+)
+
+internal data class TodayCoffeeDetails(
+    val pickupCode: String,
+    val qrPayload: String?,
+    val status: String?,
+    val shopName: String?,
+    val productName: String?,
+    val amount: String?,
+    val readyAt: String?,
+    val orderId: String?,
+)
+
+internal enum class TodayQuickReplyKind {
+    RECONCILIATION,
+    GENERIC,
+}
+
+internal data class TodayQuickReplySpec(
+    val kind: TodayQuickReplyKind,
+    val title: String,
+    val request: String,
+)
+
 internal data class TodayDailyPlanDetails(
     val title: String,
     val focusHeading: String,
@@ -461,6 +511,199 @@ internal fun TodayCardEntity.isNewsRecommendationCard(): Boolean = when (kind) {
     "briefing" -> !isDailyPlanCard()
     else -> false
 }
+
+internal fun parseTodayReadingSummary(card: TodayCardEntity): TodayReadingSummary? {
+    if (card.kind != "review") return null
+    val sections = parseTodayCardSummary(card.summary)
+    val overview = sections.firstOrNull {
+        it.heading == "阅读概览" || it.heading == "本周阅读"
+    } ?: return null
+    val stats = ReadingStatPattern.findAll(overview.body)
+        .map { match ->
+            TodayReadingMetric(
+                label = match.groupValues[1].trim(),
+                value = match.groupValues[2].trim(),
+            )
+        }
+        .toList()
+    if (stats.isEmpty()) return null
+    val books = sections.firstOrNull {
+        it.heading == "本周在读" || it.heading == "阅读书目"
+    }?.body
+        ?.lineSequence()
+        ?.mapNotNull(::normalizeDailyPlanLine)
+        ?.mapNotNull { line ->
+            val match = ReadingBookLinePattern.matchEntire(line) ?: return@mapNotNull null
+            TodayReadingBook(
+                date = match.groupValues[1].trim(),
+                title = match.groupValues[2].trim().trim('《', '》'),
+                marks = match.groupValues[3].trim(),
+            )
+        }
+        ?.toList()
+        .orEmpty()
+    val consumedHeadings = setOf("阅读概览", "本周阅读", "本周在读", "阅读书目")
+    return TodayReadingSummary(
+        metrics = stats,
+        books = books,
+        remainingSections = sections.filterNot { it.heading in consumedHeadings },
+    )
+}
+
+internal fun parseTodayRide(card: TodayCardEntity): TodayRideDetails? {
+    val sections = parseTodayCardSummary(card.summary)
+    val vehicle = sections.firstOrNull {
+        it.heading == "车辆信息" || it.heading == "司机与车辆"
+    }?.body.orEmpty()
+    val trip = sections.firstOrNull {
+        it.heading == "行程" || it.heading == "行程信息"
+    }?.body.orEmpty()
+    if (vehicle.isBlank() && trip.isBlank()) return null
+
+    val status = summaryField(trip, "状态", "订单状态")
+        ?: summaryField(vehicle, "状态", "订单状态")
+        ?: trip.lineSequence()
+            .map(String::trim)
+            .firstOrNull { line ->
+                line.contains("匹配") ||
+                    line.contains("司机已") ||
+                    line.contains("行程中") ||
+                    line.contains("行程已") ||
+                    line.contains("订单已")
+            }
+    val plate = summaryField(vehicle, "车牌号", "车牌")
+        ?: summaryField(trip, "车牌号", "车牌")
+    val carModel = summaryField(vehicle, "车型", "车辆")
+        ?: summaryField(trip, "车型", "车辆")
+    val driver = summaryField(vehicle, "司机", "司机姓名")
+    val distanceLine = summaryField(trip, "距接驾点", "距终点", "距离")
+    val distanceParts = distanceLine
+        ?.split('·')
+        ?.map(String::trim)
+        ?.filter(String::isNotEmpty)
+        .orEmpty()
+    val distance = distanceParts.firstOrNull()?.takeIf { !it.startsWith("预计") }
+    val eta = summaryField(trip, "预计", "预计到达", "预计时间", "ETA")
+        ?: distanceParts.firstOrNull { it.startsWith("预计") }?.removePrefix("预计")
+            ?.removeSuffix("到达")
+            ?.trim()
+    val route = trip.lineSequence()
+        .map(String::trim)
+        .firstOrNull { it.contains("→") }
+        ?.takeIf(String::isNotBlank)
+        ?: (summaryField(trip, "路线", "起终点")
+            ?.takeIf { it.contains("→") })
+    val orderId = summaryField(trip, "订单号", "订单 ID", "订单ID")
+    val waiting = vehicle.lineSequence()
+        .map(String::trim)
+        .firstOrNull { it.contains("匹配") }
+
+    if (status.isNullOrBlank() && plate.isNullOrBlank() && carModel.isNullOrBlank() &&
+        driver.isNullOrBlank() && waiting.isNullOrBlank()
+    ) {
+        return null
+    }
+    return TodayRideDetails(
+        status = status?.takeIf(String::isNotBlank)
+            ?: waiting
+            ?: "行程状态已更新",
+        plate = plate,
+        carModel = carModel,
+        driver = driver,
+        distance = distance,
+        eta = eta,
+        route = route,
+        orderId = orderId,
+    )
+}
+
+internal fun parseTodayCoffee(card: TodayCardEntity): TodayCoffeeDetails? {
+    if (card.kind != "task") return null
+    val sections = parseTodayCardSummary(card.summary)
+    val pickup = sections.firstOrNull { it.heading == "取餐信息" } ?: return null
+    val order = sections.firstOrNull { it.heading == "订单" }?.body.orEmpty()
+    val pickupCode = summaryField(pickup.body, "取餐码")
+        ?.takeIf { code ->
+            code.length in 3..20 &&
+                code.any(Char::isDigit) &&
+                CoffeePickupCodePattern.matches(code)
+        }
+        ?: return null
+    return TodayCoffeeDetails(
+        pickupCode = pickupCode,
+        qrPayload = summaryField(pickup.body, "取餐二维码", "二维码内容")
+            ?.takeIf { payload ->
+                payload.length in 8..256 && CoffeePickupQrPattern.matches(payload)
+            },
+        status = summaryField(order, "状态", "订单状态"),
+        shopName = summaryField(pickup.body, "门店"),
+        productName = summaryField(order, "饮品", "商品"),
+        amount = summaryField(order, "实付", "金额"),
+        readyAt = summaryField(pickup.body, "预计可取", "预计完成"),
+        orderId = summaryField(order, "订单号", "订单 ID", "订单ID"),
+    )
+}
+
+private fun summaryField(body: String, vararg labels: String): String? {
+    if (body.isBlank()) return null
+    return body.lineSequence()
+        .map(String::trim)
+        .firstNotNullOfOrNull { line ->
+            val label = labels.firstOrNull { candidate ->
+                line.startsWith("$candidate：") || line.startsWith("$candidate:")
+            } ?: return@firstNotNullOfOrNull null
+            line.drop(label.length + 1).trim().takeIf(String::isNotBlank)
+        }
+}
+
+internal fun todayQuickReplySpec(card: TodayCardEntity): TodayQuickReplySpec? {
+    if (card.kind != "task" || card.executionThreadId.isNullOrBlank()) return null
+    if (parseTodayCoffee(card) != null) return null
+    val kind = if (
+        card.title.contains("对账") ||
+        card.title.contains("账单") ||
+        (card.summary.contains("余额") && card.summary.contains("刷卡"))
+    ) {
+        TodayQuickReplyKind.RECONCILIATION
+    } else {
+        TodayQuickReplyKind.GENERIC
+    }
+    val markerRequest = card.summary.lineSequence()
+        .firstOrNull { line ->
+            QuickReplyRequestMarkers.any(line::contains)
+        }
+        ?.trim()
+    val request = markerRequest ?: if (kind == TodayQuickReplyKind.RECONCILIATION) {
+        "补充本次账单金额、刷卡次数；如有实际扣款备注，也一并填写。"
+    } else {
+        "把这项任务还需要补充的信息发给执行 Agent，结果会回到原会话。"
+    }
+    return TodayQuickReplySpec(
+        kind = kind,
+        title = card.title,
+        request = request,
+    )
+}
+
+internal fun buildReconciliationReply(
+    taskTitle: String,
+    amount: String,
+    swipes: String,
+    note: String,
+): String = buildString {
+    appendLine("【${taskTitle.trim()} · 用户补充】")
+    appendLine("账单金额：${amount.trim()} 元")
+    appendLine("刷卡次数：${swipes.trim()} 次")
+    note.trim().takeIf(String::isNotBlank)?.let { appendLine("补充说明：$it") }
+    append("请按以上数据更新台账中的余额、交易记录和待确认事项，并给出更新后的余额与剩余可乘次数。")
+}
+
+internal fun buildGenericTaskReply(taskTitle: String, message: String): String =
+    buildString {
+        appendLine("【${taskTitle.trim()} · 用户补充】")
+        appendLine(message.trim())
+        append("请结合当前定时任务上下文继续处理，并更新结果。")
+    }
 
 internal fun parseTodaySignal(card: TodayCardEntity): TodaySignalDetails? {
     if (card.kind != "signal") return null
@@ -612,8 +855,8 @@ internal fun parseDailyWeather(value: String): TodayWeatherDetails? {
         .toList()
     val cityWeatherLines = weatherLines.count { line ->
         WeatherTemperaturePattern.containsMatchIn(line) &&
-            (WeatherCityPrefixPattern.containsMatchIn(line) ||
-                WeatherCityDayPattern.containsMatchIn(line))
+            (line.weatherCityMatchOrNull() != null ||
+                line.weatherCityDayMatchOrNull() != null)
     }
     if (cityWeatherLines >= 2) return null
 
@@ -636,6 +879,39 @@ internal fun parseDailyWeather(value: String): TodayWeatherDetails? {
             temperature = labeledTemperature,
             detail = WeatherProbabilityDetailPattern.find(value)?.value?.trim(),
         )
+    }
+
+    val cityIndex = weatherLines.indexOfFirst { line ->
+        line.weatherCityMatchOrNull() != null &&
+            WeatherTemperaturePattern.containsMatchIn(line)
+    }
+    if (cityIndex >= 0) {
+        val cityLine = weatherLines[cityIndex]
+        val cityMatch = cityLine.weatherCityMatchOrNull() ?: return null
+        val city = cityMatch.groupValues[1].trim()
+        val body = cityMatch.groupValues[2].trim()
+        val temperature = WeatherMinMaxPattern.find(body)?.let { match ->
+            "${match.groupValues[1]}–${match.groupValues[2]}°C"
+        } ?: WeatherTemperaturePattern.find(body)?.value
+        val condition = WeatherConditionWords
+            .sortedByDescending(String::length)
+            .firstOrNull(body::contains)
+        if (temperature != null && condition != null) {
+            val detailLines = buildList {
+                WeatherProbabilityValuePattern.find(body)?.groupValues?.getOrNull(1)?.let {
+                    add("降雨概率 $it%")
+                }
+                addAll(weatherLines.drop(cityIndex + 1))
+            }
+            return TodayWeatherDetails(
+                location = city,
+                condition = condition,
+                temperature = temperature,
+                detail = detailLines
+                    .joinToString("\n")
+                    .takeIf(String::isNotBlank),
+            )
+        }
     }
 
     val coarseSegments = value.lineSequence()
@@ -708,7 +984,7 @@ internal fun parseMultiCityWeather(value: String): TodayMultiCityWeather? {
                 current = null
                 return@forEach
             }
-            val cityMatch = WeatherCityLinePattern.find(line)
+            val cityMatch = line.weatherCityMatchOrNull()
             if (cityMatch != null && WeatherTemperaturePattern.containsMatchIn(line)) {
                 current = CityWeatherAccumulator(
                     city = cityMatch.groupValues[1].trim(),
@@ -726,6 +1002,18 @@ internal fun parseMultiCityWeather(value: String): TodayMultiCityWeather? {
         cities = cities,
         clothing = clothing?.let(::compactWeatherClothing),
     )
+}
+
+private fun String.weatherCityMatchOrNull(): MatchResult? {
+    val match = WeatherCityLinePattern.find(this) ?: return null
+    val city = match.groupValues[1]
+    return match.takeUnless { WeatherNonCityPrefixes.any(city::contains) }
+}
+
+private fun String.weatherCityDayMatchOrNull(): MatchResult? {
+    val match = WeatherCityDayPattern.find(this) ?: return null
+    val city = match.groupValues[1]
+    return match.takeUnless { WeatherNonCityPrefixes.any(city::contains) }
 }
 
 private class CityWeatherAccumulator(
@@ -1142,6 +1430,19 @@ private val SignalItemPattern = Regex("^(?:\\d+[.)、]|[-•])\\s*(.+)$")
 private val SignalFieldPattern = Regex("(成熟度|证据强度|核心变化|不确定性|对我的意义)\\s*[：:]\\s*")
 private val SignalNameSeparator = Regex("\\s*[｜|]\\s*")
 private val SignalEvidenceLevelPattern = Regex("([1-3])")
+private val CoffeePickupCodePattern = Regex("""^[A-Za-z0-9]+(?:[-_][A-Za-z0-9]+)*$""")
+private val CoffeePickupQrPattern = Regex("""^[A-Za-z0-9+/=_-]+$""")
+private val ReadingStatPattern = Regex("""(本周阅读|新增划线|书架)\s*(\d+)\s*(?:本|条)""")
+private val ReadingBookLinePattern = Regex("""^(\d{1,2}[-/]\d{1,2})\s*《([^》]+)》\s*[·｜|]\s*(.+)$""")
+private val QuickReplyRequestMarkers = listOf(
+    "想跟你确认",
+    "请确认",
+    "请补充",
+    "需要你提供",
+    "告诉我",
+    "给我个准数",
+    "需要你录入",
+)
 private val WeatherSegmentSeparator = Regex("[，,；;|]")
 private val WeatherHeadingPrefix = Regex("^(?:今日|明日|今天|明天)?(?:天气提醒|天气与穿着|天气)\\s*[：:]\\s*")
 private val WeatherDayPrefix = Regex("^(?:今日|明日|今天|明天)\\s*")
@@ -1154,10 +1455,23 @@ private val WeatherTemperaturePattern =
     Regex("""-?\d+(?:\.\d+)?\s*(?:[~～\-至到]\s*-?\d+(?:\.\d+)?)?\s*(?:°\s*[CF]?|℃)""")
 private val WeatherProbabilityDetailPattern = Regex("(?:降雨|降水)概率[^。；;\\n]*[。]?")
 private val WeatherDetailSegmentPattern = Regex("(?:概率|带伞|伞|穿衣|保暖|湿度|紫外线|风力)")
-private val WeatherCityPrefixPattern = Regex("^[\\u4e00-\\u9fff]{2,10}\\s*[：:]")
-private val WeatherCityDayPattern = Regex("^[\\u4e00-\\u9fff]{2,10}(?:今天|今日|明天|明日)")
+private val WeatherCityDayPattern =
+    Regex("^([\\u4e00-\\u9fff]{2,10})(?:今天|今日|明天|明日)")
 private val WeatherCityLinePattern =
-    Regex("^([\\u4e00-\\u9fff]{2,10})\\s*[：:]\\s*(.*)$")
+    Regex("^([\\u4e00-\\u9fff]{2,10})(?:[（(][^）)]*[）)])?\\s*[：:]\\s*(.*)$")
+private val WeatherNonCityPrefixes = listOf(
+    "对比",
+    "今天",
+    "今晚",
+    "实时",
+    "穿衣",
+    "带伞",
+    "温度",
+    "降雨",
+    "降水",
+    "最高",
+    "最低",
+)
 private val WeatherClothingLinePattern = Regex("^穿着\\s*[：:]\\s*(.+)$")
 private val WeatherCityDatePrefixPattern =
     Regex("^(?:今天|今日|明天|明日)?\\s*\\d{1,2}[-/]\\d{1,2}\\s*[：:]?\\s*")

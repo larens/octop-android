@@ -382,6 +382,13 @@ fun ChatScreen(
         when (start.action) {
             AppActions.SHARE -> viewModel.share(context, start.text, start.uris, start.todayCardId)
 
+            AppActions.TASK_REPLY -> viewModel.share(
+                context,
+                start.text,
+                emptyList(),
+                start.todayCardId,
+            )
+
             AppActions.CAMERA -> if (hasPermission(context, Manifest.permission.CAMERA)) {
                 launchCamera()
             } else {
@@ -2603,6 +2610,7 @@ private fun MessageBubble(
     // parts → 渲染块：把 reasoning 与工具调用并进同一个「思考过程」（见 [toBlocks]）。
     val blocks = remember(parts, streaming) { parts.toBlocks(streaming) }
     val pickupCode = remember(parts) { if (isUser) null else pickupCodeFrom(parts) }
+    val payment = remember(parts) { if (isUser) null else coffeePaymentFrom(parts) }
     // 这一轮「思考 + 工具」的耗时：见 [thinkingDurationMs]。
     val thinkingDuration = remember(entities) { entities.thinkingDurationMs() }
 
@@ -2638,6 +2646,11 @@ private fun MessageBubble(
 
                 pickupCode?.let { code ->
                     PickupCodeBanner(code)
+                    Spacer(Modifier.height(8.dp))
+                }
+
+                payment?.let { checkout ->
+                    CoffeePaymentCard(checkout)
                     Spacer(Modifier.height(8.dp))
                 }
 

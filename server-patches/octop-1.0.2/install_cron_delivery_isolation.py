@@ -52,7 +52,20 @@ fixed = '''        await self._gateway.thread_registry.get_or_create_by_key(
         async def _locked() -> None:
             if command.fresh_thread:
 '''
-if fixed not in source:
+isolated_call = '''        await self._gateway.thread_registry.get_or_create_by_key(
+            session_key=command.session_key,
+            agent_id=command.agent_id,
+            user_id=command.user_id,
+            channel_type=ThreadRegistry.CHANNEL_CRON,
+        )
+'''
+locked_anchor = "        async def _locked() -> None:\n"
+already_isolated = (
+    locked_anchor in source
+    and isolated_call in source
+    and source.index(isolated_call) < source.index(locked_anchor)
+)
+if not already_isolated:
     if flawed in source:
         source = source.replace(flawed, fixed, 1)
     elif pristine in source:

@@ -800,6 +800,130 @@ class TodayCardContentTest {
     }
 
     @Test
+    fun liveTomorrowWeatherLineBecomesStructuredMetricsInsteadOfRawText() {
+        val plan = card(
+            "live-weather",
+            kind = "briefing",
+            occurredAt = at(2026, 11, 1, 21, 30),
+            summary = """
+                【明日安排】
+                暂无已同步的日程安排。
+
+                【天气与穿着】
+                - 北京（明日全天）：晴 ☀️，降雨概率 0%，最低 4.7°C / 最高 17.6°C
+                - 对比今天（5.8°C / 17.6°C）：最高温持平，最低低约 1.1°C
+                - 穿衣：薄外套或风衣 + 长裤，早出加条围巾
+                - 带伞结论：不用带伞，全天 0% 降雨
+
+                【今晚准备】
+                明早的外套和围巾放在玄关。
+            """.trimIndent(),
+        ).copy(title = "明日安排与准备")
+
+        val details = requireNotNull(parseTodayDailyPlan(plan))
+
+        assertEquals("北京", details.weatherDetails?.location)
+        assertEquals("晴", details.weatherDetails?.condition)
+        assertEquals("4.7–17.6°C", details.weatherDetails?.temperature)
+        assertTrue(details.weatherDetails?.isStructured == true)
+        assertTrue(details.weatherDetails?.detail.orEmpty().contains("降雨概率 0%"))
+        assertTrue(details.weatherDetails?.detail.orEmpty().contains("不用带伞"))
+    }
+
+    @Test
+    fun readingReviewPromotesCountsAndBooksBeforeTheAnalysis() {
+        val reading = card(
+            "weekly-reading",
+            kind = "review",
+            occurredAt = at(2026, 11, 1, 20, 0),
+            summary = """
+                【阅读概览】
+                本周阅读 2 本 · 新增划线 0 条 · 书架 1201 本
+                最近划线：2026-08-07《AI未来已来》
+
+                【本周在读】
+                10-31《Token经济》· 0 条
+                10-29《故事：材质、结构、风格和银幕剧作的原理》· 0 条
+
+                【核心观点】
+                - Token 只是 AI 投入中最小的一部分。
+            """.trimIndent(),
+        ).copy(title = "每周阅读总结")
+
+        val summary = requireNotNull(parseTodayReadingSummary(reading))
+
+        assertEquals(
+            listOf("本周阅读" to "2", "新增划线" to "0", "书架" to "1201"),
+            summary.metrics.map { it.label to it.value },
+        )
+        assertEquals(2, summary.books.size)
+        assertEquals("Token经济", summary.books[0].title)
+        assertEquals("0 条", summary.books[0].marks)
+        assertEquals(listOf("核心观点"), summary.remainingSections.map { it.heading })
+    }
+
+    @Test
+    fun reconciliationCardOffersTaskSpecificInputAndBuildsACompleteReply() {
+        val reconciliation = card(
+            "reconciliation",
+            kind = "task",
+            occurredAt = at(2026, 11, 1, 19, 30),
+            summary = "现在账面上电子现金约 467 元。两件事想跟你确认一下：实际扣款金额和刷卡次数。",
+            actionState = "completed",
+        ).copy(
+            title = "周日银通卡对账",
+            executionThreadId = "thread-reconciliation",
+        )
+        val compactLive = reconciliation.copy(
+            summary = "现在账面上电子现金约 467 元，折合还能坐 7 趟单程。",
+        )
+
+        val spec = requireNotNull(todayQuickReplySpec(reconciliation))
+        val compactSpec = requireNotNull(todayQuickReplySpec(compactLive))
+        val message = buildReconciliationReply(
+            taskTitle = reconciliation.title,
+            amount = "133",
+            swipes = "2",
+            note = "两趟都刷了银通卡",
+        )
+
+        assertEquals(TodayQuickReplyKind.RECONCILIATION, spec.kind)
+        assertEquals(TodayQuickReplyKind.RECONCILIATION, compactSpec.kind)
+        assertTrue(compactSpec.request.contains("账单金额"))
+        assertTrue(spec.request.contains("想跟你确认"))
+        assertTrue(message.contains("账单金额：133 元"))
+        assertTrue(message.contains("刷卡次数：2 次"))
+        assertTrue(message.contains("两趟都刷了银通卡"))
+        assertTrue(message.contains("更新台账"))
+    }
+
+    @Test
+    fun scheduledTaskKeepsAReplyEntryEvenWhenItsCardSummaryIsCompact() {
+        val task = card(
+            "weekly-plan",
+            kind = "task",
+            occurredAt = at(2026, 11, 1, 19, 30),
+            summary = "需要你提供本周想优先推进的三件事。",
+        ).copy(executionThreadId = "thread-weekly")
+        val plain = card(
+            "plain",
+            kind = "task",
+            occurredAt = at(2026, 11, 1, 19, 30),
+            summary = "任务已完成。",
+        ).copy(executionThreadId = "thread-plain")
+        val noThread = card(
+            "no-thread",
+            kind = "task",
+            occurredAt = at(2026, 11, 1, 19, 30),
+            summary = "需要你提供本周想优先推进的三件事。",
+        )
+
+        assertEquals(TodayQuickReplyKind.GENERIC, todayQuickReplySpec(task)?.kind)
+        assertEquals(TodayQuickReplyKind.GENERIC, todayQuickReplySpec(plain)?.kind)
+        assertEquals(null, todayQuickReplySpec(noThread))
+    }
+
+    @Test
     fun newsFactTitlesUseTheArticleTitleWithoutSourceTimeOrTableNumber() {
         val facts = todayNewsFacts(
             decodeTodayCardEvidence(
@@ -1036,6 +1160,116 @@ class TodayCardContentTest {
         )
 
         assertEquals(listOf("valid-briefing"), groups.current.map { it.id })
+    }
+
+    @Test
+    fun didiRideCardParsesVehicleTripAndEtaWithoutPhone() {
+        val ride = card(
+            "ride",
+            kind = "task",
+            occurredAt = at(2026, 11, 1, 18, 20),
+            summary = """
+                【车辆信息】
+                车牌号：京A·12345
+                车型：白色比亚迪秦 PLUS
+                司机：张师傅
+
+                【行程】
+                状态：司机已接单
+                距接驾点：1.2 公里 · 预计 3 分钟到达
+                望京 SOHO → 首都机场 T3
+                订单号：ORDER-123
+            """.trimIndent(),
+        )
+
+        val details = requireNotNull(parseTodayRide(ride))
+
+        assertEquals("司机已接单", details.status)
+        assertEquals("京A·12345", details.plate)
+        assertEquals("白色比亚迪秦 PLUS", details.carModel)
+        assertEquals("张师傅", details.driver)
+        assertEquals("1.2 公里", details.distance)
+        assertEquals("3 分钟", details.eta)
+        assertEquals("望京 SOHO → 首都机场 T3", details.route)
+        assertEquals("ORDER-123", details.orderId)
+    }
+
+    @Test
+    fun matchingRideCardStillRendersBeforeAVehicleIsAssigned() {
+        val details = requireNotNull(
+            parseTodayRide(
+                card(
+                    "matching-ride",
+                    kind = "task",
+                    occurredAt = at(2026, 11, 1, 18, 20),
+                    summary = """
+                        【车辆信息】
+                        正在为你匹配车辆。
+
+                        【行程】
+                        状态：正在匹配司机
+                        订单号：ORDER-123
+                    """.trimIndent(),
+                ),
+            ),
+        )
+
+        assertEquals("正在匹配司机", details.status)
+        assertEquals(null, details.plate)
+        assertEquals("ORDER-123", details.orderId)
+    }
+
+    @Test
+    fun coffeePickupCardUsesOnlyARealOrderDetailCode() {
+        val coffee = card(
+            "coffee",
+            kind = "task",
+            occurredAt = at(2026, 11, 2, 8, 43),
+            summary = """
+                【取餐信息】
+                取餐码：972
+                取餐二维码：aufckp8XAAk=
+                门店：元中心快手总部店
+                预计可取：08:53
+
+                【订单】
+                状态：精心制作中
+                饮品：精萃澳瑞白
+                实付：¥10.90
+                订单号：7703368209932943369
+            """.trimIndent(),
+        ).copy(executionThreadId = "thread-coffee")
+
+        val details = requireNotNull(parseTodayCoffee(coffee))
+
+        assertEquals("972", details.pickupCode)
+        assertEquals("aufckp8XAAk=", details.qrPayload)
+        assertEquals("精心制作中", details.status)
+        assertEquals("元中心快手总部店", details.shopName)
+        assertEquals("精萃澳瑞白", details.productName)
+        assertEquals("¥10.90", details.amount)
+        assertEquals("08:53", details.readyAt)
+        assertEquals("7703368209932943369", details.orderId)
+        assertEquals(null, todayQuickReplySpec(coffee))
+        assertEquals(
+            null,
+            parseTodayCoffee(
+                coffee.copy(
+                    summary = coffee.summary.replace(
+                        "取餐二维码：aufckp8XAAk=",
+                        "取餐二维码：972",
+                    ),
+                ),
+            )?.qrPayload,
+        )
+        assertEquals(
+            null,
+            parseTodayCoffee(
+                coffee.copy(
+                    summary = coffee.summary.replace("取餐码：972", "取餐码：生成中"),
+                ),
+            ),
+        )
     }
 
     private fun at(year: Int, month: Int, day: Int, hour: Int, minute: Int): Long =

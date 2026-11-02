@@ -29,6 +29,7 @@ serialization = "1.7.3"
 coil = "3.0.4"
 securityCrypto = "1.1.0-alpha06"
 markdownRenderer = "0.33.0"
+zxing = "3.5.3"
 
 [libraries]
 androidx-core-ktx = { group = "androidx.core", name = "core-ktx", version.ref = "coreKtx" }
@@ -81,6 +82,7 @@ androidx-security-crypto = { group = "androidx.security", name = "security-crypt
 
 # Markdown 渲染（spec §7 选型）：正文里的代码块/表格/列表/引用走真实语法渲染
 markdown-renderer-m3 = { group = "com.mikepenz", name = "multiplatform-markdown-renderer-m3", version.ref = "markdownRenderer" }
+zxing-core = { group = "com.google.zxing", name = "core", version.ref = "zxing" }
 
 [plugins]
 android-application = { id = "com.android.application", version.ref = "agp" }

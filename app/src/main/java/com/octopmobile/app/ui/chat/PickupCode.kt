@@ -48,6 +48,9 @@ private fun findInJson(element: JsonElement?): String? = when (element) {
     is JsonObject -> {
         pickupFields.firstNotNullOfOrNull { key ->
             (element[key] as? JsonPrimitive)?.contentOrNull?.let(::codeFromValue)
+        } ?: pickupCodeInfoFields.firstNotNullOfOrNull { key ->
+            val info = element[key] as? JsonObject ?: return@firstNotNullOfOrNull null
+            (info["code"] as? JsonPrimitive)?.contentOrNull?.let(::codeFromValue)
         } ?: element.values.firstNotNullOfOrNull(::findInJson)
     }
 
@@ -126,8 +129,16 @@ private val pickupFields = listOf(
     "mealCode",
     "take_code",
     "takeCode",
+    "takeMealCode",
+    "take_meal_code",
     "取餐码",
     "取餐号",
+)
+private val pickupCodeInfoFields = listOf(
+    "takeMealCodeInfo",
+    "take_meal_code_info",
+    "mealCodeInfo",
+    "meal_code_info",
 )
 private val failureStatusFields = setOf(
     "status",

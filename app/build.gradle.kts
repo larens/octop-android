@@ -181,6 +181,9 @@ dependencies {
     // Markdown 正文渲染
     implementation(libs.markdown.renderer.m3)
 
+    // 瑞幸取餐二维码
+    implementation(libs.zxing.core)
+
     testImplementation(libs.junit)
     testImplementation(libs.mockwebserver)
     androidTestImplementation(libs.room.testing)

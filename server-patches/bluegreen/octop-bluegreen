@@ -176,6 +176,8 @@ apply_patch_pack() {
     "$release/venv/bin/python" install_cron_isolation.py
     "$release/venv/bin/python" install_cron_delivery_isolation.py
     "$release/venv/bin/python" install_cron_today_cards.py
+    "$release/venv/bin/python" install_didi_today_cards.py
+    "$release/venv/bin/python" install_coffee_today_cards.py
     "$release/venv/bin/python" install_calendar_card_format.py
     "$release/venv/bin/python" install_today_feedback_semantics.py
     "$release/venv/bin/python" install_xiaomi_health_cloud.py
@@ -204,9 +206,13 @@ apply_patch_pack() {
     "$site/octop/api/app.py" \
     "$site/octop/api/deps.py" \
     "$site/octop/infra/agents/middleware/thread_artifacts.py" \
+    "$site/octop/infra/agents/middleware/didi_ride_today.py" \
+    "$site/octop/infra/agents/middleware/coffee_order_today.py" \
     "$site/octop/infra/db/repos/threads.py" \
     "$site/octop/infra/agents/threads/turn_delete.py" \
     "$site/octop/infra/today/cron_cards.py" \
+    "$site/octop/infra/today/didi_ride_cards.py" \
+    "$site/octop/infra/today/coffee_order_cards.py" \
     "$site/octop/infra/today/health_cards.py" \
     "$site/octop/infra/today/automatic.py" \
     "$site/octop/infra/today/cards.py" \
@@ -240,6 +246,8 @@ run_patch_tests() {
     "$release/venv/bin/python" test_agent_tooling.py
     "$release/venv/bin/python" -m unittest -v \
       test_cron_today_cards.py \
+      test_didi_today_cards.py \
+      test_coffee_today_cards.py \
       test_health_today_cards.py \
       test_health_trend_memory.py \
       test_today_feedback_semantics.py

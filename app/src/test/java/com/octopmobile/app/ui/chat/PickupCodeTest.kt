@@ -30,6 +30,25 @@ class PickupCodeTest {
     }
 
     @Test
+    fun `extracts Luckin pickup code info object`() {
+        val output = """
+            {
+              "code": 0,
+              "success": true,
+              "data": {
+                "orderStatus": 10,
+                "takeMealCodeInfo": {
+                  "code": "972",
+                  "takeOrderId": "test"
+                }
+              }
+            }
+        """.trimIndent()
+
+        assertEquals("972", extractPickupCode(output))
+    }
+
+    @Test
     fun `does not mistake an order number for a pickup code`() {
         val output = """{"ok":true,"data":{"order_no":"123456","status":"paid"}}"""
 

@@ -52,6 +52,26 @@ _FACT_TRAILING_TABLE_RE = re.compile(r"(?:\s*[|｜]\s*)+$")
 _SOURCE_TIME_TITLE_RE = re.compile(
     r"^(?:[^：:|｜]{1,24}\s+)?\d{1,2}[-/]\d{1,2}\s+\d{1,2}:\d{2}$"
 )
+_READING_BOOK_ROW_RE = re.compile(
+    r"^\|\s*(\d{1,2}[-/]\d{1,2})\s*\|\s*《([^》]+)》[^|]*"
+    r"\|\s*[*_`]*(\d+)\s*条"
+)
+_READING_LAST_MARK_RE = re.compile(
+    r"最近一次划线(?:是|停在)?\s*[*_`]*\s*(\d{4}-\d{2}-\d{2})"
+    r"(?:\s+\d{1,2}:\d{2})?\s*[*_`]*[^《\n]{0,24}《([^》]+)》"
+)
+_READING_SHELF_RE = re.compile(r"(?:书架|全架)\s*(\d+)\s*本")
+_READING_LEAD_RE = re.compile(
+    r"(?:一句话结论|结论一句话|结论)\s*[：:]\s*[*_`]*\s*([^\n]+)"
+)
+_MARKDOWN_HEADING_RE = re.compile(r"(?m)^(#{1,6})\s*([^\n]+?)\s*$")
+_BOLD_LABEL_RE = re.compile(r"(?m)^\s*\*\*([^*\n]+)\*\*\s*(?:[：:]\s*(.*))?$")
+_READING_INLINE_BOOK_RE = re.compile(
+    r"(?<![\d-])(\d{1,2}[-/]\d{1,2})\s*《([^》]+)》"
+)
+_READING_MARK_COUNT_RE = re.compile(
+    r"(?:新增划线|划线(?:均|共|总计)?)[^0-9\n]{0,20}(\d+)\s*条"
+)
 _STRUCTURED_UI_TITLE_RE = re.compile(
     r'^\s*\{.*?"octop_ui"\s*:',
     re.DOTALL,
@@ -388,6 +408,162 @@ def _first_summary_section(text: str, headings: tuple[str, ...]) -> str:
     return ""
 
 
+def _markdown_section(text: str, keyword: str) -> str:
+    headings = list(_MARKDOWN_HEADING_RE.finditer(text))
+    for index, match in enumerate(headings):
+        level = len(match.group(1))
+        title = re.sub(r"^[一二三四五六七八九十\d]+[、.．]\s*", "", match.group(2))
+        if keyword not in title:
+            continue
+        end = next(
+            (
+                heading.start()
+                for heading in headings[index + 1 :]
+                if len(heading.group(1)) <= level
+            ),
+            len(text),
+        )
+        return text[match.end() : end].strip()
+    return ""
+
+
+def _reading_section(text: str, keyword: str) -> str:
+    markdown = _markdown_section(text, keyword)
+    if markdown:
+        return markdown
+    labels = list(_BOLD_LABEL_RE.finditer(text))
+    for index, match in enumerate(labels):
+        title = match.group(1).strip()
+        if keyword not in title:
+            continue
+        inline = (match.group(2) or "").strip()
+        if inline:
+            return inline
+        end = labels[index + 1].start() if index + 1 < len(labels) else len(text)
+        return text[match.end() : end].strip()
+    return ""
+
+
+def _reading_items(value: str, limit: int) -> list[str]:
+    items: list[str] = []
+    for raw in value.splitlines():
+        line = raw.strip()
+        if not line or not _ITEM_RE.match(line):
+            continue
+        cleaned = _clean_inline(line)
+        if len(cleaned) < 8:
+            continue
+        items.append(_compact(cleaned, 260))
+        if len(items) >= limit:
+            break
+    return items
+
+
+def _reading_result_summary(text: str) -> str:
+    """Keep reading counts and book-level evidence that generic bullet summaries drop."""
+    if "阅读" not in text and "划线" not in text:
+        return ""
+
+    books: list[tuple[str, str, int | None]] = []
+    seen_books: set[tuple[str, str]] = set()
+    for raw in text.splitlines():
+        match = _READING_BOOK_ROW_RE.match(raw.strip())
+        if match:
+            item = (
+                match.group(1),
+                _clean_inline(match.group(2)).strip("《》 "),
+                int(match.group(3)),
+            )
+            books.append(item)
+            seen_books.add(item[:2])
+
+    if not books:
+        for raw in text.splitlines():
+            line = raw.strip()
+            if "划线" not in line or "最近一次划线" in line:
+                continue
+            head, _, tail = line.partition("——")
+            tail_marks = _READING_MARK_COUNT_RE.search(tail)
+            for segment in re.split(r"[、；;]", head):
+                match = _READING_INLINE_BOOK_RE.search(segment)
+                if not match:
+                    continue
+                date = match.group(1)
+                title = _clean_inline(match.group(2)).strip("《》 ")
+                if (date, title) in seen_books:
+                    continue
+                mark_match = _READING_MARK_COUNT_RE.search(segment)
+                marks = int(mark_match.group(1)) if mark_match else None
+                if marks is None and tail_marks and int(tail_marks.group(1)) == 0:
+                    marks = 0
+                books.append((date, title, marks))
+                seen_books.add((date, title))
+
+    shelf = _READING_SHELF_RE.search(text)
+    last_mark = _READING_LAST_MARK_RE.search(text)
+    lead = _READING_LEAD_RE.search(text)
+    if not books and not shelf and not last_mark:
+        return ""
+
+    read_count = len(books)
+    known_marks = [item[2] for item in books if item[2] is not None]
+    total_mark = _READING_MARK_COUNT_RE.search(text)
+    marks_count = (
+        sum(known_marks)
+        if len(known_marks) == len(books)
+        else int(total_mark.group(1)) if total_mark else None
+    )
+    overview_parts = [
+        f"本周阅读 {read_count} 本" if read_count else "",
+        f"新增划线 {marks_count} 条" if marks_count is not None else "",
+        f"书架 {shelf.group(1)} 本" if shelf else "",
+    ]
+    overview_lines = [" · ".join(part for part in overview_parts if part)]
+    if last_mark:
+        overview_lines.append(
+            f"最近划线：{last_mark.group(1)}《{_clean_inline(last_mark.group(2))}》"
+        )
+    if lead:
+        conclusion = _clean_inline(lead.group(1)).strip("*_` ")
+        if conclusion:
+            overview_lines.append(f"结论：{conclusion}")
+
+    sections = [f"【阅读概览】\n" + "\n".join(line for line in overview_lines if line)]
+    if books:
+        book_lines = [
+            f"{date}《{title}》· {marks} 条" if marks is not None
+            else f"{date}《{title}》· 划线数见总览"
+            for date, title, marks in books[:8]
+        ]
+        sections.append("【本周在读】\n" + "\n".join(book_lines))
+
+    core = _reading_section(text, "核心观点")
+    quoted = [
+        item
+        for item in _reading_items(core, limit=12)
+        if '"' in item or "“" in item or "”" in item
+    ]
+    core_items = (quoted or _reading_items(core, limit=3))[:3]
+    if core_items:
+        sections.append("【核心观点】\n" + "\n".join(f"- {item}" for item in core_items))
+
+    actions = _reading_items(_reading_section(text, "可行动"), limit=3)
+    if actions:
+        sections.append("【可行动】\n" + "\n".join(f"- {item}" for item in actions))
+
+    next_reading = _reading_section(text, "下一步读")
+    next_titles: list[str] = []
+    for match in re.finditer(r"《[^》]+》", next_reading):
+        title = match.group(0)
+        if title not in next_titles:
+            next_titles.append(title)
+    if next_titles:
+        sections.append("【下一步阅读】\n" + "\n".join(f"- {item}" for item in next_titles))
+
+    summary = "\n\n".join(sections)
+    return summary if len(summary) <= 5200 else summary[:5199].rstrip() + "…"
+
+
 def _weather_plan_is_tomorrow(task_name: str, text: str) -> bool:
     heading_markers = ("【明日安排】", "【明日日程】", "【明日天气】", "【天气与穿着】", "【今晚准备】")
     return (
@@ -709,6 +885,10 @@ def task_result_summary(
         return _weather_result_summary(text, task_name=task_name)
     if kind == "signal":
         return _signal_result_summary(text)
+    if kind == "review":
+        reading = _reading_result_summary(text)
+        if reading:
+            return reading
     candidates = _summary_candidates(text)
     if candidates:
         return "\n".join(f"• {item}" for item in candidates)

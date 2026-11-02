@@ -39,6 +39,8 @@ cp artifact_shares.py "$site/api/routers/artifact_shares.py"
 /opt/octop/venv/bin/python install_cron_isolation.py
 /opt/octop/venv/bin/python install_cron_delivery_isolation.py
 /opt/octop/venv/bin/python install_cron_today_cards.py
+/opt/octop/venv/bin/python install_didi_today_cards.py
+/opt/octop/venv/bin/python install_coffee_today_cards.py
 /opt/octop/venv/bin/python install_calendar_card_format.py
 /opt/octop/venv/bin/python install_today_feedback_semantics.py
 /opt/octop/venv/bin/python install_xiaomi_health_cloud.py
@@ -57,6 +59,8 @@ OCTOP_HOME=/opt/octop OCTOP_DB_PATH=/opt/octop/octop.db \
   "$site/infra/today/automatic.py" \
   "$site/infra/today/cards.py" \
   "$site/infra/today/cron_cards.py" \
+  "$site/infra/today/didi_ride_cards.py" \
+  "$site/infra/today/coffee_order_cards.py" \
   "$site/infra/today/health_cards.py" \
   "$site/api/routers/mobile_ingest.py" \
   "$site/api/routers/conversation_router.py" \
@@ -69,6 +73,8 @@ OCTOP_HOME=/opt/octop OCTOP_DB_PATH=/opt/octop/octop.db \
   "$site/api/app.py" \
   "$site/api/deps.py" \
   "$site/infra/agents/middleware/thread_artifacts.py" \
+  "$site/infra/agents/middleware/didi_ride_today.py" \
+  "$site/infra/agents/middleware/coffee_order_today.py" \
   "$site/infra/db/repos/threads.py" \
   "$site/infra/agents/threads/turn_delete.py" \
   "$site/infra/memory/mobile_diaries.py" \

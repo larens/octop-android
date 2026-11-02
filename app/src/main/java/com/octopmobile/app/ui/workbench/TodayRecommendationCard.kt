@@ -36,6 +36,8 @@ import androidx.compose.material.icons.filled.EventAvailable
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Inbox
+import androidx.compose.material.icons.filled.LocalCafe
+import androidx.compose.material.icons.filled.LocalTaxi
 import androidx.compose.material.icons.filled.MoreHoriz
 import androidx.compose.material.icons.filled.Newspaper
 import androidx.compose.material.icons.filled.Place
@@ -92,6 +94,7 @@ internal fun TodayRecommendationCard(
     onOpenDetail: () -> Unit,
     onProcess: () -> Unit,
     onOpenExecution: (() -> Unit)?,
+    onReply: ((String) -> Unit)? = null,
     onSnooze: () -> Unit,
     onFeedback: (String) -> Unit,
     onClose: () -> Unit,
@@ -111,6 +114,18 @@ internal fun TodayRecommendationCard(
     val industrySignal = remember(card.kind, card.summary) {
         parseTodaySignal(card)
     }
+    val readingSummary = remember(card.kind, card.summary) {
+        parseTodayReadingSummary(card)
+    }
+    val rideDetails = remember(card.kind, card.summary) {
+        parseTodayRide(card)
+    }
+    val coffeeDetails = remember(card.kind, card.summary) {
+        parseTodayCoffee(card)
+    }
+    val quickReply = remember(card.id, card.kind, card.summary, card.executionThreadId) {
+        todayQuickReplySpec(card)
+    }
     val dailyWeatherWeight = remember(card.updatedAt, nowMillis) {
         dailyWeatherVisualWeight(card.updatedAt, nowMillis)
     }
@@ -122,7 +137,12 @@ internal fun TodayRecommendationCard(
             it.heading == "今晚准备"
     }
     val hasStructuredAdvice =
-        structuredAdvice != null || dailyPlan != null || industrySignal != null
+        structuredAdvice != null ||
+            dailyPlan != null ||
+            industrySignal != null ||
+            readingSummary != null ||
+            rideDetails != null ||
+            coffeeDetails != null
     val structuredHealthAdvice = structuredAdvice?.takeIf { card.kind == "health" }
     val structuredEmail = card.kind == "inbox" && hasStructuredAdvice
     val hasPendingMail = structuredEmail && summarySections.any { it.heading == "待处理邮件" }
@@ -130,13 +150,22 @@ internal fun TodayRecommendationCard(
         .firstOrNull { it.heading == "待处理邮件" }
         ?.body
         .orEmpty()
-    val accent = if (hasPendingMail) PendingMailAccent else todayCardAccent(card.kind, isPast)
+    val accent = when {
+        hasPendingMail -> PendingMailAccent
+        coffeeDetails != null -> CoffeeAccent
+        rideDetails != null -> RideAccent
+        else -> todayCardAccent(card.kind, isPast)
+    }
     val executionCompleted = card.actionState == TodayCardActionState.COMPLETED
     val evidence = remember(card.evidenceJson) { decodeTodayCardEvidence(card.evidenceJson) }
     val newsFacts = remember(card.evidenceJson) { todayNewsFacts(evidence) }
     val facts = remember(card.kind, card.evidenceJson) {
         when {
-            card.kind == "health" || dailyPlan != null || industrySignal != null -> emptyList()
+            card.kind == "health" ||
+                dailyPlan != null ||
+                industrySignal != null ||
+                rideDetails != null ||
+                coffeeDetails != null -> emptyList()
             card.kind.isNewsCard() -> newsFacts.take(3)
             else -> todayCardFacts(evidence)
         }
@@ -148,6 +177,7 @@ internal fun TodayRecommendationCard(
             .isAfter(LocalDate.now())
     }
     var menuExpanded by remember(card.id) { mutableStateOf(false) }
+    var replyExpanded by remember(card.id) { mutableStateOf(false) }
     val opensFullNewsList = card.kind.isNewsCard() && newsFacts.size > facts.size
 
     if (calendar != null) {
@@ -299,7 +329,13 @@ internal fun TodayRecommendationCard(
                 ),
             )
             .border(1.dp, accent.copy(alpha = 0.14f), shape)
-            .clickable(onClick = onOpenDetail),
+            .then(
+                if (coffeeDetails != null || rideDetails != null) {
+                    Modifier
+                } else {
+                    Modifier.clickable(onClick = onOpenDetail)
+                },
+            ),
     ) {
         Column(modifier = Modifier.padding(16.dp)) {
             Row(
@@ -309,8 +345,16 @@ internal fun TodayRecommendationCard(
                 CategoryPill(
                     kind = card.kind,
                     accent = accent,
+                    icon = when {
+                        coffeeDetails != null -> Icons.Filled.LocalCafe
+                        rideDetails != null -> Icons.Filled.LocalTaxi
+                        else -> null
+                    },
                     label = when {
                         hasPendingMail -> stringResource(R.string.today_card_pending_mail)
+                        readingSummary != null -> stringResource(R.string.today_reading_category)
+                        coffeeDetails != null -> stringResource(R.string.today_coffee_category)
+                        rideDetails != null -> stringResource(R.string.today_ride_category)
                         dailyPlan != null -> stringResource(
                             if (dailyPlan.isTomorrow) {
                                 R.string.today_card_category_tomorrow_plan
@@ -373,6 +417,9 @@ internal fun TodayRecommendationCard(
             if (
                 dailyPlan == null &&
                 industrySignal == null &&
+                readingSummary == null &&
+                rideDetails == null &&
+                coffeeDetails == null &&
                 summaryPreview.isNotBlank()
             ) {
                 Spacer(Modifier.height(5.dp))
@@ -398,12 +445,37 @@ internal fun TodayRecommendationCard(
                     details = industrySignal,
                     accent = accent,
                 )
+            } else if (readingSummary != null) {
+                Spacer(Modifier.height(12.dp))
+                ReadingSummaryPanel(
+                    summary = readingSummary,
+                    accent = accent,
+                    expanded = false,
+                )
+            } else if (rideDetails != null) {
+                Spacer(Modifier.height(12.dp))
+                TodayRidePanel(
+                    details = rideDetails,
+                    accent = accent,
+                )
+            } else if (coffeeDetails != null) {
+                Spacer(Modifier.height(12.dp))
+                TodayCoffeePanel(
+                    details = coffeeDetails,
+                    accent = accent,
+                )
             } else if (healthVisualization != null) {
                 Spacer(Modifier.height(12.dp))
                 HealthVisualPanel(healthVisualization, accent)
             }
 
-            if (dailyPlan == null && industrySignal == null) {
+            if (
+                dailyPlan == null &&
+                industrySignal == null &&
+                readingSummary == null &&
+                rideDetails == null &&
+                coffeeDetails == null
+            ) {
                 if (hasPendingMail) {
                     Spacer(Modifier.height(12.dp))
                     PendingMailPanel(pendingPreview, accent)
@@ -469,6 +541,7 @@ internal fun TodayRecommendationCard(
             val primaryAction = when {
                 dailyPlan != null -> onOpenDetail
                 industrySignal != null -> onOpenDetail
+                readingSummary != null -> onOpenDetail
                 opensFullNewsList -> onOpenDetail
                 structuredEmail -> onOpenDetail
                 onOpenExecution != null -> onOpenExecution
@@ -476,10 +549,16 @@ internal fun TodayRecommendationCard(
                 else -> onProcess
             }
             if (
-                structuredEmail ||
-                !executionCompleted ||
-                dailyPlan != null ||
-                industrySignal != null
+                coffeeDetails == null &&
+                rideDetails == null &&
+                (
+                    quickReply != null ||
+                        structuredEmail ||
+                        !executionCompleted ||
+                        dailyPlan != null ||
+                        industrySignal != null ||
+                        readingSummary != null
+                    )
             ) {
                 Spacer(Modifier.height(12.dp))
                 Row(
@@ -507,6 +586,7 @@ internal fun TodayRecommendationCard(
                             imageVector = when {
                                 dailyPlan != null -> Icons.Filled.ChevronRight
                                 industrySignal != null -> Icons.Filled.ChevronRight
+                                readingSummary != null -> Icons.Filled.ChevronRight
                                 structuredEmail -> Icons.Filled.ChevronRight
                                 isPast -> Icons.Filled.History
                                 else -> Icons.Filled.AutoAwesome
@@ -520,6 +600,8 @@ internal fun TodayRecommendationCard(
                                 dailyPlan != null -> stringResource(R.string.today_card_action_view_plan)
                                 industrySignal != null ->
                                     stringResource(R.string.today_signal_view_analysis)
+                                readingSummary != null ->
+                                    stringResource(R.string.today_card_action_view_reading)
                                 opensFullNewsList -> {
                                     stringResource(R.string.today_card_view_all_news, newsFacts.size)
                                 }
@@ -539,6 +621,21 @@ internal fun TodayRecommendationCard(
                             },
                         )
                     }
+                    if (quickReply != null && onReply != null) {
+                        OutlinedButton(
+                            onClick = { replyExpanded = true },
+                            shape = RoundedCornerShape(50),
+                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 9.dp),
+                        ) {
+                            Icon(
+                                imageVector = Icons.AutoMirrored.Filled.Chat,
+                                contentDescription = null,
+                                modifier = Modifier.size(17.dp),
+                            )
+                            Spacer(Modifier.width(6.dp))
+                            Text(stringResource(R.string.today_task_reply_action))
+                        }
+                    }
                     if (dailyPlan != null || industrySignal != null) {
                         OutlinedButton(
                             onClick = onClose,
@@ -557,6 +654,17 @@ internal fun TodayRecommendationCard(
                 }
             }
         }
+    }
+
+    if (replyExpanded && quickReply != null && onReply != null) {
+        TodayQuickReplyDialog(
+            spec = quickReply,
+            onDismiss = { replyExpanded = false },
+            onSubmit = { message ->
+                replyExpanded = false
+                onReply(message)
+            },
+        )
     }
 }
 
@@ -832,6 +940,7 @@ internal fun TodayRecommendationDetail(
     onFeedback: (String) -> Unit,
     onOpenEvidenceThread: (String) -> Unit,
     onOpenExecution: (() -> Unit)?,
+    onReply: ((String) -> Unit)? = null,
     onProcess: () -> Unit,
 ) {
     val uriHandler = LocalUriHandler.current
@@ -850,20 +959,43 @@ internal fun TodayRecommendationDetail(
     val industrySignal = remember(card.kind, card.summary) {
         parseTodaySignal(card)
     }
-    val hasStructuredAdvice = dailyPlan != null || industrySignal != null || summarySections.any {
-        it.heading == "处理建议" ||
-            it.heading == "改善建议" ||
-            it.heading == "行动建议" ||
-            it.heading == "今晚准备"
+    val readingSummary = remember(card.kind, card.summary) {
+        parseTodayReadingSummary(card)
     }
+    val rideDetails = remember(card.kind, card.summary) {
+        parseTodayRide(card)
+    }
+    val coffeeDetails = remember(card.kind, card.summary) {
+        parseTodayCoffee(card)
+    }
+    val quickReply = remember(card.id, card.kind, card.summary, card.executionThreadId) {
+        todayQuickReplySpec(card)
+    }
+    val hasStructuredAdvice =
+        dailyPlan != null ||
+            industrySignal != null ||
+            readingSummary != null ||
+            rideDetails != null ||
+            coffeeDetails != null ||
+            summarySections.any {
+                it.heading == "处理建议" ||
+                    it.heading == "改善建议" ||
+                    it.heading == "行动建议" ||
+                    it.heading == "今晚准备"
+            }
     val structuredEmail = card.kind == "inbox" && hasStructuredAdvice
     val hasPendingMail = structuredEmail && summarySections.any { it.heading == "待处理邮件" }
-    val accent = if (hasPendingMail) PendingMailAccent else todayCardAccent(card.kind, isPast)
+    val accent = when {
+        hasPendingMail -> PendingMailAccent
+        coffeeDetails != null -> CoffeeAccent
+        rideDetails != null -> RideAccent
+        else -> todayCardAccent(card.kind, isPast)
+    }
     val executionCompleted = card.actionState == TodayCardActionState.COMPLETED
-    val sectionsBeforeFacts = if (structuredEmail) {
-        summarySections.filter { it.heading == "收件概览" }
-    } else {
-        summarySections
+    val sectionsBeforeFacts = when {
+        readingSummary != null || rideDetails != null || coffeeDetails != null -> emptyList()
+        structuredEmail -> summarySections.filter { it.heading == "收件概览" }
+        else -> summarySections
     }
     val sectionsAfterFacts = if (structuredEmail) {
         summarySections.filterNot { it.heading == "收件概览" }
@@ -874,6 +1006,8 @@ internal fun TodayRecommendationDetail(
     val facts = remember(card.kind, card.evidenceJson) {
         when {
             card.kind == "health" -> emptyList()
+            coffeeDetails != null -> emptyList()
+            rideDetails != null -> emptyList()
             card.kind.isNewsCard() -> todayNewsFacts(evidence)
             else -> todayCardFacts(evidence, limit = 6)
         }
@@ -890,6 +1024,7 @@ internal fun TodayRecommendationDetail(
             .isAfter(LocalDate.now())
     }
     var feedbackExpanded by remember(card.id) { mutableStateOf(false) }
+    var replyExpanded by remember(card.id) { mutableStateOf(false) }
 
     Dialog(
         onDismissRequest = onDismiss,
@@ -925,8 +1060,19 @@ internal fun TodayRecommendationDetail(
                         CategoryPill(
                             kind = card.kind,
                             accent = accent,
+                            icon = when {
+                                coffeeDetails != null -> Icons.Filled.LocalCafe
+                                rideDetails != null -> Icons.Filled.LocalTaxi
+                                else -> null
+                            },
                             label = when {
                                 hasPendingMail -> stringResource(R.string.today_card_pending_mail)
+                                readingSummary != null ->
+                                    stringResource(R.string.today_reading_category)
+                                coffeeDetails != null ->
+                                    stringResource(R.string.today_coffee_category)
+                                rideDetails != null ->
+                                    stringResource(R.string.today_ride_category)
                                 dailyPlan != null -> stringResource(
                                     if (dailyPlan.isTomorrow) {
                                         R.string.today_card_category_tomorrow_plan
@@ -977,6 +1123,28 @@ internal fun TodayRecommendationDetail(
                                 expanded = true,
                             )
                         }
+                        if (readingSummary != null) {
+                            Spacer(Modifier.height(12.dp))
+                            ReadingSummaryPanel(
+                                summary = readingSummary,
+                                accent = accent,
+                                expanded = true,
+                            )
+                        }
+                        if (rideDetails != null) {
+                            Spacer(Modifier.height(12.dp))
+                            TodayRidePanel(
+                                details = rideDetails,
+                                accent = accent,
+                            )
+                        }
+                        if (coffeeDetails != null) {
+                            Spacer(Modifier.height(12.dp))
+                            TodayCoffeePanel(
+                                details = coffeeDetails,
+                                accent = accent,
+                            )
+                        }
                         if (healthVisualization != null) {
                             Spacer(Modifier.height(12.dp))
                             HealthVisualPanel(healthVisualization, accent)
@@ -984,6 +1152,9 @@ internal fun TodayRecommendationDetail(
                         if (
                             dailyPlan == null &&
                             industrySignal == null &&
+                            readingSummary == null &&
+                            rideDetails == null &&
+                            coffeeDetails == null &&
                             calendar == null &&
                             sectionsBeforeFacts.isNotEmpty()
                         ) {
@@ -1053,6 +1224,9 @@ internal fun TodayRecommendationDetail(
                         if (
                             dailyPlan == null &&
                             industrySignal == null &&
+                            readingSummary == null &&
+                            rideDetails == null &&
+                            coffeeDetails == null &&
                             calendar == null &&
                             sectionsAfterFacts.isNotEmpty()
                         ) {
@@ -1129,7 +1303,31 @@ internal fun TodayRecommendationDetail(
                             )
                         }
                         Spacer(Modifier.weight(1f))
-                        if (!isPast && !structuredEmail && !executionCompleted) {
+                        if (quickReply != null && onReply != null) {
+                            Button(
+                                onClick = { replyExpanded = true },
+                                shape = RoundedCornerShape(50),
+                                colors = ButtonDefaults.buttonColors(
+                                    containerColor = accent,
+                                    contentColor = Color.White,
+                                ),
+                            ) {
+                                Icon(
+                                    Icons.AutoMirrored.Filled.Chat,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(18.dp),
+                                )
+                                Spacer(Modifier.width(6.dp))
+                                Text(stringResource(R.string.today_task_reply_action))
+                            }
+                        }
+                        if (
+                            !isPast &&
+                            !structuredEmail &&
+                            !executionCompleted &&
+                            coffeeDetails == null &&
+                            rideDetails == null
+                        ) {
                             Button(
                                 onClick = onOpenExecution ?: onProcess,
                                 shape = RoundedCornerShape(50),
@@ -1158,6 +1356,17 @@ internal fun TodayRecommendationDetail(
                 }
             }
         }
+    }
+
+    if (replyExpanded && quickReply != null && onReply != null) {
+        TodayQuickReplyDialog(
+            spec = quickReply,
+            onDismiss = { replyExpanded = false },
+            onSubmit = { message ->
+                replyExpanded = false
+                onReply(message)
+            },
+        )
     }
 }
 
@@ -1220,7 +1429,12 @@ private fun CompactCalendarAction(
 }
 
 @Composable
-private fun CategoryPill(kind: String, accent: Color, label: String? = null) {
+private fun CategoryPill(
+    kind: String,
+    accent: Color,
+    icon: ImageVector? = null,
+    label: String? = null,
+) {
     Surface(
         shape = RoundedCornerShape(50),
         color = accent.copy(alpha = 0.12f),
@@ -1230,7 +1444,7 @@ private fun CategoryPill(kind: String, accent: Color, label: String? = null) {
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Icon(
-                imageVector = todayCardIcon(kind),
+                imageVector = icon ?: todayCardIcon(kind),
                 contentDescription = null,
                 tint = accent,
                 modifier = Modifier.size(15.dp),
@@ -2315,6 +2529,8 @@ private fun todayCardAccent(kind: String, isPast: Boolean): Color = when {
 
 private val PendingMailAccent = Color(0xFFC64D35)
 private val SignalVendorClaimColor = Color(0xFFB6761B)
+private val RideAccent = Color(0xFFE46F2A)
+private val CoffeeAccent = Color(0xFF9A5B35)
 
 @Composable
 private fun todayCardActionLabel(
