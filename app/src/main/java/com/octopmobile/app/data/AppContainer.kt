@@ -185,7 +185,7 @@ class AppContainer(context: Context) {
         json = json,
     )
 
-    /** Router Phase 0 只读镜像，不参与当前聊天路由。 */
+    /** Stable main-conversation pointer plus task/event projections. */
     fun mainConversationRepository(baseUrl: String, agentId: String): MainConversationRepository =
         MainConversationRepository(
             agentId = agentId,

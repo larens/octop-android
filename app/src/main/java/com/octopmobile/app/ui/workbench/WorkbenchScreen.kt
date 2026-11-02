@@ -103,6 +103,7 @@ fun WorkbenchScreen(
     var taskComposerOpen by rememberSaveable { mutableStateOf(false) }
     var mobileDataOpen by rememberSaveable { mutableStateOf(false) }
     var shareChoice by rememberSaveable { mutableStateOf(false) }
+    var chatsEntryId by rememberSaveable { mutableStateOf(0) }
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
 
@@ -128,7 +129,13 @@ fun WorkbenchScreen(
                 !taskComposerOpen &&
                 !mobileDataOpen
             ) {
-                WorkbenchBottomBar(current = tab, onSelect = { tab = it })
+                WorkbenchBottomBar(
+                    current = tab,
+                    onSelect = {
+                        if (it == WorkbenchTab.CHATS) chatsEntryId += 1
+                        tab = it
+                    },
+                )
             }
         },
     ) { padding ->
@@ -141,6 +148,8 @@ fun WorkbenchScreen(
             when (tab) {
                 WorkbenchTab.CHATS -> if (incomingShare == null) {
                     NewConversationPane(
+                        entryId = chatsEntryId,
+                        onOpenThread = onOpenThread,
                         onOpenFreshThread = onOpenFreshThread,
                         onNeedsLogin = onNeedsLogin,
                     )
@@ -239,30 +248,39 @@ private fun ShareDestinationDialog(onAskAgent: () -> Unit, onSave: () -> Unit, o
 }
 
 /**
- * 会话栏的默认入口：进来就直接建一条新会话，不再经过历史列表页。
- * 历史会话全部收进 ChatScreen 的左侧抽屉（见 ChatScreen.HistoryDrawerContent）。
+ * 会话栏的默认入口：普通点击进入稳定主会话；Shortcuts / 分享仍显式新建会话。
+ * 历史会话继续从 ChatScreen 的左侧抽屉进入（见 ChatScreen.HistoryDrawerContent）。
  */
 @Composable
 private fun NewConversationPane(
+    entryId: Int,
+    onOpenThread: (agentId: String, threadId: String) -> Unit,
     onOpenFreshThread: (agentId: String, threadId: String) -> Unit,
     onNeedsLogin: () -> Unit,
 ) {
     val viewModel: ThreadsViewModel = viewModel(factory = ThreadsViewModel.Factory)
     val state = viewModel.uiState
 
-    // 系统入口（App Shortcuts / 分享）统一落在「会话」栏这一级（spec §14）：这里就是
-    // 新建会话的地方。把动作先转交会话页 —— 分享内容与语音/拍照都得等输入区就位才好使；
-    // NEW_THREAD 本身就是「开一条空会话」，到此为止。
-    // `startRequested` 保证「进来这一次」只建一条：成功就导航走，失败停在错误 + 重试；
-    // 切走再切回（还在同一个返回栈项里）也不再补建，避免切个 tab 就多出一条空会话。
-    var startRequested by rememberSaveable { mutableStateOf(false) }
+    // 系统入口（App Shortcuts / 分享）仍显式新建会话；普通点击“会话”则进入稳定主会话。
+    // `explicitEntryId` 防止从聊天页返回时把同一次入口再执行一遍。
+    var explicitEntryId by rememberSaveable { mutableStateOf<Int?>(null) }
     val handoff by PendingHandoff.pending.collectAsStateWithLifecycle()
-    LaunchedEffect(handoff, state.selectedAgentId) {
-        if ((startRequested && handoff == null) || state.selectedAgentId == null) return@LaunchedEffect
-        startRequested = true
-        // 有交接就带上（NEW_THREAD 本身就是开空会话，到此为止）；没有就只建新会话。
+    LaunchedEffect(handoff, state.selectedAgentId, entryId) {
+        if (state.selectedAgentId == null) return@LaunchedEffect
+        if (handoff == null) {
+            if (explicitEntryId != entryId) viewModel.openMainConversation(entryId)
+            return@LaunchedEffect
+        }
+
+        explicitEntryId = entryId
         val start = PendingHandoff.take()
-        if (start != null && start.action != AppActions.NEW_THREAD) PendingChatStart.arm(start)
+        if (start == null) {
+            explicitEntryId = null
+            viewModel.openMainConversation(entryId)
+            return@LaunchedEffect
+        }
+        viewModel.markMainConversationEntryHandled(entryId)
+        if (start.action != AppActions.NEW_THREAD) PendingChatStart.arm(start)
         viewModel.createThread()
     }
 
@@ -277,29 +295,54 @@ private fun NewConversationPane(
         onOpenFreshThread(agentId, threadId)
     }
 
+    LaunchedEffect(state.mainConversationNavigationRequest) {
+        if (state.mainConversationNavigationRequest == 0L) return@LaunchedEffect
+        val target = state.mainConversationTarget ?: return@LaunchedEffect
+        viewModel.consumeMainConversationNavigation()
+        if (target.fresh) {
+            onOpenFreshThread(target.agentId, target.threadId)
+        } else {
+            onOpenThread(target.agentId, target.threadId)
+        }
+    }
+
+    val entryError = state.mainConversationError
+        ?: state.error.takeIf { state.selectedAgentId == null }
+
     Column(
         modifier = Modifier.fillMaxSize(),
         verticalArrangement = Arrangement.Center,
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
-        if (state.error != null) {
+        if (entryError != null) {
             Text(
-                text = state.error.asText(),
+                text = entryError.asText(),
                 style = MaterialTheme.typography.bodyMedium,
                 modifier = Modifier.padding(horizontal = 24.dp),
                 textAlign = androidx.compose.ui.text.style.TextAlign.Center,
             )
             Spacer(Modifier.height(16.dp))
             Button(onClick = {
-                // agent 还没定（拉 agent 目录失败）就重试拉取；定了就重试建会话。
-                if (state.selectedAgentId != null) viewModel.createThread() else viewModel.retry()
+                when {
+                    state.selectedAgentId == null -> viewModel.retry()
+                    explicitEntryId == entryId -> viewModel.createThread()
+                    else -> viewModel.retryMainConversation(entryId)
+                }
             }) {
                 Text(stringResource(R.string.main_retry))
+            }
+        } else if (
+            !state.mainConversationLoading &&
+            !state.creating &&
+            state.mainConversationTarget != null
+        ) {
+            Button(onClick = viewModel::reopenMainConversation) {
+                Text(stringResource(R.string.chat_open_main_conversation))
             }
         } else {
             CircularProgressIndicator()
             Spacer(Modifier.height(16.dp))
-            Text(stringResource(R.string.threads_creating))
+            Text(stringResource(R.string.chat_opening_main_conversation))
         }
     }
 }

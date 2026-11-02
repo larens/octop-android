@@ -208,6 +208,8 @@
     <string name="chat_turn_deleted">这段对话已删除。</string>
     <string name="chat_input_hint_new">发消息给 Octop…</string>
     <string name="chat_new_title">新会话</string>
+    <string name="chat_opening_main_conversation">正在打开主会话…</string>
+    <string name="chat_open_main_conversation">进入主会话</string>
     <string name="chat_model_loading">模型加载中…</string>
     <string name="chat_model_auto">自动模型</string>
     <string name="chat_send">发送</string>

@@ -208,6 +208,8 @@
     <string name="chat_turn_deleted">This exchange was deleted.</string>
     <string name="chat_input_hint_new">Message Octop…</string>
     <string name="chat_new_title">New conversation</string>
+    <string name="chat_opening_main_conversation">Opening your main conversation…</string>
+    <string name="chat_open_main_conversation">Open main conversation</string>
     <string name="chat_model_loading">Loading models…</string>
     <string name="chat_model_auto">Auto model</string>
     <string name="chat_send">Send</string>

@@ -61,6 +61,19 @@ data class ThreadsUiState(
      * 失败了如果只往 [error] 里塞，非空列表根本没人看 —— 所以单独给一个提示位。
      */
     val notice: ApiError? = null,
+    /** 稳定主会话入口正在刷新服务端绑定。 */
+    val mainConversationLoading: Boolean = false,
+    /** 最近一次解析出的稳定入口；保留它以便用户从会话页返回后再次打开。 */
+    val mainConversationTarget: MainConversationTarget? = null,
+    /** 一次性导航请求；0 表示当前没有待消费的跳转。 */
+    val mainConversationNavigationRequest: Long = 0,
+    val mainConversationError: ApiError? = null,
+)
+
+data class MainConversationTarget(
+    val agentId: String,
+    val threadId: String,
+    val fresh: Boolean,
 )
 
 /**
@@ -75,6 +88,10 @@ class ThreadsViewModel(private val container: AppContainer) : ViewModel() {
 
     private val host = MutableStateFlow<String?>(null)
     private val agentId = MutableStateFlow<String?>(null)
+    private var handledMainEntryId: Int? = null
+    private var resolvingMainEntry = false
+    private var pendingMainEntryId: Int? = null
+    private var mainNavigationRequestId = 0L
 
     var uiState by mutableStateOf(ThreadsUiState())
         private set
@@ -107,7 +124,9 @@ class ThreadsViewModel(private val container: AppContainer) : ViewModel() {
             }
 
             // 本地已记住 agent 时先用它把会话列表顶出来，再让网络请求在后面慢慢回填。
-            agentId.value = container.prefs.selectedAgentId.first()
+            val rememberedAgentId = container.prefs.selectedAgentId.first()
+            agentId.value = rememberedAgentId
+            uiState = uiState.copy(selectedAgentId = rememberedAgentId)
             loadAgents(baseUrl)
         }
     }
@@ -157,6 +176,117 @@ class ThreadsViewModel(private val container: AppContainer) : ViewModel() {
         uiState = uiState.copy(createdThreadId = null)
     }
 
+    /**
+     * 普通“会话”Tab 的入口：解析同一 agent 的稳定主会话并打开它绑定的 Thread。
+     *
+     * [entryId] 由工作台在用户真正选择“会话”时递增。同一个 entry 只处理一次，避免从聊天页
+     * 返回时立刻又被弹回去；重新点 Tab 会得到新的 entry，因此仍能主动重新进入主会话。
+     */
+    fun openMainConversation(entryId: Int) {
+        if (handledMainEntryId == entryId) return
+        val baseUrl = host.value ?: return
+        val id = agentId.value ?: return
+        if (resolvingMainEntry) {
+            pendingMainEntryId = entryId
+            return
+        }
+
+        handledMainEntryId = entryId
+        resolvingMainEntry = true
+        uiState = uiState.copy(
+            mainConversationLoading = true,
+            mainConversationError = null,
+        )
+        viewModelScope.launch {
+            try {
+                val repository = container.mainConversationRepository(baseUrl, id)
+                when (
+                    val resolution = resolveMainConversationEntry(
+                        refreshConversation = repository::refreshConversation,
+                        createDraft = {
+                            container.threadRepository(baseUrl, id).createLocalDraft().also {
+                                AutoCreatedConversation.mark(it)
+                            }
+                        },
+                    )
+                ) {
+                    is MainConversationResolution.Failed -> {
+                        val cachedThreadId = repository.cachedConversation()
+                            ?.routerThreadId
+                            ?.trim()
+                            .orEmpty()
+                        if (cachedThreadId.isNotEmpty()) {
+                            requestMainConversationNavigation(
+                                MainConversationTarget(
+                                    agentId = id,
+                                    threadId = cachedThreadId,
+                                    fresh = false,
+                                ),
+                            )
+                            viewModelScope.launch {
+                                repository.refreshTasks()
+                                repository.refreshEvents()
+                            }
+                        } else {
+                            uiState = uiState.copy(mainConversationError = resolution.error)
+                        }
+                    }
+
+                    is MainConversationResolution.Ready -> {
+                        requestMainConversationNavigation(
+                            MainConversationTarget(
+                                agentId = id,
+                                threadId = resolution.threadId,
+                                fresh = resolution.fresh,
+                            ),
+                        )
+                        if (!resolution.fresh) {
+                            // The stable Thread can open immediately; governance/task projections
+                            // continue in the background from the persisted event cursor.
+                            viewModelScope.launch {
+                                repository.refreshTasks()
+                                repository.refreshEvents()
+                            }
+                        }
+                    }
+                }
+            } catch (e: Exception) {
+                uiState = uiState.copy(
+                    mainConversationError = ApiError.Parse(
+                        e.message ?: "failed to open the main conversation",
+                    ),
+                )
+            } finally {
+                resolvingMainEntry = false
+                uiState = uiState.copy(mainConversationLoading = false)
+                pendingMainEntryId?.let { nextEntryId ->
+                    pendingMainEntryId = null
+                    if (nextEntryId != handledMainEntryId) openMainConversation(nextEntryId)
+                }
+            }
+        }
+    }
+
+    /** 显式 NEW_THREAD / 分享入口由会话页消费，不再重复解析主会话。 */
+    fun markMainConversationEntryHandled(entryId: Int) {
+        handledMainEntryId = entryId
+        cancelMainConversationNavigation()
+    }
+
+    fun retryMainConversation(entryId: Int) {
+        handledMainEntryId = null
+        openMainConversation(entryId)
+    }
+
+    /** 从聊天页返回后，用户仍可通过当前入口按钮再次进入最近解析出的主会话。 */
+    fun reopenMainConversation() {
+        uiState.mainConversationTarget?.let(::requestMainConversationNavigation)
+    }
+
+    fun consumeMainConversationNavigation() {
+        uiState = uiState.copy(mainConversationNavigationRequest = 0)
+    }
+
     // ------------------------------------------------------------ 长按菜单（spec §11）
 
     /**
@@ -179,6 +309,19 @@ class ThreadsViewModel(private val container: AppContainer) : ViewModel() {
 
     fun consumeNotice() {
         uiState = uiState.copy(notice = null)
+    }
+
+    private fun requestMainConversationNavigation(target: MainConversationTarget) {
+        mainNavigationRequestId += 1
+        uiState = uiState.copy(
+            mainConversationTarget = target,
+            mainConversationNavigationRequest = mainNavigationRequestId,
+            mainConversationError = null,
+        )
+    }
+
+    private fun cancelMainConversationNavigation() {
+        uiState = uiState.copy(mainConversationNavigationRequest = 0)
     }
 
     private fun mutate(

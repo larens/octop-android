@@ -14,10 +14,10 @@ import com.octopmobile.app.data.remote.dto.MainConversationDto
 import kotlinx.coroutines.flow.Flow
 
 /**
- * Router Phase 0 的只读缓存入口。
+ * 稳定主会话的本地镜像入口。
  *
- * 当前不切换聊天 UI，也不把 Worker 隐藏为本地虚构会话；它只把稳定主会话、任务和
- * 有界事件投影镜像到 Room，供后续灰度壳层读取。
+ * “会话”Tab 用它解析 dashboard 当前绑定的 Thread；任务与有界事件投影继续独立存放，
+ * 不会混进用户聊天消息。治理事件只用于任务/追踪，不渲染为聊天气泡。
  */
 class MainConversationRepository(
     private val agentId: String,
@@ -50,6 +50,9 @@ class MainConversationRepository(
                 ApiResult.Ok(entity)
             }
         }
+
+    /** Last known stable pointer, useful when the app starts or resumes offline. */
+    suspend fun cachedConversation(): MainConversationEntity? = conversationDao.find(agentId)
 
     suspend fun refreshTasks(): ApiResult<Int> =
         when (val result = api.conversationTasks(agentId)) {
