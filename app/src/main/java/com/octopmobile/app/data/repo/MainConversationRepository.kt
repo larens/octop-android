@@ -10,7 +10,10 @@ import com.octopmobile.app.data.remote.OctopApi
 import com.octopmobile.app.data.remote.dto.ConversationEventDto
 import com.octopmobile.app.data.remote.dto.ConversationTaskDto
 import com.octopmobile.app.data.remote.dto.ConversationTraceDto
+import com.octopmobile.app.data.remote.dto.DispatchPlanDto
 import com.octopmobile.app.data.remote.dto.MainConversationDto
+import com.octopmobile.app.data.remote.dto.TaskApprovalDto
+import com.octopmobile.app.data.remote.dto.TaskApprovalDecisionDto
 import kotlinx.coroutines.flow.Flow
 
 /**
@@ -109,6 +112,53 @@ class MainConversationRepository(
 
     suspend fun trace(traceId: String): ApiResult<ConversationTraceDto> =
         api.conversationTrace(agentId, traceId)
+
+    suspend fun dispatchPlan(planId: String): ApiResult<DispatchPlanDto> =
+        api.dispatchPlan(agentId, planId)
+
+    suspend fun approveDispatchPlan(
+        planId: String,
+        planVersion: Int,
+        planHash: String,
+    ): ApiResult<DispatchPlanDto> =
+        api.approveDispatchPlan(agentId, planId, planVersion, planHash)
+
+    suspend fun rejectDispatchPlan(
+        planId: String,
+        planVersion: Int,
+        planHash: String,
+    ): ApiResult<DispatchPlanDto> =
+        api.rejectDispatchPlan(agentId, planId, planVersion, planHash)
+
+    suspend fun cancelDispatchPlan(planId: String): ApiResult<DispatchPlanDto> =
+        api.cancelDispatchPlan(agentId, planId)
+
+    suspend fun continueDispatchPlanBudget(
+        planId: String,
+        planVersion: Int,
+        planHash: String,
+        budgetRequestId: String,
+    ): ApiResult<DispatchPlanDto> =
+        api.continueDispatchPlanBudget(
+            agentId = agentId,
+            planId = planId,
+            planVersion = planVersion,
+            planHash = planHash,
+            budgetRequestId = budgetRequestId,
+        )
+
+    suspend fun approveTaskApproval(approval: TaskApprovalDto): ApiResult<TaskApprovalDto> =
+        unwrapTaskApprovalDecision(api.approveTaskApproval(agentId, approval))
+
+    suspend fun rejectTaskApproval(approval: TaskApprovalDto): ApiResult<TaskApprovalDto> =
+        unwrapTaskApprovalDecision(api.rejectTaskApproval(agentId, approval))
+
+    private fun unwrapTaskApprovalDecision(
+        result: ApiResult<TaskApprovalDecisionDto>,
+    ): ApiResult<TaskApprovalDto> = when (result) {
+        is ApiResult.Failure -> result
+        is ApiResult.Ok -> ApiResult.Ok(result.value.approval)
+    }
 
     private fun MainConversationDto.toEntity() = MainConversationEntity(
         conversationId = conversationId,

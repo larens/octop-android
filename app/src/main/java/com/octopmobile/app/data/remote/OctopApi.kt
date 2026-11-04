@@ -13,6 +13,9 @@ import com.octopmobile.app.data.remote.dto.ConnectorInstanceDto
 import com.octopmobile.app.data.remote.dto.ConversationEventDto
 import com.octopmobile.app.data.remote.dto.ConversationTaskDto
 import com.octopmobile.app.data.remote.dto.ConversationTraceDto
+import com.octopmobile.app.data.remote.dto.DispatchPlanBudgetContinueBody
+import com.octopmobile.app.data.remote.dto.DispatchPlanDecisionBody
+import com.octopmobile.app.data.remote.dto.DispatchPlanDto
 import com.octopmobile.app.data.remote.dto.HistoryResponse
 import com.octopmobile.app.data.remote.dto.HitlResumeBody
 import com.octopmobile.app.data.remote.dto.LoginRequest
@@ -36,6 +39,9 @@ import com.octopmobile.app.data.remote.dto.TodayGoalCreateBody
 import com.octopmobile.app.data.remote.dto.TodayGoalDto
 import com.octopmobile.app.data.remote.dto.TodayGoalPatchBody
 import com.octopmobile.app.data.remote.dto.TrajectoryHistoryDto
+import com.octopmobile.app.data.remote.dto.TaskApprovalDecisionBody
+import com.octopmobile.app.data.remote.dto.TaskApprovalDto
+import com.octopmobile.app.data.remote.dto.TaskApprovalDecisionDto
 import com.octopmobile.app.data.remote.dto.UploadResponse
 import com.octopmobile.app.data.remote.dto.UserDto
 import kotlinx.coroutines.Dispatchers
@@ -202,6 +208,135 @@ class OctopApi(
                 .url(url(API, AGENTS, agentId, TASKS, taskId))
                 .build(),
             deserializer = ConversationTaskDto.serializer(),
+        )
+
+    suspend fun dispatchPlan(
+        agentId: String,
+        planId: String,
+    ): ApiResult<DispatchPlanDto> =
+        execute(
+            request = Request.Builder()
+                .url(url(API, AGENTS, agentId, DISPATCH_PLANS, planId))
+                .build(),
+            deserializer = DispatchPlanDto.serializer(),
+        )
+
+    suspend fun approveDispatchPlan(
+        agentId: String,
+        planId: String,
+        planVersion: Int,
+        planHash: String,
+    ): ApiResult<DispatchPlanDto> =
+        execute(
+            request = Request.Builder()
+                .url(url(API, AGENTS, agentId, DISPATCH_PLANS, planId, APPROVE))
+                .post(
+                    json.encodeToString(
+                        DispatchPlanDecisionBody.serializer(),
+                        DispatchPlanDecisionBody(planVersion, planHash),
+                    ).toRequestBody(JSON_MEDIA_TYPE),
+                )
+                .build(),
+            deserializer = DispatchPlanDto.serializer(),
+        )
+
+    suspend fun rejectDispatchPlan(
+        agentId: String,
+        planId: String,
+        planVersion: Int,
+        planHash: String,
+    ): ApiResult<DispatchPlanDto> =
+        execute(
+            request = Request.Builder()
+                .url(url(API, AGENTS, agentId, DISPATCH_PLANS, planId, REJECT))
+                .post(
+                    json.encodeToString(
+                        DispatchPlanDecisionBody.serializer(),
+                        DispatchPlanDecisionBody(planVersion, planHash),
+                    ).toRequestBody(JSON_MEDIA_TYPE),
+                )
+                .build(),
+            deserializer = DispatchPlanDto.serializer(),
+        )
+
+    suspend fun cancelDispatchPlan(
+        agentId: String,
+        planId: String,
+    ): ApiResult<DispatchPlanDto> =
+        execute(
+            request = Request.Builder()
+                .url(url(API, AGENTS, agentId, DISPATCH_PLANS, planId, CANCEL))
+                .post(EMPTY_BODY)
+                .build(),
+            deserializer = DispatchPlanDto.serializer(),
+        )
+
+    suspend fun continueDispatchPlanBudget(
+        agentId: String,
+        planId: String,
+        planVersion: Int,
+        planHash: String,
+        budgetRequestId: String,
+    ): ApiResult<DispatchPlanDto> =
+        execute(
+            request = Request.Builder()
+                .url(url(API, AGENTS, agentId, DISPATCH_PLANS, planId, BUDGET, CONTINUE))
+                .post(
+                    json.encodeToString(
+                        DispatchPlanBudgetContinueBody.serializer(),
+                        DispatchPlanBudgetContinueBody(
+                            planVersion = planVersion,
+                            planHash = planHash,
+                            budgetRequestId = budgetRequestId,
+                        ),
+                    ).toRequestBody(JSON_MEDIA_TYPE),
+                )
+                .build(),
+            deserializer = DispatchPlanDto.serializer(),
+        )
+
+    suspend fun approveTaskApproval(
+        agentId: String,
+        approval: TaskApprovalDto,
+    ): ApiResult<TaskApprovalDecisionDto> =
+        decideTaskApproval(agentId, approval, approve = true)
+
+    suspend fun rejectTaskApproval(
+        agentId: String,
+        approval: TaskApprovalDto,
+    ): ApiResult<TaskApprovalDecisionDto> =
+        decideTaskApproval(agentId, approval, approve = false)
+
+    private suspend fun decideTaskApproval(
+        agentId: String,
+        approval: TaskApprovalDto,
+        approve: Boolean,
+    ): ApiResult<TaskApprovalDecisionDto> =
+        execute(
+            request = Request.Builder()
+                .url(
+                    url(
+                        API,
+                        AGENTS,
+                        agentId,
+                        TASKS,
+                        approval.taskId,
+                        APPROVALS,
+                        approval.approvalId,
+                        if (approve) APPROVE else REJECT,
+                    ),
+                )
+                .post(
+                    json.encodeToString(
+                        TaskApprovalDecisionBody.serializer(),
+                        TaskApprovalDecisionBody(
+                            actionHash = approval.actionHash,
+                            version = approval.version,
+                        ),
+                    ).toRequestBody(JSON_MEDIA_TYPE),
+                )
+                .build(),
+            deserializer = TaskApprovalDecisionDto.serializer(),
         )
 
     /** Trace 默认只返回摘要和引用；payload 详情仅管理员可请求。 */
@@ -859,6 +994,13 @@ class OctopApi(
         private const val MAIN_CONVERSATION = "main-conversation"
         private const val EVENTS = "events"
         private const val TASKS = "tasks"
+        private const val APPROVALS = "approvals"
+        private const val DISPATCH_PLANS = "dispatch-plans"
+        private const val APPROVE = "approve"
+        private const val REJECT = "reject"
+        private const val CANCEL = "cancel"
+        private const val BUDGET = "budget"
+        private const val CONTINUE = "continue"
         private const val TRACES = "traces"
         private const val ARTIFACT_SHARES = "artifact-shares"
         private const val TRAJECTORY = "trajectory"

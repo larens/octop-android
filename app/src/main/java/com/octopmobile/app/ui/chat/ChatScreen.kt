@@ -190,6 +190,9 @@ import com.octopmobile.app.data.model.PartsCodec
 import com.octopmobile.app.data.model.UploadedAttachment
 import com.octopmobile.app.data.model.formatQuestionAnswers
 import com.octopmobile.app.data.remote.dto.AgentDto
+import com.octopmobile.app.data.remote.dto.DispatchPlanDto
+import com.octopmobile.app.data.remote.dto.DispatchPlanItemDto
+import com.octopmobile.app.data.remote.dto.TaskApprovalDto
 import com.octopmobile.app.data.remote.dto.HitlDecision
 import com.octopmobile.app.data.repo.ConversationTurn
 import com.octopmobile.app.data.ws.ChatSocket
@@ -206,6 +209,7 @@ import kotlinx.serialization.json.Json
 import java.io.File
 import java.text.DateFormat
 import java.util.Date
+import java.util.Locale
 
 /**
  * 单会话页（docs/spec.md §18 M1–M3）。
@@ -256,6 +260,10 @@ fun ChatScreen(
     val pending by viewModel.hitl.collectAsStateWithLifecycle()
     val activeRouterTasks by viewModel.activeRouterTasks.collectAsStateWithLifecycle()
     val routerTaskResult by viewModel.routerTaskResult.collectAsStateWithLifecycle()
+    val dispatchPlan by viewModel.dispatchPlan.collectAsStateWithLifecycle()
+    val dispatchPlanBusy by viewModel.dispatchPlanBusy.collectAsStateWithLifecycle()
+    val taskApprovals by viewModel.taskApprovals.collectAsStateWithLifecycle()
+    val taskApprovalBusy by viewModel.taskApprovalBusy.collectAsStateWithLifecycle()
     val attachments by viewModel.attachments.collectAsStateWithLifecycle()
     val generatedArtifacts by viewModel.artifacts.collectAsStateWithLifecycle()
     val previewingArtifactKey by viewModel.previewingArtifactKey.collectAsStateWithLifecycle()
@@ -554,6 +562,17 @@ fun ChatScreen(
                         pending = pending,
                         activeRouterTasks = activeRouterTasks,
                         routerTaskResult = routerTaskResult,
+                        dispatchPlan = dispatchPlan,
+                        dispatchPlanBusy = dispatchPlanBusy,
+                        onApproveDispatchPlan = viewModel::approveDispatchPlan,
+                        onRejectDispatchPlan = viewModel::rejectDispatchPlan,
+                        onContinueDispatchPlanBudget = viewModel::continueDispatchPlanBudget,
+                        onCancelDispatchPlan = viewModel::cancelDispatchPlan,
+                        onDismissDispatchPlan = viewModel::dismissDispatchPlan,
+                        taskApprovals = taskApprovals,
+                        taskApprovalBusy = taskApprovalBusy,
+                        onApproveTaskApproval = viewModel::approveTaskApproval,
+                        onRejectTaskApproval = viewModel::rejectTaskApproval,
                         onDismissRouterTaskResult = viewModel::dismissRouterTaskResult,
                         attachments = attachments,
                         busy = busy,
@@ -1175,6 +1194,17 @@ private fun ChatBottomBar(
     pending: HitlPending?,
     activeRouterTasks: List<ActiveRouterTask>,
     routerTaskResult: RouterTaskResult?,
+    dispatchPlan: DispatchPlanDto?,
+    dispatchPlanBusy: Boolean,
+    taskApprovals: List<TaskApprovalDto>,
+    taskApprovalBusy: Set<String>,
+    onApproveDispatchPlan: () -> Unit,
+    onRejectDispatchPlan: () -> Unit,
+    onContinueDispatchPlanBudget: () -> Unit,
+    onCancelDispatchPlan: () -> Unit,
+    onDismissDispatchPlan: () -> Unit,
+    onApproveTaskApproval: (TaskApprovalDto) -> Unit,
+    onRejectTaskApproval: (TaskApprovalDto) -> Unit,
     onDismissRouterTaskResult: () -> Unit,
     attachments: List<UploadedAttachment>,
     busy: Boolean,
@@ -1208,6 +1238,27 @@ private fun ChatBottomBar(
                 .imePadding()
                 .padding(horizontal = 8.dp, vertical = 6.dp),
         ) {
+            taskApprovals.forEach { approval ->
+                TaskApprovalCard(
+                    approval = approval,
+                    busy = approval.approvalId in taskApprovalBusy,
+                    onApprove = { onApproveTaskApproval(approval) },
+                    onReject = { onRejectTaskApproval(approval) },
+                )
+                Spacer(Modifier.height(6.dp))
+            }
+            if (dispatchPlan != null) {
+                DispatchPlanCard(
+                    plan = dispatchPlan,
+                    busy = dispatchPlanBusy,
+                    onApprove = onApproveDispatchPlan,
+                    onReject = onRejectDispatchPlan,
+                    onContinueBudget = onContinueDispatchPlanBudget,
+                    onCancel = onCancelDispatchPlan,
+                    onDismiss = onDismissDispatchPlan,
+                )
+                Spacer(Modifier.height(6.dp))
+            }
             if (activeRouterTasks.isNotEmpty()) {
                 ActiveRouterTasksCard(tasks = activeRouterTasks)
                 Spacer(Modifier.height(6.dp))
@@ -1314,6 +1365,530 @@ private fun RouterTaskResultCard(
             )
         }
     }
+}
+
+@Composable
+private fun TaskApprovalCard(
+    approval: TaskApprovalDto,
+    busy: Boolean,
+    onApprove: () -> Unit,
+    onReject: () -> Unit,
+) {
+    val actionPreview = approval.action.toString().take(360)
+    Surface(
+        shape = RoundedCornerShape(18.dp),
+        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.82f),
+        border = BorderStroke(
+            1.dp,
+            MaterialTheme.colorScheme.primary.copy(alpha = 0.45f),
+        ),
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 13.dp, vertical = 10.dp),
+            verticalArrangement = Arrangement.spacedBy(7.dp),
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    text = stringResource(R.string.chat_task_approval_title),
+                    style = MaterialTheme.typography.labelLarge,
+                    fontWeight = FontWeight.SemiBold,
+                    modifier = Modifier.weight(1f),
+                )
+                Text(
+                    text = stringResource(R.string.chat_task_approval_once),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            Text(
+                text = approval.taskTitle,
+                style = MaterialTheme.typography.bodySmall,
+                fontWeight = FontWeight.Medium,
+            )
+            Text(
+                text = approval.taskObjective,
+                style = MaterialTheme.typography.bodySmall,
+                maxLines = 3,
+                overflow = TextOverflow.Ellipsis,
+            )
+            Text(
+                text = stringResource(
+                    R.string.chat_task_approval_action,
+                    approval.actionName,
+                ),
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            if (actionPreview.isNotBlank()) {
+                Text(
+                    text = actionPreview,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 3,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+            Text(
+                text = stringResource(
+                    R.string.chat_task_approval_budget,
+                    formatPlanTokens(approval.tokenLimit),
+                ),
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Text(
+                text = stringResource(R.string.chat_task_approval_guard),
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.error,
+            )
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                OutlinedButton(
+                    onClick = onReject,
+                    enabled = !busy,
+                    modifier = Modifier.weight(1f),
+                ) {
+                    Text(stringResource(R.string.chat_task_approval_reject))
+                }
+                Button(
+                    onClick = onApprove,
+                    enabled = !busy,
+                    modifier = Modifier.weight(1f),
+                ) {
+                    if (busy) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(15.dp),
+                            strokeWidth = 2.dp,
+                        )
+                    } else {
+                        Text(stringResource(R.string.chat_task_approval_approve))
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun DispatchPlanCard(
+    plan: DispatchPlanDto,
+    busy: Boolean,
+    onApprove: () -> Unit,
+    onReject: () -> Unit,
+    onContinueBudget: () -> Unit,
+    onCancel: () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    val budgetRequest = plan.budgetRequest
+    var expanded by remember(plan.planId, budgetRequest?.requestId) {
+        mutableStateOf(false)
+    }
+    val terminal = plan.status in setOf(
+        "rejected",
+        "completed",
+        "partial",
+        "failed",
+        "cancelled",
+    )
+    val succeeded = plan.items.count { it.status == "succeeded" }
+    Surface(
+        shape = RoundedCornerShape(18.dp),
+        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.82f),
+        border = BorderStroke(
+            1.dp,
+            if (plan.status == "awaiting_approval") {
+                MaterialTheme.colorScheme.primary.copy(alpha = 0.45f)
+            } else {
+                MaterialTheme.colorScheme.outlineVariant
+            },
+        ),
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 13.dp, vertical = 10.dp),
+            verticalArrangement = Arrangement.spacedBy(7.dp),
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    text = stringResource(R.string.chat_dispatch_plan_title),
+                    style = MaterialTheme.typography.labelLarge,
+                    fontWeight = FontWeight.SemiBold,
+                    modifier = Modifier.weight(1f),
+                )
+                Text(
+                    text = stringResource(
+                        if (budgetRequest != null) {
+                            R.string.chat_dispatch_plan_budget_waiting
+                        } else {
+                            planStatusLabel(plan.status)
+                        },
+                    ),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            Text(
+                text = plan.objective,
+                style = MaterialTheme.typography.bodySmall,
+                maxLines = if (expanded) 4 else 2,
+                overflow = TextOverflow.Ellipsis,
+            )
+            Text(
+                text = stringResource(
+                    R.string.chat_dispatch_plan_summary,
+                    plan.items.size,
+                    formatPlanTokens(plan.hardTokenLimit),
+                    formatPlanCost(plan.hardCostLimitMicros),
+                ),
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Text(
+                text = stringResource(
+                    R.string.chat_dispatch_plan_rules,
+                    plan.maxConcurrency,
+                    plan.budgetPreview?.maxAttemptsPerWorker ?: 1,
+                ),
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            if (plan.status == "awaiting_approval" && plan.budgetPreview != null) {
+                Text(
+                    text = stringResource(
+                        R.string.chat_dispatch_plan_remaining,
+                        formatPlanTokens(plan.budgetPreview.userRemainingTokens),
+                        formatPlanTokens(plan.budgetPreview.agentRemainingTokens),
+                        formatPlanTokens(plan.budgetPreview.globalRemainingTokens),
+                    ),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            if (plan.budgetExtensionCount > 0) {
+                Text(
+                    text = stringResource(
+                        R.string.chat_dispatch_plan_budget_extended,
+                        formatPlanTokens(plan.budgetExtendedTokens),
+                    ),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            if (budgetRequest != null) {
+                Text(
+                    text = stringResource(
+                        R.string.chat_dispatch_plan_budget_request,
+                        budgetRequest.title,
+                        formatPlanTokens(budgetRequest.usedTokens),
+                        formatPlanTokens(budgetRequest.oldTokenLimit),
+                        formatPlanTokens(budgetRequest.requestedTokens),
+                        formatPlanTokens(budgetRequest.proposedTokenLimit),
+                        formatPlanCost(budgetRequest.requestedCostMicros),
+                    ),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.error,
+                )
+                Text(
+                    text = stringResource(
+                        R.string.chat_dispatch_plan_budget_available,
+                        formatPlanTokens(budgetRequest.remainingUserTokens),
+                        formatPlanTokens(budgetRequest.remainingAgentTokens),
+                        formatPlanTokens(budgetRequest.remainingGlobalTokens),
+                    ),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                if (!budgetRequest.canContinue) {
+                    Text(
+                        text = stringResource(R.string.chat_dispatch_plan_budget_unavailable),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.error,
+                    )
+                }
+            }
+            if (plan.status in setOf("executing", "approved")) {
+                LinearProgressIndicator(
+                    progress = {
+                        if (plan.items.isEmpty()) 0f else succeeded.toFloat() / plan.items.size
+                    },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(3.dp),
+                )
+                Text(
+                    text = stringResource(
+                        R.string.chat_dispatch_plan_progress,
+                        succeeded,
+                        plan.items.size,
+                        formatPlanTokens(plan.actualTokens),
+                    ),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            if (plan.resultSummary.isUserFacingPlanSummary() && terminal) {
+                Text(
+                    text = plan.resultSummary,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = if (plan.status in setOf("failed", "partial")) {
+                        MaterialTheme.colorScheme.error
+                    } else {
+                        MaterialTheme.colorScheme.onSurface
+                    },
+                )
+            }
+            if (plan.items.isNotEmpty()) {
+                TextButton(
+                    onClick = { expanded = !expanded },
+                    contentPadding = PaddingValues(horizontal = 0.dp, vertical = 2.dp),
+                ) {
+                    Icon(
+                        imageVector = if (expanded) Icons.Filled.ExpandLess else Icons.Filled.ExpandMore,
+                        contentDescription = null,
+                        modifier = Modifier.size(17.dp),
+                    )
+                    Spacer(Modifier.width(4.dp))
+                    Text(
+                        stringResource(
+                            if (expanded) {
+                                R.string.chat_dispatch_plan_collapse
+                            } else {
+                                R.string.chat_dispatch_plan_expand
+                            },
+                        ),
+                    )
+                }
+            }
+            if (expanded) {
+                Column(
+                    modifier = Modifier
+                        .heightIn(max = 180.dp)
+                        .verticalScroll(rememberScrollState()),
+                    verticalArrangement = Arrangement.spacedBy(7.dp),
+                ) {
+                    plan.items.forEach { item ->
+                        DispatchPlanItemRow(
+                            item = item,
+                            waitingForBudget = budgetRequest?.planItemId == item.planItemId,
+                        )
+                    }
+                }
+            }
+            when {
+                budgetRequest != null -> Row(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    OutlinedButton(
+                        onClick = onCancel,
+                        enabled = !busy,
+                        modifier = Modifier.weight(1f),
+                    ) {
+                        Text(stringResource(R.string.chat_dispatch_plan_budget_abandon))
+                    }
+                    Button(
+                        onClick = onContinueBudget,
+                        enabled = !busy && budgetRequest.canContinue,
+                        modifier = Modifier.weight(1f),
+                    ) {
+                        if (busy) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(15.dp),
+                                strokeWidth = 2.dp,
+                            )
+                        } else {
+                            Text(stringResource(R.string.chat_dispatch_plan_budget_continue))
+                        }
+                    }
+                }
+
+                plan.status == "awaiting_approval" -> Row(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    OutlinedButton(
+                        onClick = onReject,
+                        enabled = !busy,
+                        modifier = Modifier.weight(1f),
+                    ) {
+                        Text(stringResource(R.string.chat_dispatch_plan_reject))
+                    }
+                    Button(
+                        onClick = onApprove,
+                        enabled = !busy,
+                        modifier = Modifier.weight(1f),
+                    ) {
+                        if (busy) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(15.dp),
+                                strokeWidth = 2.dp,
+                            )
+                        } else {
+                            Text(stringResource(R.string.chat_dispatch_plan_approve))
+                        }
+                    }
+                }
+
+                plan.status in setOf("executing", "approved") -> TextButton(
+                    onClick = onCancel,
+                    enabled = !busy,
+                    modifier = Modifier.align(Alignment.End),
+                ) {
+                    Text(stringResource(R.string.chat_dispatch_plan_cancel))
+                }
+
+                terminal -> TextButton(
+                    onClick = onDismiss,
+                    modifier = Modifier.align(Alignment.End),
+                ) {
+                    Text(stringResource(R.string.chat_dispatch_plan_dismiss))
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun DispatchPlanItemRow(
+    item: DispatchPlanItemDto,
+    waitingForBudget: Boolean,
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.Top,
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        Box(
+            modifier = Modifier
+                .padding(top = 5.dp)
+                .size(7.dp)
+                .clip(CircleShape)
+                .background(
+                    when (item.status) {
+                        "succeeded" -> MaterialTheme.colorScheme.primary
+                        "failed", "cancelled" -> MaterialTheme.colorScheme.error
+                        "running", "retrying" -> MaterialTheme.colorScheme.secondary
+                        else -> MaterialTheme.colorScheme.outline
+                    },
+                ),
+        )
+        Column(
+            modifier = Modifier.weight(1f),
+            verticalArrangement = Arrangement.spacedBy(2.dp),
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    text = item.title,
+                    style = MaterialTheme.typography.bodySmall,
+                    fontWeight = FontWeight.Medium,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f),
+                )
+                Text(
+                    text = stringResource(
+                        if (waitingForBudget) {
+                            R.string.chat_dispatch_plan_budget_waiting
+                        } else {
+                            planItemStatusLabel(item.status)
+                        },
+                    ),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            val dependencyText = item.dependsOn.takeIf { it.isNotEmpty() }?.joinToString(" + ")
+            Text(
+                text = buildString {
+                    append(
+                        stringResource(
+                            R.string.chat_dispatch_plan_item_usage,
+                            formatPlanTokens(item.actualTokens),
+                            formatPlanTokens(item.tokenLimit),
+                        ),
+                    )
+                    if (item.attemptCount > 0) {
+                        append(" · ")
+                        append(
+                            stringResource(
+                                R.string.chat_dispatch_plan_item_attempts,
+                                item.attemptCount,
+                            ),
+                        )
+                    }
+                    if (!dependencyText.isNullOrBlank()) {
+                        append(" · ")
+                        append(
+                            stringResource(
+                                R.string.chat_dispatch_plan_item_after,
+                                dependencyText,
+                            ),
+                        )
+                    }
+                },
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+            )
+            if (item.resultSummary.isNotBlank()) {
+                Text(
+                    text = item.resultSummary,
+                    style = MaterialTheme.typography.labelSmall,
+                    maxLines = 3,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+        }
+    }
+}
+
+private fun planStatusLabel(status: String): Int = when (status) {
+    "awaiting_approval" -> R.string.chat_dispatch_plan_awaiting
+    "executing", "approved" -> R.string.chat_dispatch_plan_executing
+    "completed" -> R.string.chat_dispatch_plan_completed
+    "partial" -> R.string.chat_dispatch_plan_partial
+    "failed" -> R.string.chat_dispatch_plan_failed
+    "rejected" -> R.string.chat_dispatch_plan_rejected
+    "cancelled" -> R.string.chat_dispatch_plan_cancelled
+    else -> R.string.chat_dispatch_plan_awaiting
+}
+
+private fun planItemStatusLabel(status: String): Int = when (status) {
+    "waiting_dependency" -> R.string.chat_dispatch_item_waiting
+    "ready" -> R.string.chat_dispatch_item_ready
+    "queued" -> R.string.chat_router_task_queued
+    "running" -> R.string.chat_router_task_running
+    "retrying" -> R.string.chat_router_task_retrying
+    "succeeded" -> R.string.chat_dispatch_item_done
+    "failed" -> R.string.chat_dispatch_item_failed
+    "cancelled" -> R.string.chat_dispatch_plan_cancelled
+    else -> R.string.chat_dispatch_item_ready
+}
+
+private fun formatPlanTokens(tokens: Long): String = when {
+    tokens >= 1_000_000 -> String.format(Locale.US, "%.1fM", tokens / 1_000_000.0)
+    tokens >= 1_000 -> String.format(Locale.US, "%.1fk", tokens / 1_000.0)
+    else -> tokens.toString()
+}
+
+private fun formatPlanCost(micros: Long): String =
+    if (micros <= 0) {
+        "n/a"
+    } else {
+        String.format(Locale.US, "¥%.4f", micros / 1_000_000.0)
+    }
+
+private fun String.isUserFacingPlanSummary(): Boolean {
+    if (isBlank()) return false
+    if (this in setOf("All Worker steps completed", "No Worker step completed")) return false
+    if (this in setOf("Cancelled by the user", "Rejected by the user")) return false
+    return !endsWith("Worker steps completed")
 }
 
 @Composable

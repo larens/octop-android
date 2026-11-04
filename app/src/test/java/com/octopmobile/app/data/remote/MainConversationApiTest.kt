@@ -1,5 +1,6 @@
 package com.octopmobile.app.data.remote
 
+import com.octopmobile.app.data.remote.dto.TaskApprovalDto
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.Json
 import okhttp3.OkHttpClient
@@ -108,6 +109,57 @@ class MainConversationApiTest {
         assertEquals("pack-1", (trace as ApiResult.Ok).value.contextPacks.single().packId)
         assertEquals(
             "/api/agents/agent-1/traces/trace-1?include_payload=false&limit=100",
+            server.takeRequest().path,
+        )
+    }
+
+    @Test
+    fun taskApprovalDecisionParsesServerProposalWrapper() = runBlocking {
+        server.enqueue(
+            jsonResponse(
+                """
+                {
+                  "task":{"task_id":"task-1"},
+                  "approval":{
+                    "approval_id":"approval-1","conversation_id":"conv-1",
+                    "task_id":"task-1","run_id":null,"trace_id":"trace-1",
+                    "attempt_no":null,"task_title":"确认动作","task_objective":"只执行一次",
+                    "task_status":"in_progress","action_name":"candidate.noop",
+                    "action":{"marker":"ok"},"action_hash":"hash-1",
+                    "idempotency_key":"idem-1","status":"approved","version":1,
+                    "token_limit":8000,"expires_at":20,"execution_expires_at":30,
+                    "decided_at":15,"created_at":10,"updated_at":15
+                  },
+                  "requires_approval":false,
+                  "dispatched":true
+                }
+                """,
+            ),
+        )
+        val approval = TaskApprovalDto(
+            approvalId = "approval-1",
+            conversationId = "conv-1",
+            taskId = "task-1",
+            traceId = "trace-1",
+            taskTitle = "确认动作",
+            taskObjective = "只执行一次",
+            taskStatus = "needs_user",
+            actionName = "candidate.noop",
+            actionHash = "hash-1",
+            idempotencyKey = "idem-1",
+            status = "pending",
+            tokenLimit = 8000,
+            expiresAt = 20,
+            createdAt = 10,
+            updatedAt = 10,
+        )
+
+        val result = api.approveTaskApproval("agent-1", approval)
+
+        assertTrue(result is ApiResult.Ok)
+        assertEquals("approved", (result as ApiResult.Ok).value.approval.status)
+        assertEquals(
+            "/api/agents/agent-1/tasks/task-1/approvals/approval-1/approve",
             server.takeRequest().path,
         )
     }

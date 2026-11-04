@@ -33,8 +33,10 @@ import com.octopmobile.app.data.model.artifactDownloadName
 import com.octopmobile.app.data.remote.ApiError
 import com.octopmobile.app.data.remote.ApiResult
 import com.octopmobile.app.data.remote.dto.AgentDto
+import com.octopmobile.app.data.remote.dto.DispatchPlanDto
 import com.octopmobile.app.data.remote.dto.HitlDecision
 import com.octopmobile.app.data.remote.dto.ResolvedModelDto
+import com.octopmobile.app.data.remote.dto.TaskApprovalDto
 import com.octopmobile.app.data.remote.dto.TodayCardActionBody
 import com.octopmobile.app.data.remote.dto.TodayCardActionState
 import com.octopmobile.app.data.repo.ChatRepository
@@ -63,6 +65,7 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.coroutines.withContext
@@ -248,6 +251,15 @@ class ChatViewModel(
     private val _routerTaskResult = MutableStateFlow<RouterTaskResult?>(null)
     val routerTaskResult: StateFlow<RouterTaskResult?> = _routerTaskResult.asStateFlow()
     private var dismissedRouterTaskResultId: String? = null
+    private val _dispatchPlan = MutableStateFlow<DispatchPlanDto?>(null)
+    val dispatchPlan: StateFlow<DispatchPlanDto?> = _dispatchPlan.asStateFlow()
+    private val _dispatchPlanBusy = MutableStateFlow(false)
+    val dispatchPlanBusy: StateFlow<Boolean> = _dispatchPlanBusy.asStateFlow()
+    private var dismissedDispatchPlanId: String? = null
+    private val _taskApprovals = MutableStateFlow<List<TaskApprovalDto>>(emptyList())
+    val taskApprovals: StateFlow<List<TaskApprovalDto>> = _taskApprovals.asStateFlow()
+    private val _taskApprovalBusy = MutableStateFlow<Set<String>>(emptySet())
+    val taskApprovalBusy: StateFlow<Set<String>> = _taskApprovalBusy.asStateFlow()
 
     init {
         viewModelScope.launch {
@@ -296,7 +308,14 @@ class ChatViewModel(
                     }
                 }.flatMapLatest { conversation ->
                     if (conversation == null) {
-                        flowOf(RouterTaskProjection(active = emptyList(), result = null))
+                        flowOf(
+                            RouterTaskProjection(
+                                active = emptyList(),
+                                result = null,
+                                dispatchPlan = null,
+                                taskApprovals = emptyList(),
+                            ),
+                        )
                     } else {
                         combine(
                             mainRepo.observeTasks(conversation.conversationId),
@@ -305,6 +324,8 @@ class ChatViewModel(
                             RouterTaskProjection(
                                 active = projectActiveRouterTasks(tasks, events),
                                 result = projectLatestRouterTaskResult(tasks, events),
+                                dispatchPlan = projectDispatchPlan(events),
+                                taskApprovals = projectTaskApprovals(events),
                             )
                         }
                     }
@@ -313,6 +334,10 @@ class ChatViewModel(
                     _routerTaskResult.value = projection.result?.takeIf {
                         it.taskId != dismissedRouterTaskResultId
                     }
+                    _dispatchPlan.value = projection.dispatchPlan?.takeIf {
+                        it.planId != dismissedDispatchPlanId
+                    }
+                    _taskApprovals.value = projection.taskApprovals
                 }
             }
 
@@ -409,6 +434,122 @@ class ChatViewModel(
     fun dismissRouterTaskResult() {
         dismissedRouterTaskResultId = _routerTaskResult.value?.taskId
         _routerTaskResult.value = null
+    }
+
+    fun dismissDispatchPlan() {
+        dismissedDispatchPlanId = _dispatchPlan.value?.planId
+        _dispatchPlan.value = null
+    }
+
+    fun approveDispatchPlan() {
+        decideDispatchPlan(approve = true)
+    }
+
+    fun rejectDispatchPlan() {
+        decideDispatchPlan(approve = false)
+    }
+
+    fun cancelDispatchPlan() {
+        val repo = mainConversationRepository ?: return
+        val plan = _dispatchPlan.value ?: return
+        if (_dispatchPlanBusy.value || plan.status !in setOf("executing", "approved")) return
+        _dispatchPlanBusy.value = true
+        viewModelScope.launch {
+            when (val result = repo.cancelDispatchPlan(plan.planId)) {
+                is ApiResult.Ok -> {
+                    _dispatchPlan.value = result.value
+                    repo.refreshTasks()
+                    repo.refreshEvents()
+                }
+
+                is ApiResult.Failure -> _notice.value = ChatNotice.Failure(result.error)
+            }
+            _dispatchPlanBusy.value = false
+        }
+    }
+
+    fun continueDispatchPlanBudget() {
+        val repo = mainConversationRepository ?: return
+        val plan = _dispatchPlan.value ?: return
+        val request = plan.budgetRequest ?: return
+        if (_dispatchPlanBusy.value || !request.canContinue) return
+        _dispatchPlanBusy.value = true
+        viewModelScope.launch {
+            when (
+                val result = repo.continueDispatchPlanBudget(
+                    planId = plan.planId,
+                    planVersion = plan.version,
+                    planHash = plan.planHash,
+                    budgetRequestId = request.requestId,
+                )
+            ) {
+                is ApiResult.Ok -> {
+                    _dispatchPlan.value = result.value
+                    repo.refreshTasks()
+                    repo.refreshEvents()
+                }
+
+                is ApiResult.Failure -> _notice.value = ChatNotice.Failure(result.error)
+            }
+            _dispatchPlanBusy.value = false
+        }
+    }
+
+    private fun decideDispatchPlan(approve: Boolean) {
+        val repo = mainConversationRepository ?: return
+        val plan = _dispatchPlan.value ?: return
+        if (_dispatchPlanBusy.value || plan.status != "awaiting_approval") return
+        _dispatchPlanBusy.value = true
+        viewModelScope.launch {
+            val result = if (approve) {
+                repo.approveDispatchPlan(plan.planId, plan.version, plan.planHash)
+            } else {
+                repo.rejectDispatchPlan(plan.planId, plan.version, plan.planHash)
+            }
+            when (result) {
+                is ApiResult.Ok -> {
+                    _dispatchPlan.value = result.value
+                    repo.refreshTasks()
+                    repo.refreshEvents()
+                }
+
+                is ApiResult.Failure -> _notice.value = ChatNotice.Failure(result.error)
+            }
+            _dispatchPlanBusy.value = false
+        }
+    }
+
+    fun approveTaskApproval(approval: TaskApprovalDto) {
+        decideTaskApproval(approval, approve = true)
+    }
+
+    fun rejectTaskApproval(approval: TaskApprovalDto) {
+        decideTaskApproval(approval, approve = false)
+    }
+
+    private fun decideTaskApproval(
+        approval: TaskApprovalDto,
+        approve: Boolean,
+    ) {
+        val repo = mainConversationRepository ?: return
+        if (approval.status != "pending" || approval.approvalId in _taskApprovalBusy.value) return
+        _taskApprovalBusy.value = _taskApprovalBusy.value + approval.approvalId
+        viewModelScope.launch {
+            val result = if (approve) {
+                repo.approveTaskApproval(approval)
+            } else {
+                repo.rejectTaskApproval(approval)
+            }
+            when (result) {
+                is ApiResult.Ok -> {
+                    repo.refreshTasks()
+                    repo.refreshEvents()
+                }
+
+                is ApiResult.Failure -> _notice.value = ChatNotice.Failure(result.error)
+            }
+            _taskApprovalBusy.value = _taskApprovalBusy.value - approval.approvalId
+        }
     }
 
     // ------------------------------------------------------------ 发送 / 中止 / 确认
@@ -939,12 +1080,14 @@ internal fun projectActiveRouterTasks(
     tasks: List<ConversationTaskEntity>,
     events: List<ConversationEventEntity>,
 ): List<ActiveRouterTask> {
+    val planChildTaskIds = projectPlanChildTaskIds(events)
     val latestEventByTask = events
         .mapNotNull { event -> event.taskId?.let { it to event } }
         .groupBy({ it.first }, { it.second })
         .mapValues { (_, taskEvents) -> taskEvents.maxBy { it.seq } }
     return tasks.mapNotNull { task ->
         if (
+            task.taskId in planChildTaskIds ||
             task.taskType != "read_only" ||
             task.status !in setOf(
                 ConversationTaskStatus.OPEN,
@@ -978,10 +1121,12 @@ internal fun projectLatestRouterTaskResult(
     nowMillis: Long = System.currentTimeMillis(),
 ): RouterTaskResult? {
     val lookbackStart = nowMillis - ROUTER_TASK_RESULT_LOOKBACK_MILLIS
+    val planChildTaskIds = projectPlanChildTaskIds(events)
     return tasks
         .asSequence()
         .filter {
-            it.taskType == "read_only" &&
+            it.taskId !in planChildTaskIds &&
+                it.taskType == "read_only" &&
                 it.status in setOf(ConversationTaskStatus.DONE, ConversationTaskStatus.FAILED) &&
                 it.updatedAt >= lookbackStart
         }
@@ -1011,10 +1156,94 @@ internal fun projectLatestRouterTaskResult(
         ?.second
 }
 
+private fun projectPlanChildTaskIds(
+    events: List<ConversationEventEntity>,
+): Set<String> {
+    val taskIds = mutableSetOf<String>()
+    events.forEach { event ->
+        if (!event.eventType.startsWith("plan.")) return@forEach
+        val payload = runCatching {
+            Json.parseToJsonElement(event.payloadJson.orEmpty()).jsonObject
+        }.getOrNull() ?: return@forEach
+        val items = runCatching { payload["items"]?.jsonArray }.getOrNull()
+            ?: return@forEach
+        items.mapNotNullTo(taskIds) { item ->
+            runCatching {
+                item.jsonObject["child_task_id"]?.jsonPrimitive?.contentOrNull
+            }.getOrNull()
+        }
+    }
+    return taskIds
+}
+
 private data class RouterTaskProjection(
     val active: List<ActiveRouterTask>,
     val result: RouterTaskResult?,
+    val dispatchPlan: DispatchPlanDto?,
+    val taskApprovals: List<TaskApprovalDto>,
 )
+
+internal fun projectTaskApprovals(
+    events: List<ConversationEventEntity>,
+    nowSeconds: Long = System.currentTimeMillis() / 1_000,
+): List<TaskApprovalDto> {
+    val latestByApproval = linkedMapOf<String, Pair<Long, TaskApprovalDto>>()
+    events.asSequence()
+        .filter { it.eventType.startsWith("task.approval_") && it.payloadJson != null }
+        .forEach { event ->
+            val approval = runCatching {
+                DispatchPlanJson.decodeFromString(
+                    TaskApprovalDto.serializer(),
+                    event.payloadJson.orEmpty(),
+                )
+            }.getOrNull() ?: return@forEach
+            val previous = latestByApproval[approval.approvalId]
+            if (previous == null || event.seq > previous.first) {
+                latestByApproval[approval.approvalId] = event.seq to approval
+            }
+        }
+    return latestByApproval.values
+        .asSequence()
+        .filter { (_, approval) ->
+            approval.status == "pending" && approval.expiresAt > nowSeconds
+        }
+        .sortedByDescending { it.first }
+        .map { it.second }
+        .toList()
+}
+
+internal fun projectDispatchPlan(
+    events: List<ConversationEventEntity>,
+    nowSeconds: Long = System.currentTimeMillis() / 1_000,
+): DispatchPlanDto? {
+    val event = events
+        .asSequence()
+        .filter { it.eventType.startsWith("plan.") && it.payloadJson != null }
+        .maxByOrNull { it.seq }
+        ?: return null
+    val plan = runCatching {
+        DispatchPlanJson.decodeFromString(
+            DispatchPlanDto.serializer(),
+            event.payloadJson.orEmpty(),
+        )
+    }.getOrNull() ?: return null
+    val terminal = plan.status in setOf(
+        "rejected",
+        "completed",
+        "partial",
+        "failed",
+        "cancelled",
+    )
+    if (terminal && nowSeconds - (plan.finishedAt ?: plan.proposedAt) > 24 * 60 * 60) {
+        return null
+    }
+    return plan
+}
+
+private val DispatchPlanJson = Json {
+    ignoreUnknownKeys = true
+    isLenient = true
+}
 
 private fun ConversationTaskEntity.capsuleField(name: String): String =
     runCatching {
