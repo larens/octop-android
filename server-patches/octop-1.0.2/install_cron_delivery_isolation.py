@@ -112,17 +112,16 @@ if "CHANNEL_CRON" not in source:
     if channel_old not in source:
         raise SystemExit("Octop 1.0.2 thread channel anchor not found")
     source = source.replace(channel_old, channel_new, 1)
-virtual_old = '''            cls.CHANNEL_MCP,
-        }
-'''
-virtual_new = '''            cls.CHANNEL_MCP,
-            cls.CHANNEL_CRON,
-        }
-'''
-if virtual_new not in source:
-    if virtual_old not in source:
+virtual_anchor = "            cls.CHANNEL_MCP,\n"
+virtual_member = "            cls.CHANNEL_CRON,\n"
+if virtual_member not in source:
+    if virtual_anchor not in source:
         raise SystemExit("Octop 1.0.2 virtual channel anchor not found")
-    source = source.replace(virtual_old, virtual_new, 1)
+    source = source.replace(
+        virtual_anchor,
+        virtual_anchor + virtual_member,
+        1,
+    )
 threads_path.write_text(source)
 
 source = gateway_path.read_text()

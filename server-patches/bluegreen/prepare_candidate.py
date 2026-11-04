@@ -70,6 +70,21 @@ def _disable_side_effects(db_path: Path) -> str:
             columns = {row[1] for row in conn.execute(f'PRAGMA table_info("{table}")')}
             if "enabled" in columns:
                 conn.execute(f'UPDATE "{table}" SET enabled = 0')
+        # Phase 4 checks use a no-op action receipt only; no connector or actual
+        # side effect is enabled in the isolated candidate.
+        for key, value in {
+            "router.budget.mode": "enforce",
+            "router.budget.enforced_surfaces": "worker",
+            "router.budget.cost_per_1k_tokens_micros": "1000",
+            "router.side_effect_writes.enabled": "1",
+            "router.side_effect_writes.approval_ttl_seconds": "600",
+            "router.side_effect_writes.execution_ttl_seconds": "600",
+        }.items():
+            conn.execute(
+                "INSERT INTO settings(key, value) VALUES (?, ?) "
+                "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                (key, value),
+            )
         conn.commit()
         conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
     return str(active_agent[0])

@@ -30,27 +30,30 @@ DEFAULT_MODE = "shadow"
 VALID_MODES = frozenset({"shadow", "enforce"})
 DEFAULT_ENFORCED_SURFACES = frozenset({"cron", "proactive"})
 
+# Calibrated against 11 days of production usage on 2026-11-03. These are
+# runaway-context guardrails, not monetary limits: cache hits and model pricing
+# still need a separate cost budget.
 RUN_TOKEN_DEFAULTS = {
-    "interactive": 80_000,
-    "cron": 60_000,
-    "proactive": 30_000,
-    "worker": 60_000,
+    "interactive": 4_000_000,
+    "cron": 3_500_000,
+    "proactive": 64_000,
+    "worker": 128_000,
 }
 SURFACE_DAILY_TOKEN_DEFAULTS = {
-    "interactive": 300_000,
-    "cron": 180_000,
-    "proactive": 30_000,
-    "worker": 240_000,
+    "interactive": 20_000_000,
+    "cron": 28_000_000,
+    "proactive": 256_000,
+    "worker": 2_000_000,
 }
 TASK_DAILY_TOKEN_DEFAULTS = {
-    "interactive": 160_000,
-    "cron": 120_000,
-    "proactive": 60_000,
-    "worker": 120_000,
+    "interactive": 8_000_000,
+    "cron": 12_000_000,
+    "proactive": 128_000,
+    "worker": 384_000,
 }
-USER_DAILY_TOKEN_DEFAULT = 400_000
-AGENT_DAILY_TOKEN_DEFAULT = 600_000
-GLOBAL_DAILY_TOKEN_DEFAULT = 2_000_000
+USER_DAILY_TOKEN_DEFAULT = 32_000_000
+AGENT_DAILY_TOKEN_DEFAULT = 36_000_000
+GLOBAL_DAILY_TOKEN_DEFAULT = 40_000_000
 
 _ENV_KEYS = {
     "mode": "OCTOP_ROUTER_BUDGET_MODE",
@@ -170,6 +173,8 @@ class BudgetLease:
     created_at: int
     task_key: str = ""
     actual_tokens: int = 0
+    preapproved_plan_id: str | None = None
+    preapproved_plan_item_id: str | None = None
     _finished: bool = field(default=False, init=False)
     _overflow: bool = field(default=False, init=False)
 
@@ -551,12 +556,71 @@ class RouterBudgetGate:
         )
         return lease
 
+    def start_preapproved(
+        self,
+        *,
+        surface: str,
+        agent_id: str,
+        user_id: int,
+        conversation_id: str,
+        trace_id: str,
+        plan_id: str,
+        plan_item_id: str,
+        remaining_tokens: int,
+    ) -> BudgetLease:
+        """Return an enforced lease backed by one approved dispatch plan.
+
+        The plan already owns the user/agent/global reservations. This lease
+        only bounds the current attempt by the item's remaining allocation, so a
+        retry cannot open a second aggregate budget.
+        """
+        normalized_surface = surface if surface in RUN_TOKEN_DEFAULTS else "worker"
+        config = self.config_for(normalized_surface)
+        remaining = max(0, int(remaining_tokens))
+        return BudgetLease(
+            gate=self,
+            trace_id=trace_id,
+            surface=normalized_surface,
+            agent_id=agent_id,
+            user_id=int(user_id),
+            conversation_id=conversation_id,
+            mode="plan",
+            enforced=True,
+            would_block=False,
+            block_reasons=[],
+            reservations=[],
+            estimated_tokens=min(remaining, max(0, config.run_tokens)),
+            created_at=int(time.time()),
+            task_key=f"{normalized_surface}:{plan_item_id}",
+            preapproved_plan_id=plan_id,
+            preapproved_plan_item_id=plan_item_id,
+        )
+
     def _finish_lease(self, lease: BudgetLease, *, failed: bool) -> None:
         if not lease.conversation_id:
             return
         actual = max(0, lease.actual_tokens)
         enforced_tokens = min(actual, lease.estimated_tokens)
         status = "failed" if failed else "completed"
+        if lease.preapproved_plan_id:
+            self._append_budget_event(
+                conversation_id=lease.conversation_id,
+                trace_id=lease.trace_id,
+                event_type="budget.plan_item_settled",
+                status=status,
+                summary=f"Plan Worker used {actual} tokens in this attempt",
+                payload={
+                    "surface": lease.surface,
+                    "mode": lease.mode,
+                    "plan_id": lease.preapproved_plan_id,
+                    "plan_item_id": lease.preapproved_plan_item_id,
+                    "actual_tokens": actual,
+                    "attempt_token_limit": lease.estimated_tokens,
+                    "overrun_tokens": max(0, actual - lease.estimated_tokens),
+                },
+                usage={"total_tokens": actual},
+            )
+            return
         if not lease.enforced:
             self._append_budget_event(
                 conversation_id=lease.conversation_id,

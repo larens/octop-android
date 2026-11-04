@@ -148,6 +148,11 @@ def _task_payload(row: Any, *, runs: Sequence[dict[str, Any]] | None = None) -> 
         "created_at": _int_value(row, "created_at"),
         "updated_at": _int_value(row, "updated_at"),
         "expires_at": _row_value(row, "expires_at"),
+        "plan_id": _row_value(row, "plan_id"),
+        "plan_item_id": _row_value(row, "plan_item_id"),
+        "accepted_at": _row_value(row, "accepted_at"),
+        "acceptance_source": _row_value(row, "acceptance_source"),
+        "outcome_ref": _row_value(row, "outcome_ref"),
     }
     if runs is not None:
         payload["runs"] = list(runs)
@@ -178,6 +183,8 @@ def _event_payload(row: Any, *, include_payload: bool) -> dict[str, Any]:
         "task_id": _row_value(row, "task_id"),
         "run_id": _row_value(row, "run_id"),
         "parent_event_id": _row_value(row, "parent_event_id"),
+        "plan_id": _row_value(row, "plan_id"),
+        "plan_item_id": _row_value(row, "plan_item_id"),
         "seq": _int_value(row, "seq"),
         "schema_version": _int_value(row, "schema_version"),
         "event_type": str(_row_value(row, "event_type")),
@@ -842,6 +849,8 @@ class ConversationService:
         task_id: str | None = None,
         run_id: str | None = None,
         parent_event_id: str | None = None,
+        plan_id: str | None = None,
+        plan_item_id: str | None = None,
         payload_ref: str | None = None,
         payload: Any = None,
         usage: Any = None,
@@ -852,7 +861,6 @@ class ConversationService:
         event_type = _clip(event_type, 120)
         if not trace_id or not event_type:
             raise RouterPhase0Error("trace_id and event_type are required")
-        payload_json = _json_text(payload, default={}) if payload is not None else None
         usage_json = _json_text(usage, default={})
         now = _now()
         with self._db.transaction() as conn:
@@ -869,12 +877,29 @@ class ConversationService:
             ).fetchone()
             if conversation is None:
                 raise NotFoundError("main conversation not found")
-            self._validate_event_references(
+            linked_plan_id, linked_plan_item_id = self._validate_event_references(
                 conn,
                 conversation_id=conversation_id,
                 task_id=task_id,
                 run_id=run_id,
                 parent_event_id=parent_event_id,
+            )
+            plan_id = plan_id or linked_plan_id
+            plan_item_id = plan_item_id or linked_plan_item_id
+            event_payload = payload
+            if task_id is not None and (
+                plan_id is not None or plan_item_id is not None
+            ):
+                if event_payload is None:
+                    event_payload = {}
+                if isinstance(event_payload, Mapping):
+                    event_payload = dict(event_payload)
+                    event_payload.setdefault("plan_id", plan_id)
+                    event_payload.setdefault("plan_item_id", plan_item_id)
+            payload_json = (
+                _json_text(event_payload, default={})
+                if event_payload is not None
+                else None
             )
             seq_row = conn.execute(
                 "UPDATE main_conversations "
@@ -889,10 +914,10 @@ class ConversationService:
             )
             conn.execute(
                 "INSERT INTO conversation_events("
-                "event_id, conversation_id, trace_id, task_id, run_id, parent_event_id, seq, "
-                "schema_version, event_type, status, summary, payload_ref, payload_json, "
-                "usage_json, created_at"
-                ") VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?)",
+                "event_id, conversation_id, trace_id, task_id, run_id, parent_event_id, "
+                "plan_id, plan_item_id, seq, schema_version, event_type, status, summary, "
+                "payload_ref, payload_json, usage_json, created_at"
+                ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     event_id,
                     conversation_id,
@@ -900,6 +925,8 @@ class ConversationService:
                     task_id,
                     run_id,
                     parent_event_id,
+                    plan_id,
+                    plan_item_id,
                     seq,
                     event_type,
                     _clip(status, 80) if status else None,
@@ -924,16 +951,21 @@ class ConversationService:
         task_id: str | None,
         run_id: str | None,
         parent_event_id: str | None,
-    ) -> None:
+    ) -> tuple[str | None, str | None]:
+        linked_plan_id: str | None = None
+        linked_plan_item_id: str | None = None
         if task_id is not None:
             task = conn.execute(
-                "SELECT conversation_id FROM conversation_tasks WHERE task_id = ?",
+                "SELECT conversation_id, plan_id, plan_item_id "
+                "FROM conversation_tasks WHERE task_id = ?",
                 (task_id,),
             ).fetchone()
             if task is None:
                 raise NotFoundError("task not found")
             if str(_row_value(task, "conversation_id")) != conversation_id:
                 raise RouterPhase0Error("task does not belong to this conversation")
+            linked_plan_id = _row_value(task, "plan_id")
+            linked_plan_item_id = _row_value(task, "plan_item_id")
 
         if run_id is not None:
             run = conn.execute(
@@ -959,6 +991,7 @@ class ConversationService:
                 raise NotFoundError("parent event not found")
             if str(_row_value(parent, "conversation_id")) != conversation_id:
                 raise RouterPhase0Error("parent event does not belong to this conversation")
+        return linked_plan_id, linked_plan_item_id
 
     def list_events(
         self,
@@ -969,6 +1002,7 @@ class ConversationService:
         after_seq: int = 0,
         limit: int = 100,
         include_payload: bool = False,
+        include_plan_payload: bool = False,
     ) -> list[dict[str, Any]]:
         clauses = ["c.agent_id = ?", "c.user_id = ?", "e.seq > ?"]
         params: list[Any] = [agent_id, user_id, max(0, int(after_seq))]
@@ -983,7 +1017,19 @@ class ConversationService:
                 f"WHERE {' AND '.join(clauses)} ORDER BY e.seq ASC LIMIT ?",
                 tuple(params),
             ).fetchall()
-        return [_event_payload(row, include_payload=include_payload) for row in rows]
+        return [
+            _event_payload(
+                row,
+                include_payload=include_payload
+                or (
+                    include_plan_payload
+                    and str(_row_value(row, "event_type", "")).startswith(
+                        ("plan.", "task.approval_")
+                    )
+                ),
+            )
+            for row in rows
+        ]
 
     def get_trace(
         self,

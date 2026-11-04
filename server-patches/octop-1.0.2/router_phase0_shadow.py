@@ -677,6 +677,84 @@ async def observe_shadow_turn(
     }
 
 
+async def _maybe_propose_auto_plan(
+    server: Any,
+    *,
+    observed: Mapping[str, Any],
+    text: str,
+    has_attachments: bool,
+    target_agent_ids: Sequence[str],
+) -> None:
+    runtime = getattr(server, "app_runtime", None)
+    worker = getattr(runtime, "router_worker_service", None)
+    if worker is None or not bool(getattr(worker, "ready", False)):
+        return
+    services = getattr(server, "services", None)
+    settings_repo = getattr(services, "settings_repo", None)
+    if not _setting_enabled(
+        settings_repo,
+        key="router.planning.auto_enabled",
+        env_key="OCTOP_ROUTER_PLANNING_AUTO_ENABLED",
+    ):
+        return
+    from octop.infra.conversation.orchestrator import (  # noqa: PLC0415
+        should_propose_auto_plan,
+    )
+
+    decision = observed.get("decision")
+    if not isinstance(decision, Mapping) or not should_propose_auto_plan(
+        text=text,
+        decision=decision,
+        has_attachments=has_attachments,
+        target_agent_ids=target_agent_ids,
+    ):
+        return
+    try:
+        await worker.propose_dispatch_plan_from_observation(
+            observed=observed,
+            objective=text,
+        )
+    except Exception:
+        logger.warning(
+            "automatic dispatch-plan proposal failed agent=%s",
+            getattr(worker, "agent_id", ""),
+            exc_info=True,
+        )
+
+
+async def _observe_and_maybe_plan(
+    server: Any,
+    *,
+    agent_id: str,
+    user_id: int,
+    thread_id: str,
+    session_key: str,
+    text: str,
+    has_attachments: bool = False,
+    target_agent_ids: Sequence[str] = (),
+    knowledge_base_ids: Sequence[str] | None = None,
+) -> Mapping[str, Any]:
+    observed = await observe_shadow_turn(
+        server,
+        agent_id=agent_id,
+        user_id=user_id,
+        thread_id=thread_id,
+        session_key=session_key,
+        text=text,
+        has_attachments=has_attachments,
+        target_agent_ids=target_agent_ids,
+        knowledge_base_ids=knowledge_base_ids,
+    )
+    await _maybe_propose_auto_plan(
+        server,
+        observed=observed,
+        text=text,
+        has_attachments=has_attachments,
+        target_agent_ids=target_agent_ids,
+    )
+    return observed
+
+
 def maybe_schedule_shadow_router(
     server: Any,
     *,
@@ -694,7 +772,7 @@ def maybe_schedule_shadow_router(
         return None
     try:
         task = asyncio.create_task(
-            observe_shadow_turn(
+            _observe_and_maybe_plan(
                 server,
                 agent_id=agent_id,
                 user_id=user_id,

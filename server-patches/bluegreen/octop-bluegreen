@@ -187,6 +187,8 @@ apply_patch_pack() {
     "$release/venv/bin/python" install_lifestyle_mcp_connectors.py
     "$release/venv/bin/python" install_router_phase0.py
     "$release/venv/bin/python" install_router_phase3.py
+    "$release/venv/bin/python" install_router_phase35.py
+    "$release/venv/bin/python" install_router_phase4.py
   )
   OCTOP_SITE_PACKAGES="$site" \
     OCTOP_BACKUPS_DIR="$release/patch-backups" \
@@ -203,6 +205,8 @@ apply_patch_pack() {
     "$site/octop/infra/conversation/shadow.py" \
     "$site/octop/infra/conversation/retention.py" \
     "$site/octop/infra/conversation/orchestrator.py" \
+    "$site/octop/infra/conversation/dispatch_plans.py" \
+    "$site/octop/infra/conversation/write_actions.py" \
     "$site/octop/api/routers/interest_monitors.py" \
     "$site/octop/api/routers/artifact_shares.py" \
     "$site/octop/api/app.py" \
@@ -244,6 +248,8 @@ run_patch_tests() {
     "$release/venv/bin/python" test_mobile_today_backport.py
     "$release/venv/bin/python" test_router_phase0.py
     "$release/venv/bin/python" test_router_phase3.py
+    "$release/venv/bin/python" test_router_phase35.py
+    "$release/venv/bin/python" test_router_phase4.py
     "$release/venv/bin/python" test_artifact_shares.py
     "$release/venv/bin/python" test_artifact_lifecycle.py
     "$release/venv/bin/python" test_feishu_mcp.py

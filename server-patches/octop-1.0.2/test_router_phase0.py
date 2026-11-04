@@ -31,7 +31,15 @@ from install_router_phase0 import (
     patch_usage_repo_source,
 )
 from patch_paths import octop_site
-from router_phase0_budget import RouterBudgetGate
+from router_phase0_budget import (
+    AGENT_DAILY_TOKEN_DEFAULT,
+    GLOBAL_DAILY_TOKEN_DEFAULT,
+    RUN_TOKEN_DEFAULTS,
+    SURFACE_DAILY_TOKEN_DEFAULTS,
+    TASK_DAILY_TOKEN_DEFAULTS,
+    USER_DAILY_TOKEN_DEFAULT,
+    RouterBudgetGate,
+)
 from router_phase0_context import compile_context_pack, estimate_text_tokens
 from router_phase0_retention import run_retention
 from router_phase0_service import (
@@ -51,6 +59,7 @@ from router_phase0_shadow import (
 
 ROOT = Path(__file__).resolve().parent
 MIGRATION = ROOT / "migrations/031_router_phase0.sql"
+PHASE35_MIGRATION = ROOT / "migrations/032_router_phase35.sql"
 ROUTER_ENV_KEYS = (
     "OCTOP_ROUTER_BUDGET_MODE",
     "OCTOP_ROUTER_BUDGET_ENFORCED_SURFACES",
@@ -284,6 +293,7 @@ class RouterPhase0Test(unittest.TestCase):
             """
         )
         self.db.conn.executescript(MIGRATION.read_text(encoding="utf-8"))
+        self.db.conn.executescript(PHASE35_MIGRATION.read_text(encoding="utf-8"))
         self.service = ConversationService(self.db)
 
     def tearDown(self) -> None:
@@ -309,7 +319,7 @@ class RouterPhase0Test(unittest.TestCase):
             ],
         )
         self.assertEqual(
-            self.db.conn.execute("SELECT version FROM _schema_version").fetchone()[0], 31
+            self.db.conn.execute("SELECT version FROM _schema_version").fetchone()[0], 32
         )
         columns = {
             row["name"] for row in self.db.conn.execute("PRAGMA table_info(usage_log)")
@@ -696,6 +706,38 @@ class RouterPhase0Test(unittest.TestCase):
         self.assertEqual(events[1]["payload"]["estimated_tokens"], 10)
         self.assertEqual(events[1]["payload"]["enforced_tokens"], 10)
         self.assertEqual(events[1]["payload"]["overrun_tokens"], 15)
+
+    def test_default_budget_envelopes_are_calibrated_to_observed_usage(self) -> None:
+        self.assertEqual(
+            RUN_TOKEN_DEFAULTS,
+            {
+                "interactive": 4_000_000,
+                "cron": 3_500_000,
+                "proactive": 64_000,
+                "worker": 128_000,
+            },
+        )
+        self.assertEqual(
+            TASK_DAILY_TOKEN_DEFAULTS,
+            {
+                "interactive": 8_000_000,
+                "cron": 12_000_000,
+                "proactive": 128_000,
+                "worker": 384_000,
+            },
+        )
+        self.assertEqual(
+            SURFACE_DAILY_TOKEN_DEFAULTS,
+            {
+                "interactive": 20_000_000,
+                "cron": 28_000_000,
+                "proactive": 256_000,
+                "worker": 2_000_000,
+            },
+        )
+        self.assertEqual(USER_DAILY_TOKEN_DEFAULT, 32_000_000)
+        self.assertEqual(AGENT_DAILY_TOKEN_DEFAULT, 36_000_000)
+        self.assertEqual(GLOBAL_DAILY_TOKEN_DEFAULT, 40_000_000)
 
     def test_enforce_mode_blocks_before_work_when_any_scope_is_exhausted(self) -> None:
         settings = MemorySettings(
