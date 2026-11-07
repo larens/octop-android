@@ -17,6 +17,7 @@ from octop.api.deps import current_user, get_server
 from octop.infra.errors import ErrorCode, OctopError
 from octop.infra.interest_monitor import feedback_backoff_seconds, source_domain
 from octop.infra.today.automatic import refresh_automatic_today_cards
+from octop.infra.today.cards import TodayTrackingInput
 from octop.infra.today.health_cards import publish_health_today_cards
 from octop.infra.today.cron_cards import sync_completed_cron_today_cards
 
@@ -26,7 +27,17 @@ router = APIRouter()
 class MobileEventBody(BaseModel):
     event_id: str = Field(min_length=1, max_length=200)
     source_type: Literal[
-        "share_inbox", "system_calendar", "health_connect", "xiaomi_health"
+        "share_inbox",
+        "system_calendar",
+        "android_alarm_timer",
+        "android_usage_stats",
+        "android_contacts",
+        "android_files",
+        "android_location",
+        "android_notifications",
+        "android_sms",
+        "health_connect",
+        "xiaomi_health",
     ]
     source_record_id: str | None = Field(default=None, max_length=500)
     event_type: str = Field(min_length=1, max_length=100)
@@ -36,6 +47,7 @@ class MobileEventBody(BaseModel):
     privacy_class: Literal[
         "private_user_content",
         "private_calendar",
+        "private_location",
         "sensitive_health",
     ]
 
@@ -101,6 +113,7 @@ class TodayCardResponse(BaseModel):
     action_state: str | None = None
     action_error: str | None = None
     action_updated_at: int | None = None
+    tracking: TodayTrackingInput | None = None
 
 
 class TodaySourceCoverageResponse(BaseModel):
@@ -755,6 +768,15 @@ def _evidence_by_card(conn: Any, agent_id: str, card_ids: list[str]) -> dict[str
     return evidence
 
 
+def _row_tracking(row: Any) -> TodayTrackingInput | None:
+    if "tracking_json" not in row.keys() or row["tracking_json"] is None:
+        return None
+    try:
+        return TodayTrackingInput.model_validate_json(str(row["tracking_json"]))
+    except ValueError:
+        return None
+
+
 def _cards_from_rows(conn: Any, agent_id: str, rows: list[Any]) -> list[TodayCardResponse]:
     card_ids = [str(row["card_id"]) for row in rows]
     evidence = _evidence_by_card(conn, agent_id, card_ids)
@@ -827,6 +849,7 @@ def _cards_from_rows(conn: Any, agent_id: str, rows: list[Any]) -> list[TodayCar
                 if "action_updated_at" in row.keys() and row["action_updated_at"] is not None
                 else None
             ),
+            tracking=_row_tracking(row),
         )
         for row in rows
     ]

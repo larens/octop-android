@@ -317,17 +317,49 @@ automatic_path.write_text(source)
 
 source = mobile_ingest_path.read_text()
 source_type_old = (
-    '    source_type: Literal["share_inbox", "system_calendar", "health_connect"]\n'
+    '    source_type: Literal[\n'
+    '        "share_inbox", "system_calendar", "health_connect", "xiaomi_health"\n'
+    '    ]\n'
 )
 source_type_new = (
     '    source_type: Literal[\n'
-    '        "share_inbox", "system_calendar", "health_connect", "xiaomi_health"\n'
+    '        "share_inbox",\n'
+    '        "system_calendar",\n'
+    '        "android_alarm_timer",\n'
+    '        "android_usage_stats",\n'
+    '        "android_contacts",\n'
+    '        "android_files",\n'
+    '        "android_location",\n'
+    '        "android_notifications",\n'
+    '        "android_sms",\n'
+    '        "health_connect",\n'
+    '        "xiaomi_health",\n'
     '    ]\n'
 )
 if source_type_new not in source:
     if source_type_old not in source:
         raise SystemExit("Octop 1.0.2 mobile ingest source type anchor not found")
     source = source.replace(source_type_old, source_type_new, 1)
+
+privacy_class_old = (
+    '    privacy_class: Literal[\n'
+    '        "private_user_content",\n'
+    '        "private_calendar",\n'
+    '        "sensitive_health",\n'
+    '    ]\n'
+)
+privacy_class_new = (
+    '    privacy_class: Literal[\n'
+    '        "private_user_content",\n'
+    '        "private_calendar",\n'
+    '        "private_location",\n'
+    '        "sensitive_health",\n'
+    '    ]\n'
+)
+if privacy_class_new not in source:
+    if privacy_class_old not in source:
+        raise SystemExit("Octop 1.0.2 mobile ingest privacy class anchor not found")
+    source = source.replace(privacy_class_old, privacy_class_new, 1)
 
 import_anchor = "from octop.infra.today.automatic import refresh_automatic_today_cards\n"
 import_new = (

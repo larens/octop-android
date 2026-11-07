@@ -20,6 +20,8 @@ if TYPE_CHECKING:
 TodayRiskLevel = Literal["A0", "A1", "A2", "A3", "A4"]
 TodayCardKind = Literal["briefing", "research", "task", "calendar", "health", "inbox", "review", "signal"]
 TodayEvidenceKind = Literal["mobile_event", "web", "conversation"]
+TodayTrackingStatus = Literal["scheduled", "in_progress", "waiting_user", "completed"]
+TodayPhaseState = Literal["done", "active", "upcoming"]
 
 _RISK_GUIDANCE = {
     "A0": "本卡仅聚合和记录信息，不代表已执行任何外部动作。",
@@ -79,6 +81,172 @@ class TodayEvidenceInput(BaseModel):
         return self
 
 
+def _normalize_epoch_seconds(value: int | None) -> int | None:
+    if value is None:
+        return None
+    return value // 1000 if value > 100_000_000_000 else value
+
+
+class TodayTrackingPhase(BaseModel):
+    """One dated phase in a long-running matter."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    label: str = Field(min_length=1, max_length=60)
+    starts_at: int | None = None
+    ends_at: int | None = None
+    state: TodayPhaseState | None = None
+    note: str | None = Field(default=None, max_length=200)
+
+    @field_validator("label")
+    @classmethod
+    def require_label(cls, value: str) -> str:
+        cleaned = value.strip()
+        if not cleaned:
+            raise ValueError("must not be blank")
+        return cleaned
+
+    @field_validator("note")
+    @classmethod
+    def strip_note(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        cleaned = value.strip()
+        return cleaned or None
+
+    @field_validator("starts_at", "ends_at")
+    @classmethod
+    def normalize_timestamp(cls, value: int | None) -> int | None:
+        return _normalize_epoch_seconds(value)
+
+    @model_validator(mode="after")
+    def validate_range(self) -> TodayTrackingPhase:
+        if (
+            self.starts_at is not None
+            and self.ends_at is not None
+            and self.ends_at < self.starts_at
+        ):
+            raise ValueError("ends_at must not be earlier than starts_at")
+        return self
+
+
+class TodayTrackingMetric(BaseModel):
+    """A compact fact such as a score weight or a judging split."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    label: str = Field(min_length=1, max_length=60)
+    value: str = Field(min_length=1, max_length=80)
+
+    @field_validator("label", "value")
+    @classmethod
+    def require_text(cls, value: str) -> str:
+        cleaned = value.strip()
+        if not cleaned:
+            raise ValueError("must not be blank")
+        return cleaned
+
+
+class TodayTrackingInput(BaseModel):
+    """Stage-aware metadata for a matter that unfolds over several dates."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    subject: str = Field(min_length=1, max_length=120)
+    stage: str = Field(min_length=1, max_length=60)
+    status: TodayTrackingStatus = "in_progress"
+    progress: int | None = Field(default=None, ge=0, le=100)
+    progress_label: str | None = Field(default=None, max_length=60)
+    phases: list[TodayTrackingPhase] = Field(default_factory=list, max_length=8)
+    metrics: list[TodayTrackingMetric] = Field(default_factory=list, max_length=6)
+    missing: list[str] = Field(default_factory=list, max_length=8)
+    next_milestone: str | None = Field(default=None, max_length=200)
+    next_check_at: int | None = None
+    next_action: str | None = Field(default=None, max_length=120)
+
+    @field_validator("subject", "stage")
+    @classmethod
+    def require_identity(cls, value: str) -> str:
+        cleaned = value.strip()
+        if not cleaned:
+            raise ValueError("must not be blank")
+        return cleaned
+
+    @field_validator("progress_label", "next_milestone", "next_action")
+    @classmethod
+    def strip_optional_text(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        cleaned = value.strip()
+        return cleaned or None
+
+    @field_validator("next_check_at")
+    @classmethod
+    def normalize_next_check(cls, value: int | None) -> int | None:
+        return _normalize_epoch_seconds(value)
+
+    @field_validator("missing")
+    @classmethod
+    def normalize_missing(cls, values: list[str]) -> list[str]:
+        seen: set[str] = set()
+        cleaned: list[str] = []
+        for value in values:
+            text = value.strip()
+            if not text or text in seen:
+                continue
+            seen.add(text)
+            cleaned.append(text[:200])
+        return cleaned
+
+    @model_validator(mode="after")
+    def validate_phases(self) -> TodayTrackingInput:
+        labels = [phase.label for phase in self.phases]
+        if len(labels) != len(set(labels)):
+            raise ValueError("phase labels must be unique")
+        if sum(1 for phase in self.phases if phase.state == "active") > 1:
+            raise ValueError("at most one phase can be active")
+        return self
+
+
+def _tracking_json(tracking: TodayTrackingInput | None) -> str | None:
+    if tracking is None:
+        return None
+    return json.dumps(
+        tracking.model_dump(mode="json", exclude_none=True),
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+
+
+def _tracking_from_json(raw: str | None) -> TodayTrackingInput | None:
+    if not raw:
+        return None
+    try:
+        return TodayTrackingInput.model_validate_json(raw)
+    except ValueError:
+        return None
+
+
+def _tracking_notify_reason(
+    previous: TodayTrackingInput | None,
+    incoming: TodayTrackingInput | None,
+) -> str | None:
+    """Return a user-meaningful tracking change; ignore same-stage copy edits."""
+
+    if incoming is None:
+        return None
+    if previous is None:
+        return "tracking_started"
+    if previous.stage != incoming.stage:
+        return "stage_changed"
+    if previous.status != incoming.status:
+        return "status_changed"
+    if previous.missing != incoming.missing:
+        return "missing_updated"
+    return None
+
+
 class TodayCardDraft(BaseModel):
     """The complete structured payload required before a card enters Today."""
 
@@ -99,6 +267,7 @@ class TodayCardDraft(BaseModel):
     confidence: float = Field(default=0.75, ge=0.0, le=1.0)
     occurred_at: int | None = None
     goal_id: str | None = Field(default=None, max_length=200)
+    tracking: TodayTrackingInput | None = None
 
     @field_validator("dedupe_key", "title", "summary", "why_now", "action_prompt")
     @classmethod
@@ -200,6 +369,7 @@ class TodayCardPublisher:
                 + hashlib.sha256(f"{agent_id}|{dedupe_key}".encode()).hexdigest()[:24]
             )
             action_prompt = f"{_RISK_GUIDANCE[draft.risk_level]}\n{draft.action_prompt}"
+            tracking_json = _tracking_json(draft.tracking)
             existing = conn.execute(
                 "SELECT * FROM today_cards WHERE agent_id = ? AND dedupe_key = ?",
                 (agent_id, dedupe_key),
@@ -220,6 +390,16 @@ class TodayCardPublisher:
                 else set()
             )
             incoming_evidence = {str(item["evidence_id"]) for item in evidence}
+            existing_tracking = (
+                _tracking_from_json(
+                    str(existing["tracking_json"])
+                    if "tracking_json" in existing.keys()
+                    and existing["tracking_json"] is not None
+                    else None
+                )
+                if existing is not None
+                else None
+            )
             same_fields = existing is not None and (
                 _text(existing["kind"]) == draft.kind
                 and _text(existing["title"]) == draft.title
@@ -233,7 +413,20 @@ class TodayCardPublisher:
                     (str(existing["goal_id"]) if existing["goal_id"] is not None else None)
                     == draft.goal_id
                 )
+                and (
+                    str(existing["tracking_json"])
+                    if "tracking_json" in existing.keys()
+                    and existing["tracking_json"] is not None
+                    else None
+                )
+                == tracking_json
                 and existing_evidence == incoming_evidence
+            )
+            notify_reason = _tracking_notify_reason(existing_tracking, draft.tracking)
+            notify = existing is None or (
+                notify_reason is not None
+                if draft.tracking is not None
+                else not same_fields
             )
 
             if existing is None:
@@ -241,8 +434,8 @@ class TodayCardPublisher:
                     "INSERT INTO today_cards("
                     "agent_id, card_id, user_id, dedupe_key, kind, title, summary, why_now, "
                     "confidence, lifecycle, occurred_at, snoozed_until, action_prompt, "
-                    "created_at, updated_at, goal_id, risk_level"
-                    ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'unread', ?, NULL, ?, ?, ?, ?, ?)",
+                    "created_at, updated_at, goal_id, risk_level, tracking_json"
+                    ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'unread', ?, NULL, ?, ?, ?, ?, ?, ?)",
                     (
                         agent_id,
                         card_id,
@@ -259,6 +452,7 @@ class TodayCardPublisher:
                         now,
                         draft.goal_id,
                         draft.risk_level,
+                        tracking_json,
                     ),
                 )
                 changed = True
@@ -279,7 +473,8 @@ class TodayCardPublisher:
                 conn.execute(
                     "UPDATE today_cards SET kind = ?, title = ?, summary = ?, why_now = ?, "
                     "confidence = ?, lifecycle = ?, occurred_at = ?, snoozed_until = ?, "
-                    "action_prompt = ?, updated_at = ?, goal_id = ?, risk_level = ? "
+                    "action_prompt = ?, updated_at = ?, goal_id = ?, risk_level = ?, "
+                    "tracking_json = ? "
                     "WHERE agent_id = ? AND card_id = ?",
                     (
                         draft.kind,
@@ -294,6 +489,7 @@ class TodayCardPublisher:
                         now,
                         draft.goal_id,
                         draft.risk_level,
+                        tracking_json,
                         agent_id,
                         card_id,
                     ),
@@ -342,6 +538,9 @@ class TodayCardPublisher:
                 "evidence_count": len(evidence),
                 "lifecycle": _text(stored["lifecycle"]),
                 "changed": changed,
+                "notify": notify,
+                "stage_changed": notify_reason == "stage_changed",
+                "notify_reason": notify_reason,
                 "updated_at": int(stored["updated_at"]),
             }
 
@@ -503,6 +702,17 @@ def build_today_card_tools(publisher: TodayCardPublisher) -> list[StructuredTool
             int | None,
             Field(description="Optional event time in epoch seconds or milliseconds."),
         ] = None,
+        tracking: Annotated[
+            TodayTrackingInput | None,
+            Field(
+                description=(
+                    "Optional stage tracker for a multi-step matter such as a competition, "
+                    "application, travel plan or long-running project. Reuse the same "
+                    "dedupe_key across phases; update stage/status/phases instead of creating "
+                    "a new card for every reminder."
+                )
+            ),
+        ] = None,
     ) -> str:
         try:
             agent_id, user_id = _tool_ctx()
@@ -519,6 +729,7 @@ def build_today_card_tools(publisher: TodayCardPublisher) -> list[StructuredTool
                     goal_id=goal_id,
                     confidence=confidence,
                     occurred_at=occurred_at,
+                    tracking=tracking,
                 ),
                 agent_id=agent_id,
                 user_id=user_id,
@@ -535,7 +746,10 @@ def build_today_card_tools(publisher: TodayCardPublisher) -> list[StructuredTool
                 "Publish or update one evidence-backed card in the user's Today inbox. "
                 "Use only for a material, actionable change tied to an explicit goal or interest. "
                 "Every card needs inspectable evidence and an A0-A4 risk level. "
-                "A3/A4 cards are confirmation-only; this tool never marks them executed."
+                "A3/A4 cards are confirmation-only; this tool never marks them executed. "
+                "For a multi-stage matter, keep one stable dedupe_key and call this tool again "
+                "when the phase, status or missing user-provided data changes; set tracking so "
+                "Today can show the timeline and only notify on meaningful transitions."
             ),
         )
     ]

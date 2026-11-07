@@ -199,6 +199,8 @@ def patch_source(source: str) -> str:
 def patch_publisher(source: str) -> str:
     if PUBLISHER_NEW in source:
         return source
+    if "tracking_json = ?" in source and "preserve_snooze = (" in source:
+        return source
     if PUBLISHER_OLD not in source:
         raise SystemExit("Octop 1.0.2 Today card publisher anchor not found")
     return source.replace(PUBLISHER_OLD, PUBLISHER_NEW, 1)
