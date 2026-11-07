@@ -21,6 +21,40 @@ class DashboardNotificationSocketTest {
     }
 
     @Test
+    fun decodeTodayCardPush_readsImportanceFieldsAndDefaultsToNormal() {
+        val decoded = decodeTodayCardPush(
+            json,
+            """{"type":"dashboard_push","event":"today.card_changed","agent_id":"agent-1","card_id":"card-9","priority":"P0","title":"【需处理】TRAE","text":"扣费争议未定","state":"official_reply"}""",
+        )
+
+        assertEquals(
+            TodayCardPush(
+                agentId = "agent-1",
+                cardId = "card-9",
+                priority = "p0",
+                title = "【需处理】TRAE",
+                text = "扣费争议未定",
+                state = "official_reply",
+            ),
+            decoded,
+        )
+    }
+
+    @Test
+    fun decodeTodayCardPush_keepsUnknownPriorityButDefaultsMissingToNormal() {
+        val decoded = decodeTodayCardPush(
+            json,
+            """{"type":"dashboard_push","event":"today.card_changed","agent_id":"a","card_id":"c","priority":"urgent"}""",
+        )
+
+        assertEquals("urgent", decoded?.priority)
+        assertEquals(TodayCardPush.PRIORITY_NORMAL, decodeTodayCardPush(
+            json,
+            """{"type":"dashboard_push","event":"today.card_changed","agent_id":"a","card_id":"c"}""",
+        )?.priority)
+    }
+
+    @Test
     fun decodeThreadPush_acceptsCronDeliveryButNotTodayCardEvent() {
         val decoded = decodeThreadPush(
             json,

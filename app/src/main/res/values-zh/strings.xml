@@ -155,6 +155,8 @@
     <string name="chat_refetch_turn">重新拉取该轮</string>
     <string name="chat_text_expand">展开全文（共 %1$d 字）</string>
     <string name="chat_text_collapse">收起</string>
+    <string name="chat_message_detail_title">消息详情</string>
+    <string name="chat_message_detail_action">查看更多</string>
     <string name="chat_pickup_code_title">取餐码</string>
     <string name="chat_pickup_code_hint">到店出示此码；订单实时状态以瑞幸 App 或门店屏幕为准。</string>
     <string name="chat_payment_title">微信支付</string>
@@ -317,6 +319,12 @@
     <string name="notif_turn_text">任务正在后台执行</string>
     <string name="notif_health_channel_name">健康提醒</string>
     <string name="notif_health_channel_desc">晨间睡眠回顾与晚间健康总结</string>
+    <string name="notif_today_important_channel_name">重要提醒</string>
+    <string name="notif_today_important_channel_desc">需要你处理的事项和争议，带声音与横幅提示。</string>
+    <string name="notif_today_briefing_channel_name">汇总简报</string>
+    <string name="notif_today_briefing_channel_desc">Today 里值得关注的汇总更新。</string>
+    <string name="notif_today_default_title">Today 有更新</string>
+    <string name="notif_today_default_body">打开 Today 查看详情。</string>
 
     <string name="shortcut_new_thread_short">新建任务</string>
     <string name="shortcut_new_thread_long">开始一个新任务</string>

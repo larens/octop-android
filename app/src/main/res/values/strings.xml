@@ -155,6 +155,8 @@
     <string name="chat_refetch_turn">Reload this turn</string>
     <string name="chat_text_expand">Show all (%1$d chars)</string>
     <string name="chat_text_collapse">Collapse</string>
+    <string name="chat_message_detail_title">Message details</string>
+    <string name="chat_message_detail_action">View more</string>
     <string name="chat_pickup_code_title">Pickup code</string>
     <string name="chat_pickup_code_hint">Show this at the store. Check the Luckin app or store screen for the live order status.</string>
     <string name="chat_payment_title">WeChat Pay</string>
@@ -317,6 +319,12 @@
     <string name="notif_turn_text">Task running in the background</string>
     <string name="notif_health_channel_name">Health reminders</string>
     <string name="notif_health_channel_desc">Morning sleep review and evening health summary</string>
+    <string name="notif_today_important_channel_name">Important updates</string>
+    <string name="notif_today_important_channel_desc">Decisions and issues that need your attention, with sound and banner.</string>
+    <string name="notif_today_briefing_channel_name">Briefings</string>
+    <string name="notif_today_briefing_channel_desc">Aggregated updates from Today.</string>
+    <string name="notif_today_default_title">Today update</string>
+    <string name="notif_today_default_body">Open Today for details.</string>
 
     <string name="shortcut_new_thread_short">New task</string>
     <string name="shortcut_new_thread_long">Start a new task</string>

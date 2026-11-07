@@ -35,15 +35,15 @@ import androidx.compose.material.icons.filled.CalendarToday
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.CloudOff
 import androidx.compose.material.icons.filled.Psychology
-import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Today
-import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -136,6 +136,7 @@ fun MemoryPane(
     }
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun MemoryHome(
     state: MemoryUiState,
@@ -151,70 +152,71 @@ private fun MemoryHome(
             nowMillis = System.currentTimeMillis(),
         )
     }
-    LazyColumn(
+    PullToRefreshBox(
+        isRefreshing = state.refreshing,
+        onRefresh = onRefresh,
         modifier = Modifier.fillMaxSize(),
-        contentPadding = PaddingValues(bottom = 24.dp),
-        verticalArrangement = Arrangement.spacedBy(18.dp),
     ) {
-        item {
-            MemoryHero(
-                agentName = state.agentName,
-                refreshing = state.refreshing,
-                canRefresh = state.agentId != null,
-                onRefresh = onRefresh,
-            )
-        }
-
-        when {
-            state.agentId == null -> item {
-                PaddedEmptyCard(R.string.memory_agent_missing_title, R.string.memory_agent_missing_body)
+        LazyColumn(
+            modifier = Modifier.fillMaxSize(),
+            contentPadding = PaddingValues(bottom = 24.dp),
+            verticalArrangement = Arrangement.spacedBy(18.dp),
+        ) {
+            item {
+                MemoryHero(agentName = state.agentName)
             }
-            state.snapshot == null && state.error != null -> item {
-                Box(Modifier.padding(horizontal = 16.dp)) {
-                    EmptyCard(
-                        title = stringResource(R.string.memory_server_unavailable_title),
-                        body = state.error.asText(),
-                    )
+
+            when {
+                state.agentId == null -> item {
+                    PaddedEmptyCard(R.string.memory_agent_missing_title, R.string.memory_agent_missing_body)
+                }
+                state.snapshot == null && state.error != null -> item {
+                    Box(Modifier.padding(horizontal = 16.dp)) {
+                        EmptyCard(
+                            title = stringResource(R.string.memory_server_unavailable_title),
+                            body = state.error.asText(),
+                        )
+                    }
+                }
+                state.snapshot == null && state.refreshing -> item {
+                    PaddedEmptyCard(R.string.memory_loading_title, R.string.memory_loading_body)
+                }
+                state.snapshot == null -> item {
+                    PaddedEmptyCard(R.string.memory_server_empty_title, R.string.memory_server_empty_body)
                 }
             }
-            state.snapshot == null && state.refreshing -> item {
-                PaddedEmptyCard(R.string.memory_loading_title, R.string.memory_loading_body)
-            }
-            state.snapshot == null -> item {
-                PaddedEmptyCard(R.string.memory_server_empty_title, R.string.memory_server_empty_body)
-            }
-        }
 
-        state.snapshot?.let { snapshot ->
-            if (showingCached) {
+            state.snapshot?.let { snapshot ->
+                if (showingCached) {
+                    item {
+                        CachedMemoryNotice(
+                            cachedAt = state.cachedAt,
+                            onRefresh = onRefresh,
+                        )
+                    }
+                }
                 item {
-                    CachedMemoryNotice(
-                        cachedAt = state.cachedAt,
-                        onRefresh = onRefresh,
+                    Box(
+                        modifier = if (showingCached) {
+                            Modifier
+                        } else {
+                            Modifier.overlapPrevious(40.dp)
+                        },
+                    ) {
+                        DiaryShelf(
+                            diaries = recentDiaries,
+                            onOpenAll = onOpenAllDiaries,
+                            onOpenDiary = onOpenDiary,
+                        )
+                    }
+                }
+                item {
+                    PortraitCard(
+                        portrait = snapshot.portrait,
+                        updatedAt = latestMemoryActivity(snapshot),
+                        onClick = onOpenProfile,
                     )
                 }
-            }
-            item {
-                Box(
-                    modifier = if (showingCached) {
-                        Modifier
-                    } else {
-                        Modifier.overlapPrevious(40.dp)
-                    },
-                ) {
-                    DiaryShelf(
-                        diaries = recentDiaries,
-                        onOpenAll = onOpenAllDiaries,
-                        onOpenDiary = onOpenDiary,
-                    )
-                }
-            }
-            item {
-                PortraitCard(
-                    portrait = snapshot.portrait,
-                    updatedAt = latestMemoryActivity(snapshot),
-                    onClick = onOpenProfile,
-                )
             }
         }
     }
@@ -274,24 +276,12 @@ private fun CachedMemoryNotice(
 @Composable
 private fun MemoryHero(
     agentName: String?,
-    refreshing: Boolean,
-    canRefresh: Boolean,
-    onRefresh: () -> Unit,
 ) {
     val name = agentName?.takeIf(String::isNotBlank) ?: stringResource(R.string.app_name)
     Box(
         modifier = Modifier
             .fillMaxWidth()
             .height(340.dp)
-            .background(
-                Brush.verticalGradient(
-                    listOf(
-                        MaterialTheme.colorScheme.primary.copy(alpha = 0.12f),
-                        MaterialTheme.colorScheme.background,
-                        MaterialTheme.colorScheme.background,
-                    ),
-                ),
-            )
             .clipToBounds(),
     ) {
         Box(
@@ -326,8 +316,8 @@ private fun MemoryHero(
                         0f to Color.Transparent,
                         0.42f to Color.Transparent,
                         0.68f to MaterialTheme.colorScheme.background.copy(alpha = 0.58f),
-                        0.88f to MaterialTheme.colorScheme.background,
-                        1f to MaterialTheme.colorScheme.background,
+                        0.86f to MaterialTheme.colorScheme.background.copy(alpha = 0.82f),
+                        1f to Color.Transparent,
                     ),
                 ),
         )
@@ -335,7 +325,12 @@ private fun MemoryHero(
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(start = 20.dp, top = 9.dp, end = 20.dp, bottom = 18.dp),
+                    .padding(
+                        start = WorkbenchPageTitleStartPadding,
+                        top = WorkbenchPageTitleTopPadding,
+                        end = WorkbenchPageTitleStartPadding,
+                        bottom = 18.dp,
+                    ),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Text(
@@ -346,36 +341,6 @@ private fun MemoryHero(
                     color = MaterialTheme.colorScheme.onBackground,
                     modifier = Modifier.weight(1f),
                 )
-                if (refreshing) {
-                    Surface(
-                        shape = CircleShape,
-                        color = MaterialTheme.colorScheme.surface.copy(alpha = 0.78f),
-                    ) {
-                        Box(
-                            modifier = Modifier.size(48.dp),
-                            contentAlignment = Alignment.Center,
-                        ) {
-                            CircularProgressIndicator(
-                                modifier = Modifier.size(20.dp),
-                                strokeWidth = 2.dp,
-                                color = MaterialTheme.colorScheme.primary,
-                            )
-                        }
-                    }
-                } else if (canRefresh) {
-                    Surface(
-                        shape = CircleShape,
-                        color = MaterialTheme.colorScheme.surface.copy(alpha = 0.78f),
-                    ) {
-                        IconButton(onClick = onRefresh) {
-                            Icon(
-                                Icons.Filled.Refresh,
-                                stringResource(R.string.memory_refresh),
-                                tint = MaterialTheme.colorScheme.onSurface,
-                            )
-                        }
-                    }
-                }
             }
             Spacer(Modifier.weight(1f))
             Text(

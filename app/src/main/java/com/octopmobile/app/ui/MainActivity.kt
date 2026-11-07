@@ -10,11 +10,15 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.background
+import androidx.compose.foundation.isSystemInDarkTheme
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.LocalTextStyle
 import androidx.compose.material3.Surface
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -24,8 +28,10 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.TextUnit
 import androidx.core.content.ContextCompat
+import androidx.core.view.WindowCompat
 import com.octopmobile.app.OctopApp
 import com.octopmobile.app.ui.theme.OctopTheme
+import com.octopmobile.app.ui.theme.octopBackgroundBrush
 import com.octopmobile.app.ui.workbench.WorkbenchTab
 import com.octopmobile.app.ui.workbench.routeValue
 import kotlinx.coroutines.flow.first
@@ -90,6 +96,18 @@ class MainActivity : ComponentActivity() {
                     style.copy(fontSize = scaledFontSize)
                 },
             ) {
+                val systemDark = isSystemInDarkTheme()
+                val useDarkTheme = when (appSettings.themeMode) {
+                    com.octopmobile.app.data.settings.ThemeMode.SYSTEM -> systemDark
+                    com.octopmobile.app.data.settings.ThemeMode.LIGHT -> false
+                    com.octopmobile.app.data.settings.ThemeMode.DARK -> true
+                }
+                SideEffect {
+                    WindowCompat.getInsetsController(window, window.decorView).apply {
+                        isAppearanceLightStatusBars = !useDarkTheme
+                        isAppearanceLightNavigationBars = !useDarkTheme
+                    }
+                }
                 OctopTheme(mode = appSettings.themeMode, color = appSettings.themeColor) {
                 var startDestination by remember { mutableStateOf<String?>(null) }
                 var startWorkbenchTab by remember { mutableStateOf<WorkbenchTab?>(null) }
@@ -158,12 +176,18 @@ class MainActivity : ComponentActivity() {
                         color = MaterialTheme.colorScheme.background,
                     ) { /* 冷启动占位帧，故意留空 */ }
                 } else {
-                    OctopNavHost(
-                        startDestination = destination,
-                        initialWorkbenchTab = initialWorkbenchTab,
-                        pendingRoute = pendingRoute,
-                        onPendingRouteConsumed = { pendingRoute = null },
-                    )
+                    Box(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .background(octopBackgroundBrush()),
+                    ) {
+                        OctopNavHost(
+                            startDestination = destination,
+                            initialWorkbenchTab = initialWorkbenchTab,
+                            pendingRoute = pendingRoute,
+                            onPendingRouteConsumed = { pendingRoute = null },
+                        )
+                    }
                 }
                 }
             }

@@ -37,6 +37,7 @@ import androidx.compose.material.icons.filled.Celebration
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -46,6 +47,7 @@ import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -185,6 +187,7 @@ private val TASK_RECOMMENDATIONS = listOf(
 )
 
 /** 服务端自动任务：已添加任务与按已安装连接器生成的推荐分开呈现。 */
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun TasksPane(
     onNeedsLogin: () -> Unit,
@@ -253,22 +256,9 @@ fun TasksPane(
         return
     }
 
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .background(
-                Brush.verticalGradient(
-                    listOf(
-                        MaterialTheme.colorScheme.primary.copy(alpha = 0.16f),
-                        MaterialTheme.colorScheme.background,
-                    ),
-                ),
-            ),
-    ) {
+    Column(modifier = Modifier.fillMaxSize()) {
         TasksHeader(
             taskCount = tasks.size,
-            refreshing = state.syncing,
-            onRefresh = viewModel::sync,
             onAdd = {
                 naturalTaskInitial = ""
                 naturalTaskMcpServers = emptyList()
@@ -278,28 +268,34 @@ fun TasksPane(
         )
         TasksTabs(selected = tab, onSelect = { tab = it })
 
-        when (tab) {
-            TasksTab.ADDED -> AddedTasks(
-                tasks = tasks,
-                state = state,
-                onOpen = { task ->
-                    naturalTaskInitial = ""
-                    naturalTaskMcpServers = emptyList()
-                    naturalTaskTarget = task
-                    naturalTaskOpen = true
-                },
-            )
-            TasksTab.RECOMMENDED -> RecommendedTasks(
-                tasks = tasks,
-                connectors = state.connectors,
-                connectorsLoaded = state.connectorsLoaded,
-                onAdd = { recommendation, connectors ->
-                    naturalTaskInitial = context.getString(recommendation.naturalRequestRes)
-                    naturalTaskMcpServers = connectors.map(ConnectorInstanceDto::mcpServerName)
-                    naturalTaskTarget = null
-                    naturalTaskOpen = true
-                },
-            )
+        PullToRefreshBox(
+            isRefreshing = state.syncing,
+            onRefresh = viewModel::sync,
+            modifier = Modifier.weight(1f),
+        ) {
+            when (tab) {
+                TasksTab.ADDED -> AddedTasks(
+                    tasks = tasks,
+                    state = state,
+                    onOpen = { task ->
+                        naturalTaskInitial = ""
+                        naturalTaskMcpServers = emptyList()
+                        naturalTaskTarget = task
+                        naturalTaskOpen = true
+                    },
+                )
+                TasksTab.RECOMMENDED -> RecommendedTasks(
+                    tasks = tasks,
+                    connectors = state.connectors,
+                    connectorsLoaded = state.connectorsLoaded,
+                    onAdd = { recommendation, connectors ->
+                        naturalTaskInitial = context.getString(recommendation.naturalRequestRes)
+                        naturalTaskMcpServers = connectors.map(ConnectorInstanceDto::mcpServerName)
+                        naturalTaskTarget = null
+                        naturalTaskOpen = true
+                    },
+                )
+            }
         }
     }
 
@@ -308,12 +304,17 @@ fun TasksPane(
 @Composable
 private fun TasksHeader(
     taskCount: Int,
-    refreshing: Boolean,
-    onRefresh: () -> Unit,
     onAdd: () -> Unit,
 ) {
     Row(
-        modifier = Modifier.fillMaxWidth().padding(start = 16.dp, end = 8.dp, top = 10.dp, bottom = 8.dp),
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(
+                start = WorkbenchPageTitleStartPadding,
+                end = 8.dp,
+                top = WorkbenchPageTitleTopPadding,
+                bottom = 8.dp,
+            ),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Column(modifier = Modifier.weight(1f)) {
@@ -328,32 +329,6 @@ private fun TasksHeader(
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
-        if (refreshing) {
-            Surface(
-                shape = CircleShape,
-                color = MaterialTheme.colorScheme.surface.copy(alpha = 0.78f),
-            ) {
-                Box(
-                    modifier = Modifier.size(48.dp),
-                    contentAlignment = Alignment.Center,
-                ) {
-                    CircularProgressIndicator(
-                        modifier = Modifier.size(20.dp),
-                        strokeWidth = 2.dp,
-                    )
-                }
-            }
-        } else {
-            Surface(
-                shape = CircleShape,
-                color = MaterialTheme.colorScheme.surface.copy(alpha = 0.78f),
-            ) {
-                IconButton(onClick = onRefresh) {
-                    Icon(Icons.Filled.Refresh, stringResource(R.string.tasks_refresh))
-                }
-            }
-        }
-        Spacer(Modifier.width(8.dp))
         Surface(shape = CircleShape, color = MaterialTheme.colorScheme.surface.copy(alpha = 0.9f)) {
             IconButton(onClick = onAdd) {
                 Icon(Icons.Filled.Add, stringResource(R.string.tasks_new))
@@ -407,25 +382,31 @@ private fun AddedTasks(
     state: TasksUiState,
     onOpen: (AutomationTaskEntity) -> Unit,
 ) {
-    when {
-        !state.loaded -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-            CircularProgressIndicator(modifier = Modifier.size(24.dp), strokeWidth = 2.dp)
-        }
-        tasks.isEmpty() -> Column(Modifier.padding(16.dp)) {
-            EmptyCard(
-                title = stringResource(R.string.tasks_empty_title),
-                body = if (state.agentId == null) stringResource(R.string.tasks_agent_missing) else {
-                    state.error?.asText() ?: stringResource(R.string.tasks_empty_body)
-                },
-            )
-        }
-        else -> {
-            val groups = groupAutomationTasks(tasks, System.currentTimeMillis())
-            LazyColumn(
-                modifier = Modifier.fillMaxSize(),
-                contentPadding = PaddingValues(start = 16.dp, end = 16.dp, bottom = 20.dp),
-                verticalArrangement = Arrangement.spacedBy(10.dp),
-            ) {
+    LazyColumn(
+        modifier = Modifier.fillMaxSize(),
+        contentPadding = PaddingValues(start = 16.dp, end = 16.dp, bottom = 20.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp),
+    ) {
+        when {
+            !state.loaded -> item {
+                Box(Modifier.fillMaxWidth().padding(48.dp), contentAlignment = Alignment.Center) {
+                    CircularProgressIndicator(modifier = Modifier.size(24.dp), strokeWidth = 2.dp)
+                }
+            }
+            tasks.isEmpty() -> item {
+                Box(Modifier.padding(16.dp)) {
+                    EmptyCard(
+                        title = stringResource(R.string.tasks_empty_title),
+                        body = if (state.agentId == null) {
+                            stringResource(R.string.tasks_agent_missing)
+                        } else {
+                            state.error?.asText() ?: stringResource(R.string.tasks_empty_body)
+                        },
+                    )
+                }
+            }
+            else -> {
+                val groups = groupAutomationTasks(tasks, System.currentTimeMillis())
                 groups.forEach { group ->
                     item(key = "header-${group.bucket.name}") {
                         Text(

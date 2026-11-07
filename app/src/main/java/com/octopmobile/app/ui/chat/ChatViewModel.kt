@@ -52,6 +52,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -153,9 +154,12 @@ class ChatViewModel(
     private var threadRepository: ThreadRepository? = null
     private var baseUrl: String? = null
     private val cleanupScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private var latestPageSyncJob: Job? = null
+    private var firstPageLoaded = false
 
     /** 草稿 → 服务端会话只建一次：并发点发送/分享时排队等，第二路直接复用已绑定的 id。 */
     private val draftBindMutex = Mutex()
+    private val historyLoadMutex = Mutex()
     private var todayCardId: String? = null
     private var todayTurnId: String? = null
 
@@ -287,7 +291,17 @@ class ChatViewModel(
             }
             launch { repo.observeThread().collect { _thread.value = it } }
             launch { repo.connection.collect { _connection.value = it } }
-            launch { repo.turnActive.collect { _turnActive.value = it } }
+            launch {
+                var wasActive = false
+                repo.turnActive.collect { active ->
+                    val ended = wasActive && !active
+                    wasActive = active
+                    _turnActive.value = active
+                    // 回合结束后以服务端为准对齐一次最新页：本地流式占位行会被替换成
+                    // 服务端落盘版本，用户不必再手动「重新拉取该轮」。
+                    if (ended) scheduleLatestPageSync()
+                }
+            }
             launch { repo.hitl.collect { _hitl.value = it } }
             launch { repo.errors.collect { uiState = uiState.copy(streamError = it) } }
             launch { repo.serverEvents.collect { reportTodayAction(instanceHost, repo, it) } }
@@ -414,6 +428,7 @@ class ChatViewModel(
     }
 
     fun retry() {
+        latestPageSyncJob?.cancel()
         viewModelScope.launch { loadFirstPage() }
     }
 
@@ -424,6 +439,9 @@ class ChatViewModel(
      */
     fun reconnect() {
         repository?.reconnectNow()
+        if (!_turnActive.value && firstPageLoaded) {
+            viewModelScope.launch { refreshLatestPageSilently() }
+        }
         val mainRepo = mainConversationRepository ?: return
         viewModelScope.launch {
             mainRepo.refreshTasks()
@@ -564,6 +582,7 @@ class ChatViewModel(
         val repo = repository ?: return
         val files = _attachments.value
         if (text.isBlank() && files.isEmpty()) return
+        latestPageSyncJob?.cancel()
 
         val targets = mentionTargets(text)
 
@@ -633,6 +652,7 @@ class ChatViewModel(
     fun resolveHitl(decisionType: String, message: String? = null) {
         val repo = repository ?: return
         val pending = _hitl.value ?: return
+        latestPageSyncJob?.cancel()
         val decisions = pending.actions.map { HitlDecision(type = decisionType, message = message) }
         viewModelScope.launch {
             repo.resolveHitl(
@@ -679,6 +699,7 @@ class ChatViewModel(
     fun share(context: Context, text: String?, uris: List<Uri>, sourceTodayCardId: String? = null) {
         val repo = repository ?: return
         if (_busy.value) return
+        latestPageSyncJob?.cancel()
 
         todayCardId = sourceTodayCardId
         _busy.value = true
@@ -1031,6 +1052,7 @@ class ChatViewModel(
         // 草稿没有服务端历史，也还没有可清的服务端未读；等绑定真实会话后再拉（见 [send]）。
         if (repo.isDraft) {
             uiState = uiState.copy(historyLoading = false, hasMore = false)
+            firstPageLoaded = true
             return
         }
         uiState = uiState.copy(historyLoading = true, error = null)
@@ -1045,7 +1067,7 @@ class ChatViewModel(
         // 上个进程被杀时留下的流式行要先收尾，否则界面会一直显示成正在输出（spec §10）。
         repo.markStaleInterrupted()
 
-        when (val result = repo.loadHistory(offset = 0)) {
+        when (val result = historyLoadMutex.withLock { repo.loadHistory(offset = 0) }) {
             is ApiResult.Ok -> {
                 nextOffset = result.value.count
                 uiState = uiState.copy(
@@ -1058,6 +1080,37 @@ class ChatViewModel(
                 historyLoading = false,
                 error = result.error,
             )
+        }
+        firstPageLoaded = true
+    }
+
+    /**
+     * 回合结束后的自动对齐。失败静默：界面上的流式内容已经完整，不能因为一次后台
+     * 同步失败把它换成错误提示；用户仍可走 [retry] 手动重拉。
+     */
+    private suspend fun refreshLatestPageSilently() {
+        val repo = repository ?: return
+        if (repo.isDraft) return
+        when (val result = historyLoadMutex.withLock { repo.loadHistory(offset = 0) }) {
+            is ApiResult.Ok -> {
+                if (result.value.loading) return
+                nextOffset = result.value.count
+                uiState = uiState.copy(
+                    hasMore = result.value.hasMore,
+                    error = null,
+                )
+            }
+
+            is ApiResult.Failure -> Unit
+        }
+    }
+
+    /** 连续多个结束信号（例如重连校正）只触发一次，避免同一页被反复请求。 */
+    private fun scheduleLatestPageSync() {
+        latestPageSyncJob?.cancel()
+        latestPageSyncJob = viewModelScope.launch {
+            delay(TURN_END_SYNC_DELAY_MS)
+            refreshLatestPageSilently()
         }
     }
 
@@ -1255,6 +1308,7 @@ private fun ConversationTaskEntity.capsuleField(name: String): String =
         .orEmpty()
 
 private const val ROUTER_TASK_RESULT_LOOKBACK_MILLIS = 24 * 60 * 60 * 1_000L
+private const val TURN_END_SYNC_DELAY_MS = 500L
 
 @Suppress("UNUSED_PARAMETER")
 internal fun shouldBlockChatInput(

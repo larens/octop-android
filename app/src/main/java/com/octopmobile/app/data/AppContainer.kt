@@ -37,7 +37,7 @@ import java.util.concurrent.TimeUnit
  */
 class AppContainer(context: Context) {
 
-    private val appContext = context.applicationContext
+    val appContext = context.applicationContext
 
     /**
      * 宽松解析：Octop 各版本会增删字段，客户端不应该因为多了一个未知键就整条消息解析失败。

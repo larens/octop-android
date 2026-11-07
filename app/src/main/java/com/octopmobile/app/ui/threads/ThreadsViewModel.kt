@@ -90,7 +90,9 @@ class ThreadsViewModel(private val container: AppContainer) : ViewModel() {
     private val agentId = MutableStateFlow<String?>(null)
     private var handledMainEntryId: Int? = null
     private var resolvingMainEntry = false
+    private var primingMainConversation = false
     private var pendingMainEntryId: Int? = null
+    private var pendingMainNavigate = true
     private var mainNavigationRequestId = 0L
 
     var uiState by mutableStateOf(ThreadsUiState())
@@ -199,12 +201,14 @@ class ThreadsViewModel(private val container: AppContainer) : ViewModel() {
      * [entryId] 由工作台在用户真正选择“会话”时递增。同一个 entry 只处理一次，避免从聊天页
      * 返回时立刻又被弹回去；重新点 Tab 会得到新的 entry，因此仍能主动重新进入主会话。
      */
-    fun openMainConversation(entryId: Int) {
+    fun openMainConversation(entryId: Int, navigate: Boolean = true) {
         if (handledMainEntryId == entryId) return
+        if (!navigate && uiState.mainConversationTarget != null) return
         val baseUrl = host.value ?: return
         val id = agentId.value ?: return
         if (resolvingMainEntry) {
             pendingMainEntryId = entryId
+            pendingMainNavigate = navigate
             return
         }
 
@@ -215,8 +219,44 @@ class ThreadsViewModel(private val container: AppContainer) : ViewModel() {
             mainConversationError = null,
         )
         viewModelScope.launch {
+            val repository = container.mainConversationRepository(baseUrl, id)
             try {
-                val repository = container.mainConversationRepository(baseUrl, id)
+                // 增量加载第一段：本地已经记过这个 agent 的主会话就直接进聊天页，
+                // 历史消息本来就从 Room 出，输入框不必等任何网络请求。刷新放到后台，
+                // 成功后如果主会话指针变了（比如服务端重建过 Thread）再纠正一次跳转。
+                val cachedThreadId = repository.cachedConversation()
+                    ?.routerThreadId
+                    ?.trim()
+                    .orEmpty()
+                if (cachedThreadId.isNotEmpty()) {
+                    publishMainConversationTarget(
+                        MainConversationTarget(
+                            agentId = id,
+                            threadId = cachedThreadId,
+                            fresh = false,
+                        ),
+                        navigate = navigate,
+                    )
+                    viewModelScope.launch {
+                        val refreshed = repository.refreshConversation()
+                        if (refreshed is ApiResult.Ok) {
+                            val latest = refreshed.value.routerThreadId?.trim().orEmpty()
+                            if (latest.isNotEmpty() && latest != cachedThreadId) {
+                                publishMainConversationTarget(
+                                    MainConversationTarget(
+                                        agentId = id,
+                                        threadId = latest,
+                                        fresh = false,
+                                    ),
+                                    navigate = navigate,
+                                )
+                            }
+                        }
+                        repository.refreshTasks()
+                        repository.refreshEvents()
+                    }
+                    return@launch
+                }
                 when (
                     val resolution = resolveMainConversationEntry(
                         refreshConversation = repository::refreshConversation,
@@ -233,12 +273,13 @@ class ThreadsViewModel(private val container: AppContainer) : ViewModel() {
                             ?.trim()
                             .orEmpty()
                         if (cachedThreadId.isNotEmpty()) {
-                            requestMainConversationNavigation(
+                            publishMainConversationTarget(
                                 MainConversationTarget(
                                     agentId = id,
                                     threadId = cachedThreadId,
                                     fresh = false,
                                 ),
+                                navigate = navigate,
                             )
                             viewModelScope.launch {
                                 repository.refreshTasks()
@@ -250,12 +291,13 @@ class ThreadsViewModel(private val container: AppContainer) : ViewModel() {
                     }
 
                     is MainConversationResolution.Ready -> {
-                        requestMainConversationNavigation(
+                        publishMainConversationTarget(
                             MainConversationTarget(
                                 agentId = id,
                                 threadId = resolution.threadId,
                                 fresh = resolution.fresh,
                             ),
+                            navigate = navigate,
                         )
                         if (!resolution.fresh) {
                             // The stable Thread can open immediately; governance/task projections
@@ -278,7 +320,9 @@ class ThreadsViewModel(private val container: AppContainer) : ViewModel() {
                 uiState = uiState.copy(mainConversationLoading = false)
                 pendingMainEntryId?.let { nextEntryId ->
                     pendingMainEntryId = null
-                    if (nextEntryId != handledMainEntryId) openMainConversation(nextEntryId)
+                    if (nextEntryId != handledMainEntryId) {
+                        openMainConversation(nextEntryId, navigate = pendingMainNavigate)
+                    }
                 }
             }
         }
@@ -290,9 +334,55 @@ class ThreadsViewModel(private val container: AppContainer) : ViewModel() {
         cancelMainConversationNavigation()
     }
 
-    fun retryMainConversation(entryId: Int) {
+    fun retryMainConversation(entryId: Int, navigate: Boolean = true) {
         handledMainEntryId = null
-        openMainConversation(entryId)
+        openMainConversation(entryId, navigate)
+    }
+
+    /**
+     * 后台预热稳定主会话：只读本地指针，先让会话页有内容可画；服务端换了 Thread
+     * 再顺手纠正。没有缓存时不主动建会话，避免用户没进会话就留下空草稿。
+     */
+    fun primeMainConversation() {
+        if (primingMainConversation || resolvingMainEntry) return
+        if (uiState.mainConversationTarget != null) return
+        val baseUrl = host.value ?: return
+        val id = agentId.value ?: return
+        primingMainConversation = true
+        viewModelScope.launch {
+            try {
+                val repository = container.mainConversationRepository(baseUrl, id)
+                val cached = repository.cachedConversation()
+                    ?.routerThreadId
+                    ?.trim()
+                    .orEmpty()
+                if (cached.isEmpty()) return@launch
+                if (uiState.mainConversationTarget == null) {
+                    uiState = uiState.copy(
+                        mainConversationTarget = MainConversationTarget(
+                            agentId = id,
+                            threadId = cached,
+                            fresh = false,
+                        ),
+                    )
+                }
+                val refreshed = repository.refreshConversation()
+                if (refreshed is ApiResult.Ok && !resolvingMainEntry) {
+                    val latest = refreshed.value.routerThreadId?.trim().orEmpty()
+                    if (latest.isNotEmpty() && latest != cached) {
+                        uiState = uiState.copy(
+                            mainConversationTarget = MainConversationTarget(
+                                agentId = id,
+                                threadId = latest,
+                                fresh = false,
+                            ),
+                        )
+                    }
+                }
+            } finally {
+                primingMainConversation = false
+            }
+        }
     }
 
     /** 从聊天页返回后，用户仍可通过当前入口按钮再次进入最近解析出的主会话。 */
@@ -347,6 +437,20 @@ class ThreadsViewModel(private val container: AppContainer) : ViewModel() {
             mainConversationNavigationRequest = mainNavigationRequestId,
             mainConversationError = null,
         )
+    }
+
+    private fun publishMainConversationTarget(
+        target: MainConversationTarget,
+        navigate: Boolean,
+    ) {
+        if (navigate) {
+            requestMainConversationNavigation(target)
+        } else {
+            uiState = uiState.copy(
+                mainConversationTarget = target,
+                mainConversationError = null,
+            )
+        }
     }
 
     private fun cancelMainConversationNavigation() {

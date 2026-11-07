@@ -10,6 +10,42 @@ import org.junit.Test
 class ChatScreenUiRulesTest {
 
     @Test
+    fun `long finished assistant messages offer the full detail view`() {
+        assertTrue(
+            shouldOfferMessageDetails(
+                isUser = false,
+                text = "主动消息".repeat(100),
+                streaming = false,
+            ),
+        )
+    }
+
+    @Test
+    fun `short streaming and user messages stay inline`() {
+        assertFalse(
+            shouldOfferMessageDetails(
+                isUser = false,
+                text = "简短回复",
+                streaming = false,
+            ),
+        )
+        assertFalse(
+            shouldOfferMessageDetails(
+                isUser = false,
+                text = "主动消息".repeat(100),
+                streaming = true,
+            ),
+        )
+        assertFalse(
+            shouldOfferMessageDetails(
+                isUser = true,
+                text = "主动消息".repeat(100),
+                streaming = false,
+            ),
+        )
+    }
+
+    @Test
     fun `untouched new conversation is removed on exit`() {
         assertTrue(
             shouldDeleteUntouchedConversation(

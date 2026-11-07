@@ -2,7 +2,6 @@ package com.octopmobile.app.ui.workbench
 
 import android.text.format.DateUtils
 import androidx.compose.foundation.BorderStroke
-import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -13,6 +12,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
@@ -23,6 +23,7 @@ import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -31,6 +32,7 @@ import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -41,7 +43,6 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -67,6 +68,7 @@ import kotlinx.coroutines.delay
  * 主动事项以统一卡片流呈现，日程只保留今日完成和未来 3 天的摘要。
  * 页面本身不带顶部栏 —— 它只是工作台的一栏（见 [WorkbenchScreen]）。
  */
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun TodayPane(
     onOpenThread: (agentId: String, threadId: String) -> Unit,
@@ -177,29 +179,25 @@ fun TodayPane(
     }
 
     Box(modifier = Modifier.fillMaxSize()) {
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .background(
-                    Brush.verticalGradient(
-                        listOf(
-                            MaterialTheme.colorScheme.primary.copy(alpha = 0.17f),
-                            MaterialTheme.colorScheme.background,
-                        ),
-                    ),
-                ),
+        PullToRefreshBox(
+            isRefreshing = todayState.refreshing,
+            onRefresh = todayViewModel::refresh,
+            modifier = Modifier.fillMaxSize(),
         ) {
             LazyColumn(
                 modifier = Modifier.fillMaxSize(),
-                contentPadding = PaddingValues(start = 16.dp, top = 10.dp, end = 16.dp, bottom = 24.dp),
+                contentPadding = PaddingValues(
+                    start = WorkbenchPageTitleStartPadding,
+                    top = 0.dp,
+                    end = WorkbenchPageTitleStartPadding,
+                    bottom = 24.dp,
+                ),
                 verticalArrangement = Arrangement.spacedBy(12.dp),
             ) {
                 item {
                     TodayPageHeader(
                         currentCount = currentCards.size,
                         upcomingCount = upcomingCards.size,
-                        refreshing = todayState.refreshing,
-                        onRefresh = todayViewModel::refresh,
                     )
                 }
 
@@ -417,19 +415,18 @@ private fun feedbackMessage(feedbackType: String?): Int? = when (feedbackType) {
 private fun TodayPageHeader(
     currentCount: Int,
     upcomingCount: Int,
-    refreshing: Boolean,
-    onRefresh: () -> Unit,
 ) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(top = 6.dp, bottom = 8.dp),
+            .padding(top = WorkbenchPageTitleTopPadding, bottom = 8.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Column(modifier = Modifier.weight(1f)) {
             Text(
                 text = stringResource(R.string.today_title),
                 style = MaterialTheme.typography.headlineMedium.copy(fontWeight = FontWeight.Medium),
+                modifier = Modifier.offset(y = (-3).dp),
             )
             Spacer(Modifier.height(3.dp))
             Text(
@@ -441,24 +438,6 @@ private fun TodayPageHeader(
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
-        }
-        Surface(
-            shape = RoundedCornerShape(50),
-            color = MaterialTheme.colorScheme.surface.copy(alpha = 0.78f),
-        ) {
-            if (refreshing) {
-                CircularProgressIndicator(
-                    modifier = Modifier.padding(14.dp).size(20.dp),
-                    strokeWidth = 2.dp,
-                )
-            } else {
-                IconButton(onClick = onRefresh) {
-                    Icon(
-                        Icons.Filled.Refresh,
-                        contentDescription = stringResource(R.string.today_refresh),
-                    )
-                }
-            }
         }
     }
 }

@@ -40,6 +40,7 @@ import androidx.compose.material3.Slider
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
+import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -85,18 +86,22 @@ fun SettingsScreen(
     val container = remember(context) { (context.applicationContext as OctopApp).container }
     val host by container.prefs.host.collectAsState(initial = null)
 
-    Scaffold(topBar = {
-        TopAppBar(
-            title = { Text(stringResource(titleRes)) },
-            navigationIcon = {
-                if (showBack) {
-                    IconButton(onClick = onBack) {
-                        Icon(Icons.AutoMirrored.Filled.ArrowBack, stringResource(R.string.action_back))
+    Scaffold(
+        containerColor = Color.Transparent,
+        topBar = {
+            TopAppBar(
+                title = { Text(stringResource(titleRes)) },
+                colors = TopAppBarDefaults.topAppBarColors(containerColor = Color.Transparent),
+                navigationIcon = {
+                    if (showBack) {
+                        IconButton(onClick = onBack) {
+                            Icon(Icons.AutoMirrored.Filled.ArrowBack, stringResource(R.string.action_back))
+                        }
                     }
-                }
-            },
-        )
-    }) { padding ->
+                },
+            )
+        },
+    ) { padding ->
         Column(
             Modifier.fillMaxSize().padding(padding).verticalScroll(rememberScrollState()),
         ) {
@@ -522,16 +527,20 @@ private fun SliderRow(title: String, value: Float, onValueChange: (Float) -> Uni
 @Composable
 @OptIn(ExperimentalMaterial3Api::class)
 private fun SubpageScaffold(title: String, onBack: () -> Unit, content: @Composable () -> Unit) {
-    Scaffold(topBar = {
-        TopAppBar(
-            title = { Text(title) },
-            navigationIcon = {
-                IconButton(onClick = onBack) {
-                    Icon(Icons.AutoMirrored.Filled.ArrowBack, stringResource(R.string.action_back))
-                }
-            },
-        )
-    }) { padding ->
+    Scaffold(
+        containerColor = Color.Transparent,
+        topBar = {
+            TopAppBar(
+                title = { Text(title) },
+                colors = TopAppBarDefaults.topAppBarColors(containerColor = Color.Transparent),
+                navigationIcon = {
+                    IconButton(onClick = onBack) {
+                        Icon(Icons.AutoMirrored.Filled.ArrowBack, stringResource(R.string.action_back))
+                    }
+                },
+            )
+        },
+    ) { padding ->
         Column(
             Modifier.fillMaxSize().padding(padding).verticalScroll(rememberScrollState()).padding(horizontal = 20.dp, vertical = 12.dp),
         ) {
@@ -554,7 +563,7 @@ fun MobileDataSettingsScreen(onBack: () -> Unit) {
 
     LaunchedEffect(Unit) { refreshCache() }
 
-    Scaffold { padding ->
+    Scaffold(containerColor = Color.Transparent) { padding ->
         Box(Modifier.fillMaxSize().padding(padding)) {
             MobileDataPane(
                 onBack = onBack,

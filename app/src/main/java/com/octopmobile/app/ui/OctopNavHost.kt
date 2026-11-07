@@ -87,6 +87,7 @@ fun OctopNavHost(
                         popUpTo(0)
                     }
                 },
+                onOpenSettings = { navController.navigate(Routes.SETTINGS) },
                 initialTab = initialTab,
                 // 登录态失效时清掉当前工作台，避免登录后返回已经作废的页面
                 onNeedsLogin = {

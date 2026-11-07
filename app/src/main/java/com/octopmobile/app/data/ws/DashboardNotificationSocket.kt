@@ -24,7 +24,18 @@ import okhttp3.Response
 import okhttp3.WebSocket
 import okhttp3.WebSocketListener
 
-data class TodayCardPush(val agentId: String, val cardId: String)
+data class TodayCardPush(
+    val agentId: String,
+    val cardId: String,
+    val priority: String = PRIORITY_NORMAL,
+    val title: String = "",
+    val text: String = "",
+    val state: String = "",
+) {
+    companion object {
+        const val PRIORITY_NORMAL = "normal"
+    }
+}
 data class ThreadPush(val agentId: String, val threadId: String, val text: String)
 
 /** Foreground-only dashboard push connection. Unknown notification types are ignored. */
@@ -149,7 +160,17 @@ internal fun decodeTodayCardPush(json: Json, text: String): TodayCardPush? {
     if (frame["event"]?.jsonPrimitive?.content != "today.card_changed") return null
     val agentId = frame["agent_id"]?.jsonPrimitive?.content.orEmpty()
     val cardId = frame["card_id"]?.jsonPrimitive?.content.orEmpty()
-    return if (agentId.isBlank() || cardId.isBlank()) null else TodayCardPush(agentId, cardId)
+    if (agentId.isBlank() || cardId.isBlank()) return null
+    return TodayCardPush(
+        agentId = agentId,
+        cardId = cardId,
+        priority = frame["priority"]?.jsonPrimitive?.content
+            ?.trim()?.lowercase()?.takeIf(String::isNotBlank)
+            ?: TodayCardPush.PRIORITY_NORMAL,
+        title = frame["title"]?.jsonPrimitive?.content.orEmpty(),
+        text = frame["text"]?.jsonPrimitive?.content.orEmpty(),
+        state = frame["state"]?.jsonPrimitive?.content.orEmpty(),
+    )
 }
 
 internal fun decodeThreadPush(json: Json, text: String): ThreadPush? {

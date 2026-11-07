@@ -134,6 +134,8 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.clipToBounds
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
@@ -145,6 +147,7 @@ import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.TextRange
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
@@ -158,6 +161,7 @@ import androidx.compose.ui.unit.IntRect
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Popup
 import androidx.compose.ui.window.PopupPositionProvider
 import androidx.compose.ui.window.PopupProperties
@@ -235,12 +239,23 @@ fun ChatScreen(
     onOpenThread: (agentId: String, threadId: String) -> Unit,
     onOpenWorkbenchTab: (WorkbenchTab) -> Unit,
     onOpenSettings: () -> Unit,
+    modifier: Modifier = Modifier,
+    /**
+     * 工作台里的主会话会一直组合着，只靠可见性切换；切到别的 Tab 时用它收掉
+     * 输入法焦点，避免键盘跟着留在后台页面。
+     */
+    active: Boolean = true,
 ) {
     val context = LocalContext.current
     val focusManager = LocalFocusManager.current
     val keyboardController = LocalSoftwareKeyboardController.current
     val container = remember(context) { (context.applicationContext as OctopApp).container }
-    val viewModel: ChatViewModel = viewModel(factory = ChatViewModel.factory(agentId, threadId))
+    // 工作台内嵌时 ViewModelStore 是工作台入口共用的，必须把会话 id 放进 key；
+    // 否则主会话指针变化后仍会拿到上一个 Thread 的 ViewModel。
+    val viewModel: ChatViewModel = viewModel(
+        key = "chat:$agentId:$threadId",
+        factory = ChatViewModel.factory(agentId, threadId),
+    )
     val threadsViewModel: ThreadsViewModel = viewModel(factory = ThreadsViewModel.Factory)
     val lifecycleOwner = LocalLifecycleOwner.current
     DisposableEffect(lifecycleOwner) {
@@ -301,6 +316,7 @@ fun ChatScreen(
     val hasFeedContent = messages.isNotEmpty()
     var artifactsOpen by remember(threadId) { mutableStateOf(false) }
     var deleteTarget by remember { mutableStateOf<ConversationTurn?>(null) }
+    var messageDetail by remember(threadId) { mutableStateOf<String?>(null) }
 
     // 挂起期间服务端会拒绝新回合（`SteerRejectReason.HITL_PAUSED`），所以和「回合中」一样禁用输入。
     val blocked = shouldBlockChatInput(
@@ -396,8 +412,8 @@ fun ChatScreen(
     // 快捷方式 / 分享的最后一跳：会话已由列表页建好，这里把动作补上（spec §14）。
     // `ready` 是门槛：ViewModel 的仓库是异步就绪的，早于它执行会被 `share` 静默丢掉。
     val ready by viewModel.ready.collectAsStateWithLifecycle()
-    LaunchedEffect(chatStart, ready) {
-        if (!ready) return@LaunchedEffect
+    LaunchedEffect(chatStart, ready, active) {
+        if (!active || !ready) return@LaunchedEffect
         val start = PendingChatStart.take() ?: return@LaunchedEffect
         when (start.action) {
             AppActions.SHARE -> viewModel.share(context, start.text, start.uris, start.todayCardId)
@@ -440,7 +456,12 @@ fun ChatScreen(
         keyboardController?.hide()
     }
 
-    LaunchedEffect(threadListState.createdThreadId) {
+    LaunchedEffect(active) {
+        if (!active) hideKeyboard()
+    }
+
+    LaunchedEffect(threadListState.createdThreadId, active) {
+        if (!active) return@LaunchedEffect
         val created = threadListState.createdThreadId ?: return@LaunchedEffect
         val selectedAgentId = threadListState.selectedAgentId ?: return@LaunchedEffect
         threadsViewModel.consumeCreated()
@@ -487,23 +508,31 @@ fun ChatScreen(
     var positionedOnEntry by remember(threadId) { mutableStateOf(false) }
 
     // 首次进入必须主动落到最新：LazyColumn 默认从第 0 项开始，历史页一长就会停在旧消息。
-    LaunchedEffect(lastItemIndex, hasFeedContent) {
+    LaunchedEffect(lastItemIndex, hasFeedContent, active) {
         if (positionedOnEntry || !hasFeedContent) return@LaunchedEffect
+        if (!active) {
+            // 工作台里页面还没显示时先把滚动位置记到最新，第一次真正测量时就不会
+            // 先闪一下历史页顶部再跳到底部。
+            listState.requestScrollToItem(lastItemIndex)
+            positionedOnEntry = true
+            return@LaunchedEffect
+        }
         snapshotFlow { listState.layoutInfo.totalItemsCount }
             .first { it > lastItemIndex }
         listState.scrollToLatest(lastItemIndex, animate = false)
         positionedOnEntry = true
     }
 
-    LaunchedEffect(stickKey, positionedOnEntry) {
-        if (positionedOnEntry && atBottom && hasFeedContent) {
+    LaunchedEffect(stickKey, positionedOnEntry, active) {
+        if (active && positionedOnEntry && atBottom && hasFeedContent) {
             listState.scrollToLatest(lastItemIndex, animate = false)
         }
     }
 
     // 滑到顶部自动续拉更早的一页。这里读 viewModel.uiState 而不是捕获的 state ——
     // LaunchedEffect 的闭包只在首次组合时创建，捕获值会过期。
-    LaunchedEffect(listState) {
+    LaunchedEffect(listState, active) {
+        if (!active) return@LaunchedEffect
         snapshotFlow { listState.firstVisibleItemIndex }
             .collect { index ->
                 val current = viewModel.uiState
@@ -518,6 +547,8 @@ fun ChatScreen(
 
     ModalNavigationDrawer(
         drawerState = drawerState,
+        modifier = modifier,
+        gesturesEnabled = active,
         drawerContent = {
             ModalDrawerSheet {
                 // 新会话是草稿：首条消息后服务端 id 才定，当前标记要跟绑定后的真实 id 走。
@@ -552,6 +583,7 @@ fun ChatScreen(
         },
     ) {
         Scaffold(
+            containerColor = Color.Transparent,
             topBar = {
                 ChatHeader(
                     title = thread?.title?.takeIf { it.isNotBlank() }
@@ -678,6 +710,10 @@ fun ChatScreen(
                                 // 历史占位清理里退场（见 ChatRepository.loadHistory）。
                                 onRefetch = viewModel::retry,
                                 onMessageTap = ::hideKeyboard,
+                                onOpenMessageDetail = { text ->
+                                    hideKeyboard()
+                                    messageDetail = text
+                                },
                                 deleting = row.entities.any { it.id in deletingTurnIds },
                                 onMessageLongPress = {
                                     if (!blocked) deleteTarget = viewModel.conversationTurn(row.entities.first().id)
@@ -779,6 +815,13 @@ fun ChatScreen(
         ArtifactPreviewDialog(
             preview = preview,
             onClose = viewModel::closeArtifactPreview,
+        )
+    }
+
+    messageDetail?.let { text ->
+        ChatMessageDetailDialog(
+            markdown = text,
+            onClose = { messageDetail = null },
         )
     }
 
@@ -3651,6 +3694,7 @@ private fun MessageBubble(
     onEnsureAttachment: suspend (String?, String?) -> Unit,
     onRefetch: () -> Unit,
     onMessageTap: () -> Unit,
+    onOpenMessageDetail: (String) -> Unit,
     deleting: Boolean,
     onMessageLongPress: () -> Unit,
 ) {
@@ -3666,6 +3710,17 @@ private fun MessageBubble(
     val interrupted = entities.any { it.status == MessageStatus.INTERRUPTED }
     // parts → 渲染块：把 reasoning 与工具调用并进同一个「思考过程」（见 [toBlocks]）。
     val blocks = remember(parts, streaming) { parts.toBlocks(streaming) }
+    val detailText = remember(blocks) {
+        blocks.filterIsInstance<MessageBlock.Text>()
+            .map { it.text.trim() }
+            .filter { it.isNotEmpty() }
+            .joinToString("\n\n")
+    }
+    val offerDetail = shouldOfferMessageDetails(
+        isUser = isUser,
+        text = detailText,
+        streaming = streaming,
+    )
     val pickupCode = remember(parts) { if (isUser) null else pickupCodeFrom(parts) }
     val payment = remember(parts) { if (isUser) null else coffeePaymentFrom(parts) }
     // 这一轮「思考 + 工具」的耗时：见 [thinkingDurationMs]。
@@ -3674,6 +3729,11 @@ private fun MessageBubble(
     // 气泡宽度上限跟着系统字号走（spec §12「大字体」、§19 第 22 条）：默认字号下仍是 340dp，
     // 字号放大后要是不放宽，一条正文会被挤成又窄又高的一列。最终宽度仍受所在行的屏宽约束。
     val bubbleMaxWidth = BUBBLE_MAX_WIDTH * LocalDensity.current.fontScale.coerceAtLeast(1f)
+    val bubbleColor = if (isUser) {
+        MaterialTheme.colorScheme.primaryContainer
+    } else {
+        MaterialTheme.colorScheme.surfaceVariant
+    }
 
     Row(
         modifier = Modifier
@@ -3681,17 +3741,15 @@ private fun MessageBubble(
             .alpha(if (deleting) 0.45f else 1f)
             .combinedClickable(
                 enabled = !deleting && !streaming,
-                onClick = onMessageTap,
+                onClick = {
+                    if (offerDetail) onOpenMessageDetail(detailText) else onMessageTap()
+                },
                 onLongClick = onMessageLongPress,
             ),
         horizontalArrangement = if (isUser) Arrangement.End else Arrangement.Start,
     ) {
         Surface(
-            color = if (isUser) {
-                MaterialTheme.colorScheme.primaryContainer
-            } else {
-                MaterialTheme.colorScheme.surfaceVariant
-            },
+            color = bubbleColor,
             shape = RoundedCornerShape(14.dp),
             modifier = Modifier.widthIn(max = bubbleMaxWidth),
         ) {
@@ -3719,6 +3777,8 @@ private fun MessageBubble(
                             text = block.text,
                             caret = block.isTail,
                             streaming = streaming,
+                            collapsed = offerDetail,
+                            fadeColor = bubbleColor,
                         )
 
                         is MessageBlock.Attachment -> AttachmentBubble(
@@ -3735,6 +3795,12 @@ private fun MessageBubble(
                             isError = true,
                         )
                     }
+                }
+
+                if (offerDetail) {
+                    MessageDetailAction(
+                        onClick = { onOpenMessageDetail(detailText) },
+                    )
                 }
 
                 if (!streaming && failed != null) {
@@ -3767,6 +3833,29 @@ private fun MessageBubble(
                     }
                 }
             }
+        }
+    }
+}
+
+@Composable
+private fun MessageDetailAction(onClick: () -> Unit) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.End,
+    ) {
+        TextButton(
+            onClick = onClick,
+            contentPadding = PaddingValues(start = 10.dp, end = 2.dp, top = 2.dp, bottom = 2.dp),
+        ) {
+            Text(
+                text = stringResource(R.string.chat_message_detail_action),
+                style = MaterialTheme.typography.labelLarge,
+            )
+            Icon(
+                imageVector = Icons.Filled.ExpandMore,
+                contentDescription = null,
+                modifier = Modifier.size(18.dp),
+            )
         }
     }
 }
@@ -3812,8 +3901,9 @@ private fun PickupCodeBanner(code: String) {
 /**
  * 消息正文，带 spec §12 的两条「长内容保护」：
  *
- * 1. 超过 [LONG_TEXT_CHARS] 的正文**默认折叠** —— 一条两万字正文的全量布局正是滚动掉帧的
- *    主因（§19 第 17 条），折叠后只渲染 [COLLAPSED_TEXT_CHARS] 字。
+ * 1. 已落定的长回复默认只露出约 [COLLAPSED_MESSAGE_LINES] 行，完整内容进
+ *    [ChatMessageDetailDialog]；极端超长正文仍会先截到 [COLLAPSED_TEXT_CHARS] 字，
+ *    避免一条两万字正文的全量布局拖慢滚动（§19 第 17 条）。
  * 2. 超长行交给 Markdown 渲染器：代码块自带横向滚动（`MarkdownCode` 内部就是
  *    `horizontalScroll`），表格自己处理溢出 —— 不再需要按行宽做近似判断。
  *
@@ -3821,13 +3911,30 @@ private fun PickupCodeBanner(code: String) {
  * 折叠态会在「够长 / 不够长」之间来回跳。
  */
 @Composable
-private fun MessageText(text: String, caret: Boolean, streaming: Boolean) {
-    val collapsible = !streaming && text.length > LONG_TEXT_CHARS
+private fun MessageText(
+    text: String,
+    caret: Boolean,
+    streaming: Boolean,
+    collapsed: Boolean = false,
+    fadeColor: Color = Color.Transparent,
+) {
+    val collapsible = !collapsed && !streaming && text.length > LONG_TEXT_CHARS
     var expanded by remember { mutableStateOf(false) }
     val shown = if (collapsible && !expanded) text.take(COLLAPSED_TEXT_CHARS) else text
     val body = shown + if (caret) CARET else ""
 
-    ChatMarkdownText(markdown = body, contentColor = LocalContentColor.current)
+    val content: @Composable () -> Unit = {
+        ChatMarkdownText(
+            markdown = body,
+            contentColor = LocalContentColor.current,
+            bodyStyle = chatMessageBodyStyle(),
+        )
+    }
+    if (collapsed) {
+        CollapsedMessageBody(fadeColor = fadeColor, content = content)
+    } else {
+        content()
+    }
 
     if (collapsible) {
         Text(
@@ -3846,6 +3953,39 @@ private fun MessageText(text: String, caret: Boolean, streaming: Boolean) {
 }
 
 /**
+ * 长回复在会话流里只占大约十行。外层直接给 Markdown 一个高度上限并裁剪，
+ * 底部用气泡底色做渐隐，避免文字在行中间被硬切。
+ */
+@Composable
+private fun CollapsedMessageBody(
+    fadeColor: Color,
+    content: @Composable () -> Unit,
+) {
+    val maxHeight = with(LocalDensity.current) {
+        (CHAT_MESSAGE_LINE_HEIGHT * COLLAPSED_MESSAGE_LINES.toFloat()).toDp()
+    }
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .heightIn(max = maxHeight)
+            .clipToBounds(),
+    ) {
+        content()
+        Box(
+            modifier = Modifier
+                .align(Alignment.BottomCenter)
+                .fillMaxWidth()
+                .height(COLLAPSED_MESSAGE_FADE_HEIGHT)
+                .background(
+                    Brush.verticalGradient(
+                        listOf(Color.Transparent, fadeColor),
+                    ),
+                ),
+        )
+    }
+}
+
+/**
  * 正文的 Markdown 渲染（spec §7 选型 `multiplatform-markdown-renderer-m3`）。
  *
  * 解析交给 [rememberMarkdownState]：它按内容 `remember` 并在 `Dispatchers.Default` 上异步解析 ——
@@ -3859,7 +3999,11 @@ private fun MessageText(text: String, caret: Boolean, streaming: Boolean) {
  * `modifier` 显式传 `Modifier`：渲染器默认是 `fillMaxSize()`，那会让每条消息的气泡都被撑到宽度上限。
  */
 @Composable
-internal fun ChatMarkdownText(markdown: String, contentColor: Color) {
+internal fun ChatMarkdownText(
+    markdown: String,
+    contentColor: Color,
+    bodyStyle: TextStyle = MaterialTheme.typography.bodyMedium,
+) {
     val markdownState = rememberMarkdownState(markdown)
     val parsed by markdownState.state.collectAsState()
 
@@ -3869,7 +4013,7 @@ internal fun ChatMarkdownText(markdown: String, contentColor: Color) {
 
     val rendered = success ?: lastParsed
     if (rendered == null) {
-        Text(text = markdown, style = MaterialTheme.typography.bodyMedium, color = contentColor)
+        Text(text = markdown, style = bodyStyle, color = contentColor)
         return
     }
 
@@ -3884,18 +4028,25 @@ internal fun ChatMarkdownText(markdown: String, contentColor: Color) {
             dividerColor = contentColor.copy(alpha = 0.24f),
             tableBackground = contentColor.copy(alpha = 0.05f),
         ),
-        typography = chatMarkdownTypography(),
+        typography = chatMarkdownTypography(bodyStyle),
         modifier = Modifier,
     )
 }
 
+/** 主会话正文比通用 `bodyMedium` 大一档，长段主动消息在手机上更好读。 */
+@Composable
+private fun chatMessageBodyStyle(): TextStyle =
+    MaterialTheme.typography.bodyLarge.copy(
+        fontSize = 16.sp,
+        lineHeight = CHAT_MESSAGE_LINE_HEIGHT,
+    )
+
 /**
- * 聊天气泡里的 Markdown 排版：正文尺寸对齐气泡原本的 `bodyMedium`，各级标题收敛到
+ * 聊天气泡里的 Markdown 排版：正文尺寸对齐传入的正文样式，各级标题收敛到
  * `title*` 档 —— 渲染器默认把 h1/h2 映射到 `displayLarge`/`displayMedium`，在气泡里会大得离谱。
  */
 @Composable
-private fun chatMarkdownTypography(): MarkdownTypography {
-    val body = MaterialTheme.typography.bodyMedium
+private fun chatMarkdownTypography(body: TextStyle): MarkdownTypography {
     val mono = body.copy(fontFamily = FontFamily.Monospace)
     return markdownTypography(
         h1 = MaterialTheme.typography.titleLarge,
@@ -4436,6 +4587,21 @@ private const val LONG_TEXT_CHARS = 20_000
 
 /** 折叠时先露出的字符数：够看清开头，又不至于让文本布局拖慢滚动。 */
 private const val COLLAPSED_TEXT_CHARS = 2_000
+
+/** 已落定的长回复在会话流里默认露出的行数。 */
+private const val COLLAPSED_MESSAGE_LINES = 10
+
+private val CHAT_MESSAGE_LINE_HEIGHT = 26.sp
+private val COLLAPSED_MESSAGE_FADE_HEIGHT = 28.dp
+
+/** 超过这个长度的已落定助手消息，额外给出稳定的全屏详情入口。 */
+private const val MESSAGE_DETAIL_MIN_CHARS = 240
+
+internal fun shouldOfferMessageDetails(
+    isUser: Boolean,
+    text: String,
+    streaming: Boolean,
+): Boolean = !isUser && !streaming && text.trim().length >= MESSAGE_DETAIL_MIN_CHARS
 
 /** 气泡宽度上限（spec §12「大字体」：这个上限随系统字号放宽，见 `MessageBubble`）。 */
 private val BUBBLE_MAX_WIDTH = 340.dp
