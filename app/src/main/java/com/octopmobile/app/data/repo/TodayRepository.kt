@@ -7,6 +7,7 @@ import com.octopmobile.app.data.db.TodayCardLifecycle
 import com.octopmobile.app.data.remote.ApiResult
 import com.octopmobile.app.data.remote.OctopApi
 import com.octopmobile.app.data.remote.dto.TodayCardDto
+import com.octopmobile.app.data.remote.dto.TodayTrackingDto
 import com.octopmobile.app.data.remote.dto.TodayCardActionBody
 import com.octopmobile.app.data.remote.dto.TodayCardPatchBody
 import com.octopmobile.app.data.remote.dto.TodayCardFeedbackBody
@@ -155,6 +156,9 @@ class TodayRepository(
         actionUpdatedAt = dto.actionUpdatedAt?.toMillis(),
         createdAt = dto.createdAt.toMillis(),
         updatedAt = dto.updatedAt.toMillis(),
+        trackingJson = dto.tracking?.let {
+            json.encodeToString(TodayTrackingDto.serializer(), it)
+        },
     )
 }
 

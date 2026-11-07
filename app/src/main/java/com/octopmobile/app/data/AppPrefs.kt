@@ -5,6 +5,7 @@ import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
+import androidx.datastore.preferences.core.stringSetPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import kotlinx.coroutines.flow.Flow
@@ -29,6 +30,7 @@ class AppPrefs(context: Context) {
      */
     val selectedAgentId: Flow<String?> = store.data.map { it[KEY_AGENT_ID] }
     val selectedAgentName: Flow<String?> = store.data.map { it[KEY_AGENT_NAME] }
+    val archivedThreadIds: Flow<Set<String>> = store.data.map { it[KEY_ARCHIVED_THREADS] ?: emptySet() }
 
     suspend fun currentHost(): String? = host.first()
 
@@ -62,10 +64,22 @@ class AppPrefs(context: Context) {
         }
     }
 
+    suspend fun setThreadArchived(threadId: String, archived: Boolean) {
+        store.edit { prefs ->
+            val current = prefs[KEY_ARCHIVED_THREADS] ?: emptySet()
+            prefs[KEY_ARCHIVED_THREADS] = if (archived) {
+                current + threadId
+            } else {
+                current - threadId
+            }
+        }
+    }
+
     private companion object {
         val KEY_HOST = stringPreferencesKey("host")
         val KEY_ALLOW_CLEARTEXT = booleanPreferencesKey("allow_cleartext")
         val KEY_AGENT_ID = stringPreferencesKey("selected_agent_id")
         val KEY_AGENT_NAME = stringPreferencesKey("selected_agent_name")
+        val KEY_ARCHIVED_THREADS = stringSetPreferencesKey("archived_thread_ids")
     }
 }

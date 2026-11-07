@@ -3,6 +3,7 @@ package com.octopmobile.app.data.repo
 import com.octopmobile.app.data.db.AutomationTaskDao
 import com.octopmobile.app.data.db.AutomationTaskEntity
 import com.octopmobile.app.data.db.AutomationTaskStatus
+import com.octopmobile.app.data.model.automationTaskDisplayTitle
 import com.octopmobile.app.data.remote.ApiResult
 import com.octopmobile.app.data.remote.OctopApi
 import com.octopmobile.app.data.remote.dto.CronJobCreateBody
@@ -185,10 +186,12 @@ private fun CronJobDto.toEntity(
     now: Long,
 ): AutomationTaskEntity {
     val lastRunMillis = lastRunAt?.let { it * 1000 }
-    val displayTitle = name?.takeIf { it.isNotBlank() }
-        ?: prompt.lineSequence().firstOrNull()?.trim()?.takeIf { it.isNotBlank() }
-            ?.take(TITLE_FALLBACK_LIMIT)
-        ?: id
+    val displayTitle = automationTaskDisplayTitle(
+        name = name.orEmpty(),
+        prompt = prompt,
+        id = id,
+        maxLength = TITLE_FALLBACK_LIMIT,
+    )
     return AutomationTaskEntity(
         id = id,
         agentId = agentId,

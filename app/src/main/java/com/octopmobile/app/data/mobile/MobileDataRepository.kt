@@ -39,6 +39,13 @@ class MobileDataRepository(
         listOf(
             MobileSourceType.SHARE_INBOX,
             MobileSourceType.SYSTEM_CALENDAR,
+            MobileSourceType.ANDROID_ALARM_TIMER,
+            MobileSourceType.ANDROID_USAGE_STATS,
+            MobileSourceType.ANDROID_CONTACTS,
+            MobileSourceType.ANDROID_FILES,
+            MobileSourceType.ANDROID_LOCATION,
+            MobileSourceType.ANDROID_NOTIFICATIONS,
+            MobileSourceType.ANDROID_SMS,
             MobileSourceType.HEALTH_CONNECT,
             MobileSourceType.XIAMI_HEALTH,
         )
@@ -90,6 +97,25 @@ class MobileDataRepository(
     suspend fun disableSource(sourceType: String) {
         val old = database.mobileSources().find(sourceType) ?: return
         database.mobileSources().upsert(old.copy(enabled = false, updatedAt = System.currentTimeMillis()))
+    }
+
+    suspend fun isSourceEnabled(sourceType: String): Boolean =
+        database.mobileSources().find(sourceType)?.enabled == true
+
+    suspend fun saveCaptured(draft: MobileEventDraft): Int {
+        if (!isSourceEnabled(draft.sourceType)) return 0
+        val inserted = persist(listOf(draft))
+        if (inserted > 0) {
+            val source = database.mobileSources().find(draft.sourceType) ?: return inserted
+            database.mobileSources().upsert(
+                source.copy(
+                    lastSyncAt = System.currentTimeMillis(),
+                    lastError = null,
+                    updatedAt = System.currentTimeMillis(),
+                ),
+            )
+        }
+        return inserted
     }
 
     suspend fun collect(sourceType: String, block: suspend () -> List<MobileEventDraft>): Int {

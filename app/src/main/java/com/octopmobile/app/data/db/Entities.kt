@@ -216,6 +216,13 @@ data class PendingOpEntity(
 object MobileSourceType {
     const val SHARE_INBOX = "share_inbox"
     const val SYSTEM_CALENDAR = "system_calendar"
+    const val ANDROID_ALARM_TIMER = "android_alarm_timer"
+    const val ANDROID_USAGE_STATS = "android_usage_stats"
+    const val ANDROID_CONTACTS = "android_contacts"
+    const val ANDROID_FILES = "android_files"
+    const val ANDROID_LOCATION = "android_location"
+    const val ANDROID_NOTIFICATIONS = "android_notifications"
+    const val ANDROID_SMS = "android_sms"
     const val HEALTH_CONNECT = "health_connect"
     const val XIAMI_HEALTH = "xiaomi_health"
 }
@@ -312,4 +319,5 @@ data class TodayCardEntity(
     val actionUpdatedAt: Long?,
     val createdAt: Long,
     val updatedAt: Long,
+    val trackingJson: String? = null,
 )

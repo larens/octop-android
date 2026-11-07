@@ -37,6 +37,7 @@ import androidx.compose.material.icons.filled.Celebration
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -73,13 +74,17 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import com.octopmobile.app.R
 import com.octopmobile.app.data.db.AutomationTaskEntity
 import com.octopmobile.app.data.db.AutomationTaskStatus
+import com.octopmobile.app.data.model.automationTaskDisplayTitle
+import com.octopmobile.app.data.model.cleanAutomationTaskText
 import com.octopmobile.app.data.remote.dto.ConnectorInstanceDto
 import com.octopmobile.app.data.repo.ScheduleRule
 import com.octopmobile.app.data.repo.ScheduleRules
 import com.octopmobile.app.ui.asText
 import java.time.Instant
+import java.time.LocalDate
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
+import java.time.temporal.ChronoUnit
 
 private enum class TasksTab { ADDED, RECOMMENDED }
 
@@ -414,18 +419,103 @@ private fun AddedTasks(
                 },
             )
         }
-        else -> LazyColumn(
-            modifier = Modifier.fillMaxSize(),
-            contentPadding = PaddingValues(16.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp),
-        ) {
-            items(tasks, key = { it.id }) { task ->
-                TaskCard(
+        else -> {
+            val groups = groupAutomationTasks(tasks, System.currentTimeMillis())
+            LazyColumn(
+                modifier = Modifier.fillMaxSize(),
+                contentPadding = PaddingValues(start = 16.dp, end = 16.dp, bottom = 20.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                groups.forEach { group ->
+                    item(key = "header-${group.bucket.name}") {
+                        Text(
+                            text = stringResource(group.bucket.labelRes),
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.SemiBold,
+                            modifier = Modifier.padding(start = 4.dp, top = 8.dp, bottom = 2.dp),
+                        )
+                    }
+                    item(key = "group-${group.bucket.name}") {
+                        AutomationTaskGroupCard(
+                            tasks = group.tasks,
+                            showPausedLabel = group.bucket != AutomationTaskBucket.PAUSED,
+                            onOpen = onOpen,
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun AutomationTaskGroupCard(
+    tasks: List<AutomationTaskEntity>,
+    showPausedLabel: Boolean,
+    onOpen: (AutomationTaskEntity) -> Unit,
+) {
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(22.dp),
+        color = MaterialTheme.colorScheme.surface.copy(alpha = 0.9f),
+    ) {
+        Column {
+            tasks.forEachIndexed { index, task ->
+                if (index > 0) {
+                    HorizontalDivider(
+                        modifier = Modifier.padding(horizontal = 20.dp),
+                        color = MaterialTheme.colorScheme.outline.copy(alpha = 0.12f),
+                    )
+                }
+                AutomationTaskRow(
                     task = task,
+                    showPausedLabel = showPausedLabel,
                     onClick = { onOpen(task) },
                 )
             }
         }
+    }
+}
+
+@Composable
+private fun AutomationTaskRow(
+    task: AutomationTaskEntity,
+    showPausedLabel: Boolean,
+    onClick: () -> Unit,
+) {
+    val paused = task.status == AutomationTaskStatus.PAUSED
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick)
+            .padding(horizontal = 20.dp, vertical = 17.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(
+            text = taskDisplayTitle(task),
+            style = MaterialTheme.typography.bodyLarge,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.weight(1f),
+        )
+        if (paused && showPausedLabel) {
+            Spacer(Modifier.width(10.dp))
+            Text(
+                text = stringResource(R.string.tasks_status_paused),
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        Spacer(Modifier.width(12.dp))
+        Surface(
+            modifier = Modifier.size(8.dp),
+            shape = CircleShape,
+            color = when {
+                task.lastStatus == TASK_STATUS_ERROR -> MaterialTheme.colorScheme.error
+                paused -> MaterialTheme.colorScheme.outline.copy(alpha = 0.45f)
+                else -> MaterialTheme.colorScheme.primary
+            },
+        ) {}
     }
 }
 
@@ -562,61 +652,6 @@ private fun recommendationColor(kind: RecommendationKind): Color = when (kind) {
     RecommendationKind.MAIL -> MaterialTheme.colorScheme.secondaryContainer
     RecommendationKind.READING -> MaterialTheme.colorScheme.tertiaryContainer
     RecommendationKind.WEATHER -> MaterialTheme.colorScheme.primaryContainer
-}
-
-@Composable
-private fun TaskCard(
-    task: AutomationTaskEntity,
-    onClick: () -> Unit,
-) {
-    val paused = task.status == AutomationTaskStatus.PAUSED
-    Surface(
-        modifier = Modifier.fillMaxWidth().clickable(onClick = onClick),
-        shape = RoundedCornerShape(16.dp),
-        tonalElevation = 2.dp,
-    ) {
-        Row(
-            modifier = Modifier.padding(16.dp),
-            verticalAlignment = Alignment.Top,
-        ) {
-            Column(Modifier.weight(1f)) {
-                Text(
-                    task.title,
-                    style = MaterialTheme.typography.titleSmall,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
-                if (task.prompt.isNotBlank()) {
-                    Spacer(Modifier.height(6.dp))
-                    Text(
-                        text = task.prompt,
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        maxLines = 2,
-                        overflow = TextOverflow.Ellipsis,
-                    )
-                }
-                Spacer(Modifier.height(6.dp))
-                Text(
-                    humanSchedule(task.scheduleRule),
-                    style = MaterialTheme.typography.labelMedium,
-                    color = MaterialTheme.colorScheme.primary,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
-            }
-            Spacer(Modifier.width(14.dp))
-            Surface(
-                modifier = Modifier.size(10.dp),
-                shape = CircleShape,
-                color = when {
-                    task.lastStatus == TASK_STATUS_ERROR -> MaterialTheme.colorScheme.error
-                    paused -> MaterialTheme.colorScheme.outline.copy(alpha = 0.5f)
-                    else -> MaterialTheme.colorScheme.primary
-                }
-            ) {}
-        }
-    }
 }
 
 @Composable
@@ -801,7 +836,7 @@ private fun CurrentTaskCard(task: AutomationTaskEntity) {
             verticalArrangement = Arrangement.spacedBy(10.dp),
         ) {
             Text(
-                task.title,
+                taskDisplayTitle(task),
                 style = MaterialTheme.typography.titleLarge,
                 fontWeight = FontWeight.SemiBold,
             )
@@ -816,13 +851,63 @@ private fun CurrentTaskCard(task: AutomationTaskEntity) {
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
             Text(
-                task.prompt,
+                cleanAutomationTaskText(task.prompt),
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurface,
+                maxLines = 4,
+                overflow = TextOverflow.Ellipsis,
             )
         }
     }
 }
+
+internal enum class AutomationTaskBucket(val labelRes: Int) {
+    TODAY(R.string.tasks_group_today),
+    NEXT_SEVEN_DAYS(R.string.tasks_group_week),
+    LATER(R.string.tasks_group_later),
+    PAUSED(R.string.tasks_status_paused),
+}
+
+internal data class AutomationTaskGroup(
+    val bucket: AutomationTaskBucket,
+    val tasks: List<AutomationTaskEntity>,
+)
+
+internal fun groupAutomationTasks(
+    tasks: List<AutomationTaskEntity>,
+    nowMillis: Long,
+    zoneId: ZoneId = ZoneId.systemDefault(),
+): List<AutomationTaskGroup> {
+    val today = Instant.ofEpochMilli(nowMillis).atZone(zoneId).toLocalDate()
+    val grouped = tasks.groupBy { task -> taskBucket(task, today, zoneId) }
+    return AutomationTaskBucket.entries.mapNotNull { bucket ->
+        grouped[bucket]?.takeIf(List<AutomationTaskEntity>::isNotEmpty)?.let { groupedTasks ->
+            AutomationTaskGroup(bucket, groupedTasks)
+        }
+    }
+}
+
+private fun taskBucket(
+    task: AutomationTaskEntity,
+    today: LocalDate,
+    zoneId: ZoneId,
+): AutomationTaskBucket {
+    if (task.status == AutomationTaskStatus.PAUSED) return AutomationTaskBucket.PAUSED
+    val nextRun = task.nextRunAt ?: return AutomationTaskBucket.LATER
+    val nextDate = Instant.ofEpochMilli(nextRun).atZone(zoneId).toLocalDate()
+    val daysUntilRun = ChronoUnit.DAYS.between(today, nextDate)
+    return when {
+        daysUntilRun <= 0L -> AutomationTaskBucket.TODAY
+        daysUntilRun <= 7L -> AutomationTaskBucket.NEXT_SEVEN_DAYS
+        else -> AutomationTaskBucket.LATER
+    }
+}
+
+private fun taskDisplayTitle(task: AutomationTaskEntity): String = automationTaskDisplayTitle(
+    name = task.title,
+    prompt = task.prompt,
+    id = task.id,
+)
 
 internal fun humanSchedule(raw: String): String = when (val rule = ScheduleRules.parse(raw)) {
     is ScheduleRule.Cron -> humanCron(rule.fields) ?: raw

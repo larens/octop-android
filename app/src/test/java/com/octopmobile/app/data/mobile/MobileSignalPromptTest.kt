@@ -58,4 +58,30 @@ class MobileSignalPromptTest {
         assertTrue(hrv.contains("HRV（压力参考）：42 ms"))
         assertFalse(hrv.contains("压力："))
     }
+
+    @Test
+    fun `android connector prompts expose only their selected facts`() {
+        val usage = mobileSignalPrompt(
+            eventType = "android.usage_daily",
+            summary = "usage",
+            payloadJson = """{"date":"2026-11-07","total_minutes":83,"top_apps":"微信 42 分钟"}""",
+        )
+        val sms = mobileSignalPrompt(
+            eventType = "android.sms",
+            summary = "sms",
+            payloadJson = """{"address":"10086","received_at":1000,"body":"流量提醒"}""",
+        )
+        val location = mobileSignalPrompt(
+            eventType = "android.location_current",
+            summary = "location",
+            payloadJson = """{"latitude":39.9,"longitude":116.4,"accuracy_meters":25.0,"provider":"gps"}""",
+        )
+
+        assertTrue(usage.contains("屏幕使用：83 分钟"))
+        assertTrue(usage.contains("微信 42 分钟"))
+        assertTrue(sms.contains("号码：10086"))
+        assertTrue(sms.contains("流量提醒"))
+        assertTrue(location.contains("纬度：39.9"))
+        assertTrue(location.contains("精度：25 米"))
+    }
 }

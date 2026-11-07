@@ -1,9 +1,6 @@
 package com.octopmobile.app.data.mobile
 
 import android.content.Context
-import android.Manifest
-import android.content.pm.PackageManager
-import androidx.core.content.ContextCompat
 import androidx.work.Constraints
 import androidx.work.CoroutineWorker
 import androidx.work.ExistingPeriodicWorkPolicy
@@ -34,20 +31,16 @@ class MobileSyncWorker(context: Context, params: WorkerParameters) : CoroutineWo
         val repository = container.mobileDataRepository()
         repository.ensureSources()
         val reminderWindow = inputData.getString(HEALTH_WINDOW_KEY)
-        val calendarEnabled = repository.observeSources().first().any {
-            it.sourceType == MobileSourceType.SYSTEM_CALENDAR && it.enabled
-        }
-        runCatching {
-            if (
-                calendarEnabled &&
-                ContextCompat.checkSelfPermission(applicationContext, Manifest.permission.READ_CALENDAR) ==
-                PackageManager.PERMISSION_GRANTED
-            ) {
-                repository.collect(MobileSourceType.SYSTEM_CALENDAR) {
-                    CalendarSourceAdapter(applicationContext.contentResolver).readWindow()
+        repository.observeSources().first()
+            .filter { it.enabled }
+            .filter { it.sourceType != MobileSourceType.ANDROID_NOTIFICATIONS }
+            .forEach { source ->
+                runCatching {
+                    repository.collect(source.sourceType) {
+                        AndroidAppConnectorAccess.collect(applicationContext, source.sourceType)
+                    }
                 }
             }
-        }
         val uploadResult = repository.uploadPending(
             container.api(host),
             agentId,

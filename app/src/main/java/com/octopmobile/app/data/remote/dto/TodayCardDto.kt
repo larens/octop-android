@@ -17,6 +17,36 @@ data class TodayEvidenceDto(
 )
 
 @Serializable
+data class TodayTrackingPhaseDto(
+    val label: String,
+    @SerialName("starts_at") val startsAt: Long? = null,
+    @SerialName("ends_at") val endsAt: Long? = null,
+    val state: String? = null,
+    val note: String? = null,
+)
+
+@Serializable
+data class TodayTrackingMetricDto(
+    val label: String,
+    val value: String,
+)
+
+@Serializable
+data class TodayTrackingDto(
+    val subject: String,
+    val stage: String,
+    val status: String = "in_progress",
+    val progress: Int? = null,
+    @SerialName("progress_label") val progressLabel: String? = null,
+    val phases: List<TodayTrackingPhaseDto> = emptyList(),
+    val metrics: List<TodayTrackingMetricDto> = emptyList(),
+    val missing: List<String> = emptyList(),
+    @SerialName("next_milestone") val nextMilestone: String? = null,
+    @SerialName("next_check_at") val nextCheckAt: Long? = null,
+    @SerialName("next_action") val nextAction: String? = null,
+)
+
+@Serializable
 data class TodayCardDto(
     @SerialName("card_id") val cardId: String,
     val kind: String,
@@ -40,6 +70,7 @@ data class TodayCardDto(
     @SerialName("action_state") val actionState: String? = null,
     @SerialName("action_error") val actionError: String? = null,
     @SerialName("action_updated_at") val actionUpdatedAt: Long? = null,
+    val tracking: TodayTrackingDto? = null,
 )
 
 @Serializable

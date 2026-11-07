@@ -96,7 +96,7 @@ class ThreadsViewModel(private val container: AppContainer) : ViewModel() {
     var uiState by mutableStateOf(ThreadsUiState())
         private set
 
-    val threads: StateFlow<List<ThreadEntity>> =
+    val allThreads: StateFlow<List<ThreadEntity>> =
         combine(host, agentId) { baseUrl, id -> baseUrl to id }
             .flatMapLatest { (baseUrl, id) ->
                 if (baseUrl.isNullOrBlank() || id.isNullOrBlank()) {
@@ -105,6 +105,20 @@ class ThreadsViewModel(private val container: AppContainer) : ViewModel() {
                     container.threadRepository(baseUrl, id).observeThreads()
                 }
             }
+            .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
+
+    private val archivedThreadIds = MutableStateFlow<Set<String>>(emptySet())
+
+    val threads: StateFlow<List<ThreadEntity>> =
+        combine(allThreads, archivedThreadIds) { visible, archived ->
+            visible.filterNot { it.threadId in archived }
+        }
+            .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
+
+    val archivedThreads: StateFlow<List<ThreadEntity>> =
+        combine(allThreads, archivedThreadIds) { visible, archived ->
+            visible.filter { it.threadId in archived }
+        }
             .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
 
     init {
@@ -116,6 +130,9 @@ class ThreadsViewModel(private val container: AppContainer) : ViewModel() {
                 return@launch
             }
             host.value = baseUrl
+            viewModelScope.launch {
+                container.prefs.archivedThreadIds.collect { archivedThreadIds.value = it }
+            }
 
             // `/api/agents` 必然带令牌，没有令牌就先去登录，不发这次注定 401 的请求。
             if (container.securePrefs.tokenFor(baseUrl) == null) {
@@ -306,6 +323,18 @@ class ThreadsViewModel(private val container: AppContainer) : ViewModel() {
     fun delete(threadId: String) = mutate(
         onSuccess = { container.tagRepository().deleteForThread(threadId) },
     ) { it.delete(threadId) }
+
+    fun archive(threadId: String) {
+        viewModelScope.launch {
+            container.prefs.setThreadArchived(threadId, archived = true)
+        }
+    }
+
+    fun unarchive(threadId: String) {
+        viewModelScope.launch {
+            container.prefs.setThreadArchived(threadId, archived = false)
+        }
+    }
 
     fun consumeNotice() {
         uiState = uiState.copy(notice = null)

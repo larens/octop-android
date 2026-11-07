@@ -14,7 +14,7 @@ English | [中文](README.md)
 | **Calendar and Today** | Bring the next three days, waiting conversations, and followed updates into one focused feed |
 | **Scheduled tasks** | Describe recurring work in natural language; the server runs it even when the app is closed |
 | **Memory and daily diaries** | Review the server-maintained profile, the last seven days of diaries, and lessons distilled from conversations |
-| **Phone data** | Read the system calendar and share inbox without duplicating health collection on the device |
+| **Connected apps** | Authorize calendar, usage, contacts, files, location, notifications, SMS, and alarms per source; iOS/Mac follow in phases |
 | **System integration** | Share target, App Shortcuts, deep links, long-running foreground notifications, and a WebView fallback |
 
 ## Conversations: finish the work, not just generate a reply
@@ -157,7 +157,7 @@ Advanced Today projections and Xiaomi health sync require matching server patche
 
 - No analytics and no telemetry. Usage data is not sent anywhere except the instance you configure.
 - The login session is stored in Android encrypted storage, and system backup is disabled for the app.
-- Calendar and shared content are encrypted locally before upload. Pending items are removed only after the server explicitly confirms receipt.
+- Calendar, contacts, notifications, SMS, files, and location are encrypted locally before upload. Pending items are removed only after the server explicitly confirms receipt.
 - The Xiaomi account session exists only in the server-side Octop `secrets` store. Android never holds health-source credentials.
 - Long-term health memory stores seven-day aggregates, not account identifiers or raw sensor details.
 - Health suggestions are not medical advice. You can revoke the source authorization and delete the related memory.
@@ -171,11 +171,17 @@ Advanced Today projections and Xiaomi health sync require matching server patche
 | `RECORD_AUDIO` | Voice input and voice notes | Optional |
 | `CAMERA` | Capture a photo as a conversation attachment | Optional |
 | `READ_CALENDAR` | Read the system calendar into Today | Optional |
+| `READ_CONTACTS` | Sync recently updated contacts for lookup | Optional |
+| `ACCESS_COARSE_LOCATION` / `ACCESS_FINE_LOCATION` | Record the last known location as context | Optional |
+| `READ_SMS` | Read the last seven days of the SMS inbox | Optional |
+| `PACKAGE_USAGE_STATS` | Read app usage after enabling access in system settings | Optional; special access |
+| `MANAGE_EXTERNAL_STORAGE` | Read public-directory file metadata after enabling access in system settings | Optional; special access |
+| Notification access | Record new clearable notifications after enabling access | Optional; system settings |
 | `POST_NOTIFICATIONS` | Long-running task progress and health reminders | Optional |
 | `FOREGROUND_SERVICE` / `FOREGROUND_SERVICE_DATA_SYNC` | Keep the progress service alive during a turn | Granted automatically |
 | `WRITE_EXTERNAL_STORAGE` | Save downloads on Android 9 and below | Optional; legacy systems only |
 
-The current client does not request Health Connect permissions. Calendar and notification permissions are scoped to their own features and do not trigger health access.
+The current client does not request Health Connect permissions. Calendar and notification permissions are scoped to their own features and do not trigger health access. See [`docs/connect-apps.md`](docs/connect-apps.md) for scope, phasing, and store-policy risks.
 
 ## Building
 

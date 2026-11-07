@@ -174,6 +174,32 @@ class MobileDataMigrationTest {
         }
     }
 
+    @Test
+    fun migrate10To11_addsTrackingWithoutLosingTodayCards() {
+        helper.createDatabase(TRACKING_NAME, 10).apply {
+            execSQL(
+                "INSERT INTO today_cards VALUES (" +
+                    "'card-1','agent-1','task','Title','Summary','Why',0.8,'A1','read',1,NULL," +
+                    "'Prompt','[]',0,'web_search',NULL,NULL,NULL,0,NULL,NULL,NULL,NULL,NULL,1,1)"
+            )
+            close()
+        }
+
+        helper.runMigrationsAndValidate(
+            TRACKING_NAME,
+            11,
+            true,
+            OctopDatabase.MIGRATION_10_11,
+        ).apply {
+            query("SELECT title, trackingJson FROM today_cards WHERE id = 'card-1'").use {
+                check(it.moveToFirst())
+                check(it.getString(0) == "Title")
+                check(it.isNull(1))
+            }
+            close()
+        }
+    }
+
     private companion object {
         const val NAME = "mobile-data-migration-test"
         const val TODAY_NAME = "today-cards-migration-test"
@@ -182,5 +208,6 @@ class MobileDataMigrationTest {
         const val RISK_NAME = "today-risk-migration-test"
         const val ROUTER_NAME = "router-phase0-migration-test"
         const val SERVER_MEMORY_NAME = "server-memory-cache-migration-test"
+        const val TRACKING_NAME = "today-tracking-migration-test"
     }
 }

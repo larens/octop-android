@@ -68,6 +68,7 @@ import androidx.compose.material.icons.filled.ArrowDownward
 import androidx.compose.material.icons.filled.AttachFile
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.AlternateEmail
+import androidx.compose.material.icons.filled.Archive
 import androidx.compose.material.icons.filled.Build
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
@@ -83,6 +84,7 @@ import androidx.compose.material.icons.filled.Image
 import androidx.compose.material.icons.filled.KeyboardVoice
 import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.PhotoCamera
+import androidx.compose.material.icons.filled.PushPin
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.Stop
@@ -92,6 +94,7 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DrawerValue
+import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilledTonalIconButton
@@ -123,6 +126,7 @@ import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
@@ -208,6 +212,7 @@ import kotlinx.coroutines.flow.first
 import kotlinx.serialization.json.Json
 import java.io.File
 import java.text.DateFormat
+import java.util.Calendar
 import java.util.Date
 import java.util.Locale
 
@@ -278,6 +283,7 @@ fun ChatScreen(
     val mentionable by viewModel.mentionable.collectAsStateWithLifecycle()
     val threadListState = threadsViewModel.uiState
     val historyThreads by threadsViewModel.threads.collectAsStateWithLifecycle()
+    val archivedThreads by threadsViewModel.archivedThreads.collectAsStateWithLifecycle()
     // 系统入口（快捷方式 / 分享）带进来的动作，见下面的 LaunchedEffect（spec §14）。
     val chatStart by PendingChatStart.pending.collectAsStateWithLifecycle()
 
@@ -518,6 +524,7 @@ fun ChatScreen(
                 val currentThreadId = thread?.threadId ?: threadId
                 HistoryDrawerContent(
                     threads = historyThreads,
+                    archivedThreads = archivedThreads,
                     currentThreadId = currentThreadId,
                     syncing = threadListState.syncing,
                     creating = threadListState.creating,
@@ -526,6 +533,10 @@ fun ChatScreen(
                     },
                     onOpenSettings = onOpenSettings,
                     onDeleteThreads = { ids -> ids.forEach(threadsViewModel::delete) },
+                    onTogglePin = threadsViewModel::togglePin,
+                    onRenameThread = threadsViewModel::rename,
+                    onArchiveThread = threadsViewModel::archive,
+                    onUnarchiveThread = threadsViewModel::unarchive,
                     onSelectThread = { item ->
                         scope.launch {
                             drawerState.close()
@@ -947,18 +958,35 @@ private fun ChatHeader(
 @Composable
 private fun HistoryDrawerContent(
     threads: List<ThreadEntity>,
+    archivedThreads: List<ThreadEntity>,
     currentThreadId: String,
     syncing: Boolean,
     creating: Boolean,
     onNewConversation: () -> Unit,
     onOpenSettings: () -> Unit,
     onDeleteThreads: (Collection<String>) -> Unit,
+    onTogglePin: (ThreadEntity) -> Unit,
+    onRenameThread: (String, String) -> Unit,
+    onArchiveThread: (String) -> Unit,
+    onUnarchiveThread: (String) -> Unit,
     onSelectThread: (ThreadEntity) -> Unit,
 ) {
     var editing by remember { mutableStateOf(false) }
     var selected by remember { mutableStateOf(setOf<String>()) }
     var confirmDelete by remember { mutableStateOf(false) }
-
+    var menuThread by remember { mutableStateOf<ThreadEntity?>(null) }
+    var renameThread by remember { mutableStateOf<ThreadEntity?>(null) }
+    var renameDraft by remember { mutableStateOf("") }
+    var archiveThread by remember { mutableStateOf<ThreadEntity?>(null) }
+    var deleteThread by remember { mutableStateOf<ThreadEntity?>(null) }
+    var restoreThread by remember { mutableStateOf<ThreadEntity?>(null) }
+    var showArchived by remember { mutableStateOf(false) }
+    val visibleThreads = if (showArchived) archivedThreads else threads
+    val groups = remember(visibleThreads) {
+        visibleThreads.groupBy { thread ->
+            historyGroupFor(thread.pinned, thread.lastActiveAt)
+        }
+    }
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -1052,7 +1080,14 @@ private fun HistoryDrawerContent(
             )
             Spacer(Modifier.height(8.dp))
         }
-        if (threads.isEmpty()) {
+        if (visibleThreads.isEmpty() && showArchived) {
+            Text(
+                text = stringResource(R.string.chat_history_archived_empty),
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+            )
+        } else if (visibleThreads.isEmpty()) {
             Text(
                 text = stringResource(R.string.chat_history_empty),
                 style = MaterialTheme.typography.bodyMedium,
@@ -1061,30 +1096,107 @@ private fun HistoryDrawerContent(
             )
         } else {
             LazyColumn(
-                modifier = Modifier.fillMaxSize(),
+                modifier = Modifier
+                    .weight(1f)
+                    .fillMaxWidth(),
                 verticalArrangement = Arrangement.spacedBy(4.dp),
             ) {
-                items(threads, key = { it.threadId }) { item ->
-                    val isCurrent = item.threadId == currentThreadId
-                    HistoryDrawerRow(
-                        thread = item,
-                        isCurrent = isCurrent,
-                        editing = editing,
-                        checked = selected.contains(item.threadId),
-                        onClick = {
-                            if (editing && !isCurrent) {
-                                selected = if (item.threadId in selected) {
-                                    selected - item.threadId
-                                } else {
-                                    selected + item.threadId
+                listOf(HistoryGroup.Pinned, HistoryGroup.Today, HistoryGroup.Yesterday)
+                    .plus(groups.keys.filterIsInstance<HistoryGroup.Date>().sortedByDescending { it.dayKey })
+                    .distinct()
+                    .forEach { group ->
+                        val groupThreads = groups[group].orEmpty()
+                        if (groupThreads.isEmpty()) return@forEach
+                        item(key = "header:${group.key()}") {
+                            Text(
+                                text = historyGroupTitle(group),
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.72f),
+                                modifier = Modifier.padding(
+                                    horizontal = 12.dp,
+                                    vertical = 6.dp,
+                                ),
+                            )
+                        }
+                        items(groupThreads, key = { it.threadId }) { item ->
+                            val isCurrent = item.threadId == currentThreadId
+                            Box {
+                                HistoryDrawerRow(
+                                    thread = item,
+                                    isCurrent = isCurrent,
+                                    editing = editing,
+                                    checked = selected.contains(item.threadId),
+                                    onLongPress = {
+                                        if (!editing && !showArchived) menuThread = item
+                                    },
+                                    onClick = {
+                                        if (editing && !isCurrent) {
+                                            selected = if (item.threadId in selected) {
+                                                selected - item.threadId
+                                            } else {
+                                                selected + item.threadId
+                                            }
+                                        } else if (showArchived) {
+                                            restoreThread = item
+                                        } else if (!editing) {
+                                            onSelectThread(item)
+                                        }
+                                    },
+                                )
+                                if (menuThread?.threadId == item.threadId) {
+                                    HistoryThreadMenu(
+                                        thread = item,
+                                        onDismiss = { menuThread = null },
+                                        onTogglePin = {
+                                            menuThread = null
+                                            onTogglePin(item)
+                                        },
+                                        onRename = {
+                                            menuThread = null
+                                            renameDraft = item.title.orEmpty()
+                                            renameThread = item
+                                        },
+                                        onArchive = {
+                                            menuThread = null
+                                            archiveThread = item
+                                        },
+                                        onDelete = {
+                                            menuThread = null
+                                            deleteThread = item
+                                        },
+                                    )
                                 }
-                            } else if (!editing) {
-                                onSelectThread(item)
                             }
-                        },
-                    )
-                }
+                        }
+                    }
             }
+        }
+        Spacer(Modifier.height(4.dp))
+        TextButton(
+            onClick = {
+                if (!showArchived) {
+                    showArchived = true
+                } else {
+                    editing = false
+                    selected = emptySet()
+                    showArchived = false
+                }
+            },
+            enabled = archivedThreads.isNotEmpty() || showArchived,
+            modifier = Modifier.align(Alignment.CenterHorizontally),
+        ) {
+            Icon(
+                imageVector = Icons.Filled.Archive,
+                contentDescription = null,
+                modifier = Modifier.size(18.dp),
+            )
+            Spacer(Modifier.width(6.dp))
+            Text(
+                text = stringResource(
+                    if (showArchived) R.string.chat_history_archive_done
+                    else R.string.chat_history_show_archived,
+                ),
+            )
         }
     }
 
@@ -1114,6 +1226,159 @@ private fun HistoryDrawerContent(
             },
         )
     }
+
+    renameThread?.let { thread ->
+        AlertDialog(
+            onDismissRequest = { renameThread = null },
+            title = { Text(stringResource(R.string.threads_rename)) },
+            text = {
+                OutlinedTextField(
+                    value = renameDraft,
+                    onValueChange = { renameDraft = it },
+                    label = { Text(stringResource(R.string.threads_rename_label)) },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    enabled = renameDraft.isNotBlank(),
+                    onClick = {
+                        val threadId = thread.threadId
+                        val title = renameDraft.trim()
+                        renameThread = null
+                        onRenameThread(threadId, title)
+                    },
+                ) {
+                    Text(stringResource(R.string.action_save))
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { renameThread = null }) {
+                    Text(stringResource(R.string.action_cancel))
+                }
+            },
+        )
+    }
+
+    archiveThread?.let { thread ->
+        AlertDialog(
+            onDismissRequest = { archiveThread = null },
+            title = { Text(stringResource(R.string.chat_history_archive_title)) },
+            text = { Text(stringResource(R.string.chat_history_archive_message)) },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        archiveThread = null
+                        onArchiveThread(thread.threadId)
+                    },
+                ) {
+                    Text(stringResource(R.string.threads_archive))
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { archiveThread = null }) {
+                    Text(stringResource(R.string.action_cancel))
+                }
+            },
+        )
+    }
+
+    deleteThread?.let { thread ->
+        AlertDialog(
+            onDismissRequest = { deleteThread = null },
+            title = { Text(stringResource(R.string.chat_history_delete_title)) },
+            text = { Text(stringResource(R.string.threads_delete_message, thread.title.orEmpty())) },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        deleteThread = null
+                        onDeleteThreads(setOf(thread.threadId))
+                    },
+                ) {
+                    Text(stringResource(R.string.threads_delete))
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { deleteThread = null }) {
+                    Text(stringResource(R.string.action_cancel))
+                }
+            },
+        )
+    }
+
+    restoreThread?.let { thread ->
+        AlertDialog(
+            onDismissRequest = { restoreThread = null },
+            title = { Text(stringResource(R.string.chat_unarchive_title)) },
+            text = { Text(stringResource(R.string.chat_unarchive_message)) },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        restoreThread = null
+                        onUnarchiveThread(thread.threadId)
+                    },
+                ) {
+                    Text(stringResource(R.string.chat_history_unarchive))
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { restoreThread = null }) {
+                    Text(stringResource(R.string.action_cancel))
+                }
+            },
+        )
+    }
+}
+
+@Composable
+private fun HistoryThreadMenu(
+    thread: ThreadEntity,
+    onDismiss: () -> Unit,
+    onTogglePin: () -> Unit,
+    onRename: () -> Unit,
+    onArchive: () -> Unit,
+    onDelete: () -> Unit,
+) {
+    DropdownMenu(
+        expanded = true,
+        onDismissRequest = onDismiss,
+    ) {
+        DropdownMenuItem(
+            text = {
+                Text(stringResource(if (thread.pinned) R.string.threads_unpin else R.string.threads_pin))
+            },
+            leadingIcon = { Icon(Icons.Filled.PushPin, contentDescription = null) },
+            onClick = onTogglePin,
+        )
+        DropdownMenuItem(
+            text = { Text(stringResource(R.string.threads_rename)) },
+            leadingIcon = { Icon(Icons.Filled.Edit, contentDescription = null) },
+            onClick = onRename,
+        )
+        HorizontalDivider()
+        DropdownMenuItem(
+            text = { Text(stringResource(R.string.threads_archive)) },
+            leadingIcon = { Icon(Icons.Filled.Archive, contentDescription = null) },
+            onClick = onArchive,
+        )
+        DropdownMenuItem(
+            text = {
+                Text(
+                    stringResource(R.string.threads_delete),
+                    color = MaterialTheme.colorScheme.error,
+                )
+            },
+            leadingIcon = {
+                Icon(
+                    Icons.Filled.Delete,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.error,
+                )
+            },
+            onClick = onDelete,
+        )
+    }
 }
 
 @Composable
@@ -1122,65 +1387,136 @@ private fun HistoryDrawerRow(
     isCurrent: Boolean,
     editing: Boolean,
     checked: Boolean,
+    onLongPress: () -> Unit,
     onClick: () -> Unit,
 ) {
-    Surface(
+    val currentOnClick by rememberUpdatedState(onClick)
+    val currentOnLongPress by rememberUpdatedState(onLongPress)
+    Box(
         modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(16.dp),
-        color = if (checked || isCurrent) {
-            MaterialTheme.colorScheme.secondaryContainer
-        } else {
-            Color.Transparent
-        },
-        onClick = onClick,
     ) {
-        Row(
-            verticalAlignment = Alignment.CenterVertically,
-            modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+        Surface(
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(16.dp),
+            color = if (checked || isCurrent) {
+                MaterialTheme.colorScheme.secondaryContainer
+            } else {
+                Color.Transparent
+            },
+            onClick = onClick,
         ) {
-            if (editing) {
-                Checkbox(
-                    checked = checked,
-                    onCheckedChange = { onClick() },
-                    enabled = !isCurrent,
-                )
-                Spacer(Modifier.width(6.dp))
-            }
-            Column(modifier = Modifier.weight(1f)) {
-                Text(
-                    text = thread.title?.takeIf { it.isNotBlank() } ?: stringResource(R.string.chat_new_title),
-                    style = MaterialTheme.typography.bodyMedium,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
-                thread.lastMessage?.takeIf { it.isNotBlank() }?.let { subtitle ->
-                    Spacer(Modifier.height(4.dp))
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+            ) {
+                if (editing) {
+                    Checkbox(
+                        checked = checked,
+                        onCheckedChange = { onClick() },
+                        enabled = !isCurrent,
+                    )
+                    Spacer(Modifier.width(6.dp))
+                }
+                Column(modifier = Modifier.weight(1f)) {
                     Text(
-                        text = subtitle,
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        text = thread.title?.takeIf { it.isNotBlank() } ?: stringResource(R.string.chat_new_title),
+                        style = MaterialTheme.typography.bodyMedium,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
                     )
+                    thread.lastMessage?.takeIf { it.isNotBlank() }?.let { subtitle ->
+                        Spacer(Modifier.height(4.dp))
+                        Text(
+                            text = subtitle,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
                 }
-                Spacer(Modifier.height(4.dp))
-                Text(
-                    text = DateUtils.getRelativeTimeSpanString(thread.lastActiveAt).toString(),
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
+                if (editing && isCurrent) {
+                    Spacer(Modifier.width(8.dp))
+                    Text(
+                        text = stringResource(R.string.threads_current),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
             }
-            if (editing && isCurrent) {
-                Spacer(Modifier.width(8.dp))
-                Text(
-                    text = stringResource(R.string.threads_current),
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
+        }
+        if (!editing) {
+            Box(
+                modifier = Modifier
+                    .matchParentSize()
+                    .combinedClickable(
+                        onClick = currentOnClick,
+                        onLongClick = currentOnLongPress,
+                    ),
+            )
         }
     }
 }
+
+internal const val DAY_IN_MILLIS = 24 * 60 * 60 * 1000L
+
+private fun startOfLocalDay(timestamp: Long): Long =
+    Calendar.getInstance().apply {
+        timeInMillis = timestamp
+        set(Calendar.HOUR_OF_DAY, 0)
+        set(Calendar.MINUTE, 0)
+        set(Calendar.SECOND, 0)
+        set(Calendar.MILLISECOND, 0)
+    }.timeInMillis
+
+private fun previousLocalDayStart(dayStart: Long): Long =
+    Calendar.getInstance().apply {
+        timeInMillis = dayStart
+        add(Calendar.DAY_OF_YEAR, -1)
+    }.timeInMillis
+
+internal fun historyGroupFor(
+    pinned: Boolean,
+    lastActiveAt: Long,
+    now: Long = System.currentTimeMillis(),
+): HistoryGroup {
+    if (pinned) return HistoryGroup.Pinned
+
+    val todayStart = startOfLocalDay(now)
+    val yesterdayStart = previousLocalDayStart(todayStart)
+    return when {
+        lastActiveAt >= todayStart -> HistoryGroup.Today
+        lastActiveAt >= yesterdayStart -> HistoryGroup.Yesterday
+        else -> HistoryGroup.Date(startOfLocalDay(lastActiveAt))
+    }
+}
+
+internal sealed interface HistoryGroup {
+    data object Pinned : HistoryGroup
+    data object Today : HistoryGroup
+    data object Yesterday : HistoryGroup
+    data class Date(val dayKey: Long) : HistoryGroup
+
+    fun key(): String = when (this) {
+        Pinned -> "pinned"
+        Today -> "today"
+        Yesterday -> "yesterday"
+        is Date -> "date:$dayKey"
+    }
+}
+
+@Composable
+private fun historyGroupTitle(group: HistoryGroup): String =
+    when (group) {
+        HistoryGroup.Pinned -> stringResource(R.string.threads_pinned)
+        HistoryGroup.Today -> stringResource(R.string.chat_history_today)
+        HistoryGroup.Yesterday -> stringResource(R.string.chat_history_yesterday)
+        is HistoryGroup.Date -> DateUtils.formatDateTime(
+            LocalContext.current,
+            group.dayKey + DAY_IN_MILLIS / 2,
+            DateUtils.FORMAT_SHOW_DATE or DateUtils.FORMAT_NO_YEAR,
+        )
+    }
 
 /**
  * 底部输入栏。

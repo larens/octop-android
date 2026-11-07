@@ -34,6 +34,7 @@ import androidx.compose.material.icons.filled.Email
 import androidx.compose.material.icons.filled.Event
 import androidx.compose.material.icons.filled.EventAvailable
 import androidx.compose.material.icons.filled.Favorite
+import androidx.compose.material.icons.filled.Flag
 import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Inbox
 import androidx.compose.material.icons.filled.LocalCafe
@@ -105,6 +106,7 @@ internal fun TodayRecommendationCard(
         if (card.kind == "calendar") parseCalendarCardSummary(card.summary) else null
     }
     val summarySections = remember(card.summary) { parseTodayCardSummary(card.summary) }
+    val tracking = remember(card.trackingJson) { parseTodayTracking(card.trackingJson) }
     val healthVisualization = remember(card.kind, card.summary) {
         if (card.kind == "health") parseHealthVisualization(card.summary) else null
     }
@@ -142,7 +144,8 @@ internal fun TodayRecommendationCard(
             industrySignal != null ||
             readingSummary != null ||
             rideDetails != null ||
-            coffeeDetails != null
+            coffeeDetails != null ||
+            tracking != null
     val structuredHealthAdvice = structuredAdvice?.takeIf { card.kind == "health" }
     val structuredEmail = card.kind == "inbox" && hasStructuredAdvice
     val hasPendingMail = structuredEmail && summarySections.any { it.heading == "待处理邮件" }
@@ -150,12 +153,13 @@ internal fun TodayRecommendationCard(
         .firstOrNull { it.heading == "待处理邮件" }
         ?.body
         .orEmpty()
-    val accent = when {
+    val baseAccent = when {
         hasPendingMail -> PendingMailAccent
         coffeeDetails != null -> CoffeeAccent
         rideDetails != null -> RideAccent
         else -> todayCardAccent(card.kind, isPast)
     }
+    val accent = tracking?.let { todayTrackingAccent(it, baseAccent) } ?: baseAccent
     val executionCompleted = card.actionState == TodayCardActionState.COMPLETED
     val evidence = remember(card.evidenceJson) { decodeTodayCardEvidence(card.evidenceJson) }
     val newsFacts = remember(card.evidenceJson) { todayNewsFacts(evidence) }
@@ -165,7 +169,8 @@ internal fun TodayRecommendationCard(
                 dailyPlan != null ||
                 industrySignal != null ||
                 rideDetails != null ||
-                coffeeDetails != null -> emptyList()
+                coffeeDetails != null ||
+                tracking != null -> emptyList()
             card.kind.isNewsCard() -> newsFacts.take(3)
             else -> todayCardFacts(evidence)
         }
@@ -346,11 +351,13 @@ internal fun TodayRecommendationCard(
                     kind = card.kind,
                     accent = accent,
                     icon = when {
+                        tracking != null -> Icons.Filled.Flag
                         coffeeDetails != null -> Icons.Filled.LocalCafe
                         rideDetails != null -> Icons.Filled.LocalTaxi
                         else -> null
                     },
                     label = when {
+                        tracking != null -> tracking.stage
                         hasPendingMail -> stringResource(R.string.today_card_pending_mail)
                         readingSummary != null -> stringResource(R.string.today_reading_category)
                         coffeeDetails != null -> stringResource(R.string.today_coffee_category)
@@ -429,6 +436,15 @@ internal fun TodayRecommendationCard(
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     maxLines = if (card.kind == "health") 12 else 4,
                     overflow = TextOverflow.Ellipsis,
+                )
+            }
+
+            if (tracking != null) {
+                Spacer(Modifier.height(12.dp))
+                TodayTrackingPanel(
+                    tracking = tracking,
+                    accent = accent,
+                    nowMillis = nowMillis,
                 )
             }
 
@@ -538,7 +554,17 @@ internal fun TodayRecommendationCard(
                 }
             }
 
+            val trackingCompleted = tracking?.status == "completed"
+            val trackingAction = when {
+                tracking == null || trackingCompleted -> null
+                !tracking.nextAction.isNullOrBlank() -> tracking.nextAction
+                tracking.missing.isNotEmpty() ->
+                    stringResource(R.string.today_tracking_action_missing)
+                else -> null
+            }
             val primaryAction = when {
+                trackingAction != null -> onProcess
+                trackingCompleted -> onOpenDetail
                 dailyPlan != null -> onOpenDetail
                 industrySignal != null -> onOpenDetail
                 readingSummary != null -> onOpenDetail
@@ -557,7 +583,8 @@ internal fun TodayRecommendationCard(
                         !executionCompleted ||
                         dailyPlan != null ||
                         industrySignal != null ||
-                        readingSummary != null
+                        readingSummary != null ||
+                        tracking != null
                     )
             ) {
                 Spacer(Modifier.height(12.dp))
@@ -584,6 +611,8 @@ internal fun TodayRecommendationCard(
                     ) {
                         Icon(
                             imageVector = when {
+                                trackingCompleted -> Icons.Filled.History
+                                trackingAction != null -> Icons.Filled.AutoAwesome
                                 dailyPlan != null -> Icons.Filled.ChevronRight
                                 industrySignal != null -> Icons.Filled.ChevronRight
                                 readingSummary != null -> Icons.Filled.ChevronRight
@@ -597,6 +626,9 @@ internal fun TodayRecommendationCard(
                         Spacer(Modifier.width(7.dp))
                         Text(
                             text = when {
+                                trackingAction != null -> trackingAction
+                                trackingCompleted ->
+                                    stringResource(R.string.today_card_action_view_result)
                                 dailyPlan != null -> stringResource(R.string.today_card_action_view_plan)
                                 industrySignal != null ->
                                     stringResource(R.string.today_signal_view_analysis)
@@ -950,6 +982,7 @@ internal fun TodayRecommendationDetail(
     val summarySections = remember(card.summary) {
         parseTodayCardSummary(card.summary).filterNot { it.heading == "健康可视化" }
     }
+    val tracking = remember(card.trackingJson) { parseTodayTracking(card.trackingJson) }
     val healthVisualization = remember(card.kind, card.summary) {
         if (card.kind == "health") parseHealthVisualization(card.summary) else null
     }
@@ -977,6 +1010,7 @@ internal fun TodayRecommendationDetail(
             readingSummary != null ||
             rideDetails != null ||
             coffeeDetails != null ||
+            tracking != null ||
             summarySections.any {
                 it.heading == "处理建议" ||
                     it.heading == "改善建议" ||
@@ -985,12 +1019,13 @@ internal fun TodayRecommendationDetail(
             }
     val structuredEmail = card.kind == "inbox" && hasStructuredAdvice
     val hasPendingMail = structuredEmail && summarySections.any { it.heading == "待处理邮件" }
-    val accent = when {
+    val baseAccent = when {
         hasPendingMail -> PendingMailAccent
         coffeeDetails != null -> CoffeeAccent
         rideDetails != null -> RideAccent
         else -> todayCardAccent(card.kind, isPast)
     }
+    val accent = tracking?.let { todayTrackingAccent(it, baseAccent) } ?: baseAccent
     val executionCompleted = card.actionState == TodayCardActionState.COMPLETED
     val sectionsBeforeFacts = when {
         readingSummary != null || rideDetails != null || coffeeDetails != null -> emptyList()
@@ -1025,6 +1060,14 @@ internal fun TodayRecommendationDetail(
     }
     var feedbackExpanded by remember(card.id) { mutableStateOf(false) }
     var replyExpanded by remember(card.id) { mutableStateOf(false) }
+    val trackingCompleted = tracking?.status == "completed"
+    val trackingAction = when {
+        tracking == null || trackingCompleted -> null
+        !tracking.nextAction.isNullOrBlank() -> tracking.nextAction
+        tracking.missing.isNotEmpty() ->
+            stringResource(R.string.today_tracking_action_missing)
+        else -> null
+    }
 
     Dialog(
         onDismissRequest = onDismiss,
@@ -1061,11 +1104,13 @@ internal fun TodayRecommendationDetail(
                             kind = card.kind,
                             accent = accent,
                             icon = when {
+                                tracking != null -> Icons.Filled.Flag
                                 coffeeDetails != null -> Icons.Filled.LocalCafe
                                 rideDetails != null -> Icons.Filled.LocalTaxi
                                 else -> null
                             },
                             label = when {
+                                tracking != null -> tracking.stage
                                 hasPendingMail -> stringResource(R.string.today_card_pending_mail)
                                 readingSummary != null ->
                                     stringResource(R.string.today_reading_category)
@@ -1103,6 +1148,20 @@ internal fun TodayRecommendationDetail(
                             text = dailyPlan?.title ?: card.title,
                             style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.SemiBold),
                         )
+                        if (tracking != null) {
+                            Spacer(Modifier.height(4.dp))
+                            Text(
+                                text = tracking.subject,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                            Spacer(Modifier.height(12.dp))
+                            TodayTrackingPanel(
+                                tracking = tracking,
+                                accent = accent,
+                                nowMillis = System.currentTimeMillis(),
+                            )
+                        }
                         if (dailyPlan != null) {
                             Spacer(Modifier.height(12.dp))
                             DailyPlanPanel(
@@ -1330,6 +1389,8 @@ internal fun TodayRecommendationDetail(
                             !isPast &&
                             !structuredEmail &&
                             !executionCompleted &&
+                            trackingAction == null &&
+                            !trackingCompleted &&
                             coffeeDetails == null &&
                             rideDetails == null
                         ) {
@@ -1355,6 +1416,24 @@ internal fun TodayRecommendationDetail(
                                         hasExecution = onOpenExecution != null,
                                     ),
                                 )
+                            }
+                        }
+                        if (trackingAction != null) {
+                            Button(
+                                onClick = onProcess,
+                                shape = RoundedCornerShape(50),
+                                colors = ButtonDefaults.buttonColors(
+                                    containerColor = accent,
+                                    contentColor = Color.White,
+                                ),
+                            ) {
+                                Icon(
+                                    Icons.Filled.AutoAwesome,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(18.dp),
+                                )
+                                Spacer(Modifier.width(6.dp))
+                                Text(trackingAction)
                             }
                         }
                     }

@@ -125,6 +125,47 @@ internal fun mobileSignalPrompt(
             if (names.isNotEmpty()) add("附件：${names.joinToString("、")}")
         }
 
+        "android.usage_daily" -> listOfNotNull(
+            payload?.text("date")?.let { "日期：$it" },
+            payload?.long("total_minutes")?.let { "屏幕使用：$it 分钟" },
+            payload?.text("top_apps")?.let { "使用最多的应用：$it" },
+        )
+
+        "android.alarm_next" -> listOfNotNull(
+            payload?.long("trigger_at")?.let { "下次闹钟：${formatTime(it)}" },
+            payload?.text("app")?.takeIf { it.isNotBlank() }?.let { "设置应用：$it" },
+        )
+
+        "android.contact" -> listOfNotNull(
+            payload?.text("name")?.let { "姓名：$it" },
+            payload?.text("phones")?.takeIf { it.isNotBlank() }?.let { "电话：$it" },
+            payload?.text("emails")?.takeIf { it.isNotBlank() }?.let { "邮箱：$it" },
+        )
+
+        "android.files_recent" -> listOfNotNull(
+            payload?.long("file_count")?.let { "最近文件数：$it" },
+            payload?.text("files")?.let { "文件：$it" },
+        )
+
+        "android.location_current" -> listOfNotNull(
+            payload?.double("latitude")?.let { "纬度：$it" },
+            payload?.double("longitude")?.let { "经度：$it" },
+            payload?.double("accuracy_meters")?.let { "精度：${it.roundToInt()} 米" },
+            payload?.text("provider")?.takeIf { it.isNotBlank() }?.let { "定位来源：$it" },
+        )
+
+        "android.notification" -> listOfNotNull(
+            payload?.text("app")?.let { "应用：$it" },
+            payload?.text("title")?.takeIf { it.isNotBlank() }?.let { "标题：$it" },
+            payload?.text("text")?.takeIf { it.isNotBlank() }?.let { "内容：$it" },
+        )
+
+        "android.sms" -> listOfNotNull(
+            payload?.text("address")?.let { "号码：$it" },
+            payload?.long("received_at")?.let { "时间：${formatTime(it)}" },
+            payload?.text("body")?.takeIf { it.isNotBlank() }?.let { "内容：$it" },
+        )
+
         else -> emptyList()
     }
     val evidence = details.ifEmpty { listOf(summary) }.joinToString("\n")
