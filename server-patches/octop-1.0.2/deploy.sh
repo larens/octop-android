@@ -33,6 +33,8 @@ cp mobile_profiles.py "$site/infra/memory/mobile_profiles.py"
 cp artifact_shares.py "$site/api/routers/artifact_shares.py"
 /opt/octop/venv/bin/python install_patch.py
 /opt/octop/venv/bin/python install_memory_diaries.py
+/opt/octop/venv/bin/python install_memory_backup_safety.py
+/opt/octop/venv/bin/python install_memory_ops.py
 /opt/octop/venv/bin/python install_mobile_ingest_router.py
 /opt/octop/venv/bin/python install_artifact_shares.py
 /opt/octop/venv/bin/python install_artifact_lifecycle.py
@@ -52,6 +54,7 @@ cp artifact_shares.py "$site/api/routers/artifact_shares.py"
 /opt/octop/venv/bin/python install_router_phase3.py
 /opt/octop/venv/bin/python install_router_phase35.py
 /opt/octop/venv/bin/python install_router_phase4.py
+/opt/octop/venv/bin/python install_feishu_group_monitor.py
 /opt/octop/venv/bin/python migrate_existing_tasks.py
 OCTOP_HOME=/opt/octop OCTOP_DB_PATH=/opt/octop/octop.db \
   /opt/octop/venv/bin/python migrate_agent_tooling.py
@@ -61,6 +64,7 @@ OCTOP_HOME=/opt/octop OCTOP_DB_PATH=/opt/octop/octop.db \
   "$site/infra/cron/delivery.py" \
   "$site/infra/today/automatic.py" \
   "$site/infra/today/cards.py" \
+  "$site/infra/today/feishu_group_monitor.py" \
   "$site/infra/today/cron_cards.py" \
   "$site/infra/today/didi_ride_cards.py" \
   "$site/infra/today/coffee_order_cards.py" \
@@ -89,6 +93,7 @@ OCTOP_HOME=/opt/octop OCTOP_DB_PATH=/opt/octop/octop.db \
   "$site/infra/server.py" \
   "$site/infra/memory/mobile_diaries.py" \
   "$site/infra/memory/mobile_profiles.py" \
+  "$site/infra/backup/system_archive.py" \
   "$site/infra/connectors/catalog.py" \
   "$site/infra/connectors/builder.py" \
   "$site/infra/connectors/probe.py" \
@@ -108,4 +113,9 @@ systemctl restart octop
 systemctl is-active --quiet octop
 systemctl daemon-reload
 systemctl enable --now octop-xiaomi-health.timer
+systemctl enable --now octop-memory-health.timer
+systemctl enable --now octop-storage-maintenance.timer
+/opt/octop/venv/bin/python /opt/octop/ops/storage_maintenance.py \
+  --apply --release-keep="${OCTOP_RELEASE_KEEP:-4}" \
+  --journal-max-use="${OCTOP_JOURNAL_MAX_USE:-512M}"
 echo "$backup"

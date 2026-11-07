@@ -21,6 +21,8 @@ fi
 PYTHON3="${PYTHON3:-python3}"
 PACKAGE_SPEC="${OCTOP_PACKAGE_SPEC:-}"
 SEED_RELEASE="${OCTOP_SEED_RELEASE:-}"
+RELEASE_KEEP="${OCTOP_RELEASE_KEEP:-4}"
+JOURNAL_MAX_USE="${OCTOP_JOURNAL_MAX_USE:-512M}"
 
 die() {
   printf 'octop-bluegreen: %s\n' "$*" >&2
@@ -118,6 +120,23 @@ EOF
   systemctl daemon-reload
 }
 
+install_live_ops() {
+  local release="$1"
+  [ -f "$release/patch-pack/install_memory_ops.py" ] || return 0
+  "$release/venv/bin/python" "$release/patch-pack/install_memory_ops.py"
+  systemctl daemon-reload
+  systemctl enable --now \
+    octop-memory-health.timer \
+    octop-storage-maintenance.timer
+}
+
+prune_storage() {
+  "$ROOT/venv/bin/python" "$ROOT/ops/storage_maintenance.py" \
+    --apply \
+    --release-keep "$RELEASE_KEEP" \
+    --journal-max-use "$JOURNAL_MAX_USE"
+}
+
 wait_health() {
   local url="$1"
   local timeout="${2:-120}"
@@ -156,6 +175,9 @@ apply_patch_pack() {
 
   rm -rf "$patch_copy"
   cp -a "$source" "$patch_copy"
+  if [ -d "$source/../ops" ]; then
+    cp -a "$source/../ops" "$patch_copy/ops"
+  fi
   "$PYTHON3" "$KIT_DIR/reconcile_migrations.py" \
     --custom-dir "$patch_copy/migrations" \
     --migrations-dir "$site/octop/infra/db/migrations" \
@@ -169,6 +191,8 @@ apply_patch_pack() {
     export OCTOP_INSTALL_SYSTEMD=0
     "$release/venv/bin/python" install_patch.py
     "$release/venv/bin/python" install_memory_diaries.py
+    "$release/venv/bin/python" install_memory_backup_safety.py
+    "$release/venv/bin/python" install_memory_ops.py
     "$release/venv/bin/python" install_mobile_today_backport.py
     "$release/venv/bin/python" install_mobile_ingest_router.py
     "$release/venv/bin/python" install_artifact_shares.py
@@ -189,6 +213,7 @@ apply_patch_pack() {
     "$release/venv/bin/python" install_router_phase3.py
     "$release/venv/bin/python" install_router_phase35.py
     "$release/venv/bin/python" install_router_phase4.py
+    "$release/venv/bin/python" install_feishu_group_monitor.py
   )
   OCTOP_SITE_PACKAGES="$site" \
     OCTOP_BACKUPS_DIR="$release/patch-backups" \
@@ -225,9 +250,11 @@ apply_patch_pack() {
     "$site/octop/infra/today/health_cards.py" \
     "$site/octop/infra/today/automatic.py" \
     "$site/octop/infra/today/cards.py" \
+    "$site/octop/infra/today/feishu_group_monitor.py" \
     "$site/octop/infra/interest_monitor.py" \
     "$site/octop/infra/memory/mobile_diaries.py" \
     "$site/octop/infra/memory/mobile_profiles.py" \
+    "$site/octop/infra/backup/system_archive.py" \
     "$site/octop/infra/connectors/catalog.py" \
     "$site/octop/infra/connectors/builder.py" \
     "$site/octop/infra/connectors/probe.py" \
@@ -245,6 +272,9 @@ run_patch_tests() {
     cd "$release/patch-pack"
     "$release/venv/bin/python" test_memory_diaries.py
     "$release/venv/bin/python" test_mobile_profiles.py
+    "$release/venv/bin/python" test_system_archive_memory_snapshot.py
+    "$release/venv/bin/python" test_storage_maintenance.py
+    "$release/venv/bin/python" test_memory_health_alerts.py
     "$release/venv/bin/python" test_mobile_today_backport.py
     "$release/venv/bin/python" test_router_phase0.py
     "$release/venv/bin/python" test_router_phase3.py
@@ -257,6 +287,7 @@ run_patch_tests() {
     "$release/venv/bin/python" test_mcp_connectors.py
     "$release/venv/bin/python" test_lifestyle_mcp_connectors.py
     "$release/venv/bin/python" test_agent_tooling.py
+    "$release/venv/bin/python" test_feishu_group_monitor.py
     "$release/venv/bin/python" -m unittest -v \
       test_cron_today_cards.py \
       test_didi_today_cards.py \
@@ -622,6 +653,11 @@ PY
   promotion_committed=1
   trap - EXIT INT TERM
   printf 'Promoted %s\n' "$id"
+  exec 9>&-
+  install_live_ops "$release" ||
+    printf 'Warning: live ops units were not refreshed; run install_memory_ops.py manually\n' >&2
+  prune_storage ||
+    printf 'Warning: old release storage was not pruned; run octop-bluegreen prune\n' >&2
 }
 
 cmd_rollback() {
@@ -705,6 +741,11 @@ cmd_status() {
   printf 'managed_update=%s\n' "$(systemctl show "$SERVICE" -p Environment | grep -q OCTOP_MANAGED_UPDATE=1 && printf enabled || printf disabled)"
 }
 
+cmd_prune() {
+  need_root
+  prune_storage "$@"
+}
+
 cmd_list() {
   find "$RELEASES" -mindepth 2 -maxdepth 2 -name manifest.json -printf '%h\n' 2>/dev/null |
     sort |
@@ -736,6 +777,7 @@ Commands:
   rollback [RELEASE_ID]   Switch back to a previous release
   status                  Show active release and health
   list                    List staged releases
+  prune                   Delete old releases and bound journald disk usage
 EOF
 }
 
@@ -757,5 +799,6 @@ case "$command" in
   rollback) cmd_rollback "$@" ;;
   status) cmd_status "$@" ;;
   list) cmd_list "$@" ;;
+  prune) cmd_prune "$@" ;;
   *) usage; exit 1 ;;
 esac

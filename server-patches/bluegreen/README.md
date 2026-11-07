@@ -38,6 +38,7 @@ The production service still runs `/opt/octop/bin/octop`, which resolves
 install -d -m 700 /opt/octop/bluegreen
 cp -a server-patches/bluegreen/. /opt/octop/bluegreen/
 cp -a server-patches/octop-1.0.2 /opt/octop/bluegreen/octop-1.0.2
+cp -a server-patches/ops /opt/octop/bluegreen/ops
 chmod +x /opt/octop/bluegreen/octop-bluegreen
 ln -sfn /opt/octop/bluegreen/octop-bluegreen /usr/local/sbin/octop-bluegreen
 octop-bluegreen bootstrap
@@ -73,6 +74,26 @@ or production database:
 7. Starts the candidate on `127.0.0.1:18088`.
 8. Tests health, login, agents, providers, threads, cron, Today, mobile diaries,
    and the managed-update guard.
+
+The patch pack also installs `/opt/octop/ops/memory_safe_switch.py` and enables
+the half-hour `octop-memory-health.timer`. System backups snapshot every
+workspace `memory.sqlite` through SQLite's online backup API instead of copying
+its WAL/SHM sidecars.
+
+Promotion also refreshes `/opt/octop/ops`, enables
+`octop-storage-maintenance.timer`, and prunes releases beyond the newest four
+(`current` and `previous` are always retained). The daily maintenance job caps
+the systemd journal at 512M. Run it manually with:
+
+```bash
+octop-bluegreen prune
+```
+
+The memory health check writes its state to
+`/opt/octop/state/memory-health/latest.json`. To send failure/recovery alerts,
+put `OCTOP_ALERT_WEBHOOK_URL` and optionally
+`OCTOP_ALERT_WEBHOOK_FORMAT=feishu|generic` in
+`/etc/octop/memory-alert.env`; the service reads that file when present.
 
 `promote` repeats acceptance on a fresh database copy, creates a pre-promote
 backup, stops the service, switches the release link, starts the service, and
