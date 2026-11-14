@@ -2,12 +2,18 @@ package com.octopmobile.app.data.repo
 
 import com.octopmobile.app.data.db.MessageEntity
 import com.octopmobile.app.data.db.MessageStatus
+import com.octopmobile.app.data.model.Part
+import com.octopmobile.app.data.model.PartType
+import com.octopmobile.app.data.model.PartsCodec
+import kotlinx.serialization.json.Json
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class ConversationTurnsTest {
+    private val json = Json
+
     @Test
     fun assistantAndToolRowsResolveToTheirUserTurn() {
         val messages = listOf(
@@ -35,6 +41,64 @@ class ConversationTurnsTest {
 
         assertFalse(turn.isPersisted)
     }
+
+    @Test
+    fun unmatchedLocalUserKeepsItsTurnUntilServerHistoryContainsIt() {
+        val reconciliation = reconcileLocalUserRows(
+            localUsers = listOf(user("local-user-1", "刚发出的问题", 100)),
+            serverEntities = listOf(user("old-user", "更早的问题", 10)),
+            json = json,
+        )
+
+        assertTrue(reconciliation.confirmedIds.isEmpty())
+        assertTrue(reconciliation.awaitingServer)
+    }
+
+    @Test
+    fun matchedUserWithoutReplyStillKeepsLocalPlaceholders() {
+        val reconciliation = reconcileLocalUserRows(
+            localUsers = listOf(user("local-user-1", "刚发出的问题", 100)),
+            serverEntities = listOf(user("server-user", "刚发出的问题", 99)),
+            json = json,
+        )
+
+        assertEquals(listOf("local-user-1"), reconciliation.confirmedIds)
+        assertTrue(reconciliation.awaitingServer)
+    }
+
+    @Test
+    fun matchedUserWithReplyConfirmsTheWholeTurn() {
+        val reconciliation = reconcileLocalUserRows(
+            localUsers = listOf(user("local-user-1", "刚发出的问题", 100)),
+            serverEntities = listOf(
+                user("server-user", "刚发出的问题", 99),
+                message("server-reply", "assistant", 101),
+            ),
+            json = json,
+        )
+
+        assertEquals(listOf("local-user-1"), reconciliation.confirmedIds)
+        assertFalse(reconciliation.awaitingServer)
+    }
+
+    @Test
+    fun olderMessageWithSameTextDoesNotConfirmANewSend() {
+        val reconciliation = reconcileLocalUserRows(
+            localUsers = listOf(user("local-user-1", "继续", 10_000_000)),
+            serverEntities = listOf(
+                user("old-user", "继续", 1_000_000),
+                message("old-reply", "assistant", 1_000_001),
+            ),
+            json = json,
+        )
+
+        assertTrue(reconciliation.confirmedIds.isEmpty())
+        assertTrue(reconciliation.awaitingServer)
+    }
+
+    private fun user(id: String, text: String, order: Long) = message(id, "user", order).copy(
+        partsJson = PartsCodec.encode(json, listOf(Part(type = PartType.TEXT, text = text))),
+    )
 
     private fun message(id: String, role: String, order: Long) = MessageEntity(
         id = id,

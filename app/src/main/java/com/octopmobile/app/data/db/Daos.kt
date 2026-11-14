@@ -210,6 +210,13 @@ interface MessageDao {
     @Query("SELECT * FROM messages WHERE threadId = :threadId ORDER BY sortOrder ASC, id ASC")
     fun observeByThread(threadId: String): Flow<List<MessageEntity>>
 
+    /** 本地先落、还没被服务端历史确认的用户行。 */
+    @Query(
+        "SELECT * FROM messages WHERE threadId = :threadId AND role = :role " +
+            "AND id LIKE :prefix || '%' ORDER BY sortOrder ASC, id ASC",
+    )
+    suspend fun localMessagesByRole(threadId: String, role: String, prefix: String): List<MessageEntity>
+
     @Query("SELECT * FROM messages WHERE id = :id LIMIT 1")
     suspend fun find(id: String): MessageEntity?
 

@@ -523,6 +523,27 @@ fun ChatScreen(
         positionedOnEntry = true
     }
 
+    // 自己发送时强制落到最新，不依赖“发送前是否在底部”：新行插入的瞬间布局还没更新，
+    // atBottom 可能先暂时为 false，等它恢复时用户已经看不到刚发出的内容了。
+    var sendScrollRequest by remember(threadId) { mutableStateOf<Pair<Int, String?>?>(null) }
+    var sendScrollSeq by remember(threadId) { mutableStateOf(0) }
+    LaunchedEffect(sendScrollRequest, active) {
+        val request = sendScrollRequest ?: return@LaunchedEffect
+        if (!active) return@LaunchedEffect
+        val previousId = request.second
+        val sentMessages = snapshotFlow { messages }
+            .first { list ->
+                val previousIndex = previousId?.let { id -> list.indexOfLast { it.id == id } } ?: -1
+                list.drop(previousIndex + 1).any { it.role == ROLE_USER }
+            }
+        val expectedTotal = snapshotFlow {
+            val extra = if (viewModel.uiState.hasMore || viewModel.uiState.loadingOlder) 1 else 0
+            listState.layoutInfo.totalItemsCount to (sentMessages.size + extra)
+        }.first { (actual, expected) -> actual >= expected }
+        listState.scrollToLatest(expectedTotal.first - 1, animate = false)
+        if (sendScrollRequest == request) sendScrollRequest = null
+    }
+
     LaunchedEffect(stickKey, positionedOnEntry, active) {
         if (active && positionedOnEntry && atBottom && hasFeedContent) {
             listState.scrollToLatest(lastItemIndex, animate = false)
@@ -626,7 +647,11 @@ fun ChatScreen(
                         selectedModel = selectedModel,
                         modelsLoading = state.modelsLoading,
                         onSelectModel = viewModel::selectModel,
-                        onSend = viewModel::send,
+                        onSend = { text ->
+                            sendScrollSeq += 1
+                            sendScrollRequest = sendScrollSeq to messages.lastOrNull()?.id
+                            viewModel.send(text)
+                        },
                         onCancel = viewModel::cancel,
                         onUploadFile = { filePicker.launch(arrayOf("*/*")) },
                         onUploadImage = {

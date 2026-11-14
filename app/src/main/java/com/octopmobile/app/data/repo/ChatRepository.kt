@@ -481,13 +481,17 @@ class ChatRepository(
                     }
                     if (entities.isNotEmpty()) messageDao.upsertAll(entities)
 
-                    // 服务端已经有这些消息了，本地那份流式期间落下的占位行就该退场，否则重复两条。
-                    // 只在真的拿到消息时才清理：全新会话（历史为空）不能把刚流完的行抹掉。
+                    // 服务端已经完整承接这一轮了，本地那份流式期间落下的占位行才该退场，否则重复两条。
+                    // 只在真的拿到消息、且没有待承接的本地提问时清理：全新会话（历史为空）
+                    // 或刚发送就切走（服务端最新一页还是旧的）都不能把本地行抹掉。
                     //
                     // `interrupted` 也一起清：那一轮的内容服务端已经记下了。UI 上的
                     // 「重新拉取该轮」走的也是这条路径（重拉 `offset = 0` 这一页），
                     // 靠这一步把本地那半截行换成服务端的版本，而不是留下两条重复气泡。
-                    if (offset == 0 && entities.isNotEmpty()) {
+                    val canPrunePlaceholders = offset == 0 &&
+                        entities.isNotEmpty() &&
+                        pruneConfirmedLocalUserRows(page.turnActive, entities)
+                    if (canPrunePlaceholders) {
                         messageDao.deletePlaceholders(threadId, MessageStatus.DONE, LOCAL_PREFIX)
                         messageDao.deletePlaceholders(threadId, MessageStatus.FAILED, LOCAL_PREFIX)
                         messageDao.deletePlaceholders(threadId, MessageStatus.INTERRUPTED, LOCAL_PREFIX)
@@ -505,6 +509,35 @@ class ChatRepository(
                 }
             }
         }
+    }
+
+    /**
+     * 服务端历史页回来时，只删已经能对应上的本地用户行。
+     *
+     * 正常回合服务端不回显用户消息，所以“本地有一行用户消息”并不代表“服务端已经落库”。
+     * 如果用户刚发送就切走再回来，最新一页可能还是旧的；这时整批清理会把刚发出的提问
+     * 和仍在等待的回复占位一起抹掉。这里以服务端用户消息为锚点：
+     * - 找到同内容的服务端用户行：删掉本地这份重复；
+     * - 该用户行后面还没有任何回复行：保留这一轮的本地占位，等回复落库；
+     * - 找不到对应行：这是尚未被服务端确认的发送，保留本地占位；
+     * - 页面还在跑（`turnActive`）：不整批清理。
+     *
+     * 返回 true 表示整页已经可以按服务端为准收敛本地占位行。
+     */
+    private suspend fun pruneConfirmedLocalUserRows(
+        pageTurnActive: Boolean,
+        serverEntities: List<MessageEntity>,
+    ): Boolean {
+        val oldestServer = serverEntities.minOf { it.sortOrder }
+        val localUsers = messageDao.localMessagesByRole(threadId, ROLE_USER, LOCAL_PREFIX)
+            .filter { it.sortOrder >= oldestServer }
+        if (localUsers.isEmpty()) return !pageTurnActive
+
+        val reconciliation = reconcileLocalUserRows(localUsers, serverEntities, json)
+        if (reconciliation.confirmedIds.isNotEmpty()) {
+            messageDao.deleteByIds(threadId, reconciliation.confirmedIds)
+        }
+        return !pageTurnActive && !reconciliation.awaitingServer
     }
 
     /** Refresh only the top-level artifact index after a turn completes. */
