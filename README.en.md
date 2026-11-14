@@ -10,16 +10,16 @@ English | [中文](README.md)
 
 | Capability | What you can do on the phone |
 |------------|------------------------------|
-| **Conversations** | Start work, stream replies, inspect tool execution, answer approvals, upload attachments, involve multiple agents, and resume interrupted turns |
+| **Conversations** | Use the stable main conversation, stream replies, inspect tool execution, answer approvals, upload attachments, involve multiple agents, and resume interrupted turns |
 | **Calendar and Today** | Bring the next three days, waiting conversations, and followed updates into one focused feed |
-| **Scheduled tasks** | Describe recurring work in natural language; the server runs it even when the app is closed |
+| **Tasks and artifacts** | Describe recurring work in natural language, then review approvals and generated artifacts in the task center; the server runs work even when the app is closed |
 | **Memory and daily diaries** | Review the server-maintained profile, the last seven days of diaries, and lessons distilled from conversations |
 | **Connected apps** | Authorize calendar, usage, contacts, files, location, notifications, SMS, and alarms per source; iOS/Mac follow in phases |
 | **System integration** | Share target, App Shortcuts, deep links, long-running foreground notifications, and a WebView fallback |
 
 ## Conversations: finish the work, not just generate a reply
 
-The Conversations tab opens directly into a new conversation. History lives in a drawer instead of blocking the main entry point.
+The Conversations tab opens the stable main conversation for the current agent. History lives in a drawer instead of blocking the main entry point.
 
 - **Streaming execution**: WebSocket events stream the response, reasoning process, and tool calls. Tool arguments, results, and failures can be expanded.
 - **Human confirmation**: HITL questions and tool approvals pause the turn until you respond. Confirmation resumes through SSE instead of pretending the task already completed.
@@ -41,6 +41,7 @@ Today prioritizes information instead of presenting a flat list:
 - Running, waiting-for-confirmation, and recently active conversations appear first.
 - Upcoming events are ordered by time. Events that have already ended move into “Finished today” and no longer show advance actions.
 - Of the next three days, only tomorrow is emphasized; the following two days remain background context.
+- Morning briefing and inbox cards from the same day are merged into one briefing grouped by “must do / can draft / later.”
 - Schedule cards explain why they are relevant now and support feedback, snoozing until tomorrow, inspecting evidence, or opening the execution conversation.
 - Task results, followed topics, and health results are projected by the server. A foreground notification WebSocket updates Today while the app is open, and the app refreshes missed cards when it returns to the foreground.
 - Source coverage is visible. Expired, pending, or broken sources are reported honestly instead of being presented as “nothing changed.”
@@ -55,7 +56,7 @@ The recap is not another generic daily report. It closes the loop on the day and
 
 ## Scheduled tasks: describe recurring work in one sentence
 
-The Tasks tab has two views: “Added” and “For you.” You do not need to learn cron first. Describe the outcome and timing directly:
+The Tasks tab has three views: “Tasks,” “Artifacts,” and “Recommended.” You do not need to learn cron first. Describe the outcome and timing directly:
 
 > Every day at 7:30 AM, organize today's meetings and calendar, highlight preparation, conflicts, and anything that needs confirmation.
 
@@ -65,6 +66,7 @@ The app asks the agent to turn that request into a task title, trigger rule, and
 - **Multiple schedules**: Cron, fixed intervals, one-off times, and connector events are supported.
 - **Results return to Today**: Repeated runs update the same card instead of piling up duplicate results every day.
 - **Recommended tasks**: Suggestions are generated from installed connectors and can include news briefings, inbox summaries, reading reviews, today's meetings, and tomorrow's calendar preview.
+- **Artifact workbench**: Files produced by agents are collected across conversations and can be filtered by web page, document, spreadsheet, or presentation, then previewed, downloaded, shared, traced back to the source conversation, or continued.
 - **Execution history**: Success, failure, and waiting-for-confirmation states are preserved. A failed run is not presented as completed.
 
 Recommendations are not permanent ads. If the required connector or capability is unavailable, the list shrinks or becomes empty rather than showing an entry that cannot run.
@@ -215,12 +217,34 @@ GitHub Actions:
 ## Repository layout
 
 ```text
-app/                    # Native Android client (Compose + Room)
-server-patches/         # Today, task projection, and Xiaomi health sync patches
-scripts/                # Signing and TWA assetlinks tools
+app/src/main/java/com/octopmobile/app/
+  data/                 # REST / WebSocket / SSE, DTOs, Room, repositories, device connectors
+  ui/                   # Compose: main conversation, Today, tasks, memory, settings, WebView fallback
+  service/              # Turn foreground service and notifications
+  web/                  # WebView client and page interaction adapters
+server-patches/
+  octop-1.0.2/          # Today, Router tasks, memory diaries, health cloud, MCP, artifacts, sharing
+  bluegreen/            # Blue-green release, migration checks, and smoke tests
+  ops/                  # Storage maintenance, memory repair, and safe-switch tooling
+scripts/                # Signing, TWA assetlinks, and build tools
 twa/                    # Optional TWA build
 .github/workflows/      # APK CI
 ```
+
+### CodeGraph index
+
+The repository uses CodeGraph's tree-sitter symbol graph as its code map. The 2026-11-14 sync indexed **286 files, 8,375 nodes, and 20,249 edges**, including 162 Kotlin and 105 Python files.
+
+| Code area | Responsibility |
+|-----------|----------------|
+| `app/.../ui/chat` | Main conversation, streaming messages, HITL, attachments, artifact preview and sharing |
+| `app/.../ui/workbench` | Today, task center, artifact workbench, memory, connected apps, and mobile data |
+| `app/.../data/remote`, `data/ws` | REST, WebSocket, SSE, DTOs, and protocol events |
+| `app/.../data/repo`, `data/db` | Room mirror, history paging, message merging, and local state |
+| `app/.../data/mobile` | Calendar, health, notifications, SMS, files, and other source adapters plus WorkManager |
+| `app/.../service` | Turn foreground service, task progress, and health reminders |
+| `server-patches/octop-1.0.2` | Today projection, Router tasks, memory diaries, health cloud, MCP, artifacts, and sharing |
+| `server-patches/bluegreen`, `ops` | Blue-green release, migration checks, storage maintenance, and safe memory operations |
 
 ## Current limitations
 
