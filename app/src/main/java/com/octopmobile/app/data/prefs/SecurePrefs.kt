@@ -50,18 +50,27 @@ class SecurePrefs(context: Context) {
 
     val username: String? get() = prefs.getString(KEY_USERNAME, null)
 
+    val userId: Long? get() = prefs.getLong(KEY_USER_ID, 0L).takeIf { it > 0L }
+
     val displayName: String? get() = prefs.getString(KEY_DISPLAY_NAME, null)
 
     /** 只有 host 对得上才算登录态：换实例后旧令牌不能拿来用。 */
     fun tokenFor(baseUrl: String): String? = token.takeIf { host == baseUrl }
 
-    fun saveSession(baseUrl: String, token: String, username: String?, displayName: String?) {
-        prefs.edit()
+    fun saveSession(
+        baseUrl: String,
+        token: String,
+        username: String?,
+        displayName: String?,
+        userId: Long? = null,
+    ) {
+        val editor = prefs.edit()
             .putString(KEY_HOST, baseUrl)
             .putString(KEY_TOKEN, token)
             .putString(KEY_USERNAME, username)
             .putString(KEY_DISPLAY_NAME, displayName)
-            .apply()
+        if (userId != null) editor.putLong(KEY_USER_ID, userId) else editor.remove(KEY_USER_ID)
+        editor.apply()
     }
 
     /**
@@ -82,6 +91,7 @@ class SecurePrefs(context: Context) {
         const val KEY_HOST = "session_host"
         const val KEY_TOKEN = "access_token"
         const val KEY_USERNAME = "username"
+        const val KEY_USER_ID = "user_id"
         const val KEY_DISPLAY_NAME = "display_name"
     }
 }

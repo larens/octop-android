@@ -144,6 +144,7 @@ fun NotificationSettingsScreen(onBack: () -> Unit) {
             taskResultNotifications = true,
             confirmationNotifications = true,
             scheduledTaskNotifications = true,
+            quietHoursEnabled = true,
         ),
     )
     val permissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
@@ -194,6 +195,13 @@ fun NotificationSettingsScreen(onBack: () -> Unit) {
             enabled = settings.notificationsEnabled,
             onCheckedChange = { value -> scope.launch { container.settings.setScheduledTaskNotifications(value) } },
         )
+        SettingsToggle(
+            title = stringResource(R.string.settings_notification_quiet_hours),
+            subtitle = stringResource(R.string.settings_notification_quiet_hours_summary),
+            checked = settings.quietHoursEnabled,
+            enabled = settings.notificationsEnabled,
+            onCheckedChange = { value -> scope.launch { container.settings.setQuietHoursEnabled(value) } },
+        )
         Spacer(Modifier.height(24.dp))
         Text(
             text = stringResource(R.string.settings_notification_background_note),
@@ -219,6 +227,7 @@ fun VoiceSettingsScreen(onBack: () -> Unit) {
             taskResultNotifications = true,
             confirmationNotifications = true,
             scheduledTaskNotifications = true,
+            quietHoursEnabled = true,
         ),
     )
 

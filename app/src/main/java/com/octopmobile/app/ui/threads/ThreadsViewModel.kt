@@ -41,6 +41,11 @@ data class ThreadsUiState(
      * agent 目录拉完、会话列表还在路上这段会先闪一下「还没有会话」。
      */
     val threadsLoaded: Boolean = false,
+    /**
+     * `/api/agents` 是否已经拿到过答案。新账号在服务端还没有助理时，四个 Tab 都会是空的；
+     * 用它区分「助理列表还在路上」和「确实没有可用助理」，后者要给空态而不是一直转圈。
+     */
+    val agentsLoaded: Boolean = false,
     val syncing: Boolean = false,
     /**
      * 这次同步是用户下拉触发的。下拉用 `PullToRefreshBox` 自带的转圈做反馈，后台同步用
@@ -94,6 +99,7 @@ class ThreadsViewModel(private val container: AppContainer) : ViewModel() {
     private var pendingMainEntryId: Int? = null
     private var pendingMainNavigate = true
     private var mainNavigationRequestId = 0L
+    private var reloadingAgentsForMainEntry = false
 
     var uiState by mutableStateOf(ThreadsUiState())
         private set
@@ -128,7 +134,7 @@ class ThreadsViewModel(private val container: AppContainer) : ViewModel() {
             val baseUrl = container.prefs.currentHost()
             uiState = uiState.copy(host = baseUrl)
             if (baseUrl.isNullOrBlank()) {
-                uiState = uiState.copy(threadsLoaded = true)
+                uiState = uiState.copy(threadsLoaded = true, agentsLoaded = true)
                 return@launch
             }
             host.value = baseUrl
@@ -138,7 +144,11 @@ class ThreadsViewModel(private val container: AppContainer) : ViewModel() {
 
             // `/api/agents` 必然带令牌，没有令牌就先去登录，不发这次注定 401 的请求。
             if (container.securePrefs.tokenFor(baseUrl) == null) {
-                uiState = uiState.copy(threadsLoaded = true, needsLogin = true)
+                uiState = uiState.copy(
+                    threadsLoaded = true,
+                    agentsLoaded = true,
+                    needsLogin = true,
+                )
                 return@launch
             }
 
@@ -205,7 +215,27 @@ class ThreadsViewModel(private val container: AppContainer) : ViewModel() {
         if (handledMainEntryId == entryId) return
         if (!navigate && uiState.mainConversationTarget != null) return
         val baseUrl = host.value ?: return
-        val id = agentId.value ?: return
+        val id = agentId.value
+        if (id == null) {
+            // 新账号在服务端还没有助理（或助理列表这次还没拉回来）时不能静默返回：
+            // 那样会话页会永远停在转圈。先重拉一次列表，拿到助理后这个入口本身
+            // 会随 selectedAgentId 变化重新触发；仍然为空则由界面给无助理空态。
+            // 没有令牌时先去登录，不发这次注定 401 的请求。
+            if (
+                !reloadingAgentsForMainEntry &&
+                container.securePrefs.tokenFor(baseUrl) != null
+            ) {
+                reloadingAgentsForMainEntry = true
+                viewModelScope.launch {
+                    try {
+                        loadAgents(baseUrl)
+                    } finally {
+                        reloadingAgentsForMainEntry = false
+                    }
+                }
+            }
+            return
+        }
         if (resolvingMainEntry) {
             pendingMainEntryId = entryId
             pendingMainNavigate = navigate
@@ -492,11 +522,12 @@ class ThreadsViewModel(private val container: AppContainer) : ViewModel() {
     }
 
     private suspend fun loadAgents(baseUrl: String) {
-        uiState = uiState.copy(threadsLoaded = false, error = null)
+        uiState = uiState.copy(threadsLoaded = false, agentsLoaded = false, error = null)
 
         when (val result = container.instanceRepository(baseUrl).agents()) {
             is ApiResult.Failure -> uiState = uiState.copy(
                 threadsLoaded = true,
+                agentsLoaded = true,
                 error = result.error,
                 needsLogin = result.error.isUnauthorized,
             )
@@ -505,7 +536,12 @@ class ThreadsViewModel(private val container: AppContainer) : ViewModel() {
                 val agents = result.value
                 if (agents.isEmpty()) {
                     // 探测项「有 agent」直接失败 —— 原生链路没有可落脚的会话空间（protocol.md §7）。
-                    uiState = uiState.copy(threadsLoaded = true, webviewOnly = true)
+                    // 仍然记下 agentsLoaded，让界面给出「还没有可用助理」而不是无限转圈。
+                    uiState = uiState.copy(
+                        threadsLoaded = true,
+                        agentsLoaded = true,
+                        webviewOnly = true,
+                    )
                     container.instanceRepository(baseUrl).markWebviewOnly()
                     return
                 }
@@ -515,6 +551,7 @@ class ThreadsViewModel(private val container: AppContainer) : ViewModel() {
 
                 uiState = uiState.copy(
                     agents = agents,
+                    agentsLoaded = true,
                     selectedAgentId = selected.agentId,
                     error = null,
                 )

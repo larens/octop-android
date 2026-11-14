@@ -431,6 +431,11 @@ fun ChatScreen(
                 cameraPermission.launch(Manifest.permission.CAMERA)
             }
 
+            AppActions.REFINE_ARTIFACT -> {
+                val text = start.text.orEmpty()
+                input = TextFieldValue(text = text, selection = TextRange(text.length))
+            }
+
             // NEW_THREAD 到此为止：一条空会话就是终点，用户自己输入。
             else -> Unit
         }
@@ -1772,7 +1777,7 @@ private fun RouterTaskResultCard(
 }
 
 @Composable
-private fun TaskApprovalCard(
+internal fun TaskApprovalCard(
     approval: TaskApprovalDto,
     busy: Boolean,
     onApprove: () -> Unit,

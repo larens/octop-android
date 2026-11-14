@@ -23,6 +23,7 @@ import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -129,6 +130,13 @@ fun TodayPane(
     val upcomingCards = groups.upcoming
     val pastCards = groups.past
     val historyCards = groups.history
+    val morningDigest = remember(currentCards, nowMillis) {
+        buildMorningDigest(currentCards, nowMillis)
+    }
+    val digestCardIds = morningDigest?.cardIds.orEmpty()
+    val remainingCurrentCards = remember(currentCards, digestCardIds) {
+        currentCards.filterNot { it.id in digestCardIds }
+    }
     val reviewPeriod = remember(nowMillis) { todayReviewPeriod(nowMillis) }
     val completedReview = remember(todayCards, reviewPeriod.date) {
         completedScheduleHighlights(todayCards, nowMillis)
@@ -142,6 +150,17 @@ fun TodayPane(
     val upcomingSummary = remember(upcomingCards, nowMillis) {
         upcomingCalendarSummary(upcomingCards, nowMillis)
     }
+    // 全新账号第一次进来时这一页没有任何区块可画，以前会剩一个只有标题的白屏。
+    val nothingToShow = currentCards.isEmpty() &&
+        upcomingCards.isEmpty() &&
+        historyCards.isEmpty() &&
+        pastCards.isEmpty() &&
+        awaitingTasks.isEmpty() &&
+        activeTasks.isEmpty() &&
+        recentMemory.isEmpty() &&
+        completedReview.isEmpty() &&
+        conversationHighlights.isEmpty() &&
+        updateHighlights.isEmpty()
     val snackbarHostState = remember { SnackbarHostState() }
     val feedbackMessage = feedbackMessage(todayState.feedbackType)?.let { stringResource(it) }
     LaunchedEffect(todayState.feedbackRevision) {
@@ -225,7 +244,20 @@ fun TodayPane(
                             body = stringResource(R.string.today_current_cards_body),
                         )
                     }
-                    items(currentCards, key = { "today-card-${it.id}" }) { card ->
+                    morningDigest?.let { digest ->
+                        item(key = "today-morning-digest") {
+                            MorningBriefingCard(
+                                digest = digest,
+                                onOpenCard = { card ->
+                                    if (card.lifecycle == TodayCardLifecycle.UNREAD) {
+                                        todayViewModel.markRead(card)
+                                    }
+                                    selectedCardId = card.id
+                                },
+                            )
+                        }
+                    }
+                    items(remainingCurrentCards, key = { "today-card-${it.id}" }) { card ->
                         renderTodayCard(card, false)
                     }
                 }
@@ -306,6 +338,28 @@ fun TodayPane(
                         TodayMemoryCard(memory = memory, onClick = onOpenMemory)
                     }
                 }
+
+                if (nothingToShow && todayState.error == null) {
+                    item {
+                        val hasAgent = state.selectedAgentId != null
+                        EmptyCard(
+                            title = stringResource(
+                                if (hasAgent) {
+                                    R.string.today_empty_title
+                                } else {
+                                    R.string.today_agent_missing_title
+                                },
+                            ),
+                            body = stringResource(
+                                if (hasAgent) {
+                                    R.string.today_empty_body
+                                } else {
+                                    R.string.today_agent_missing_body
+                                },
+                            ),
+                        )
+                    }
+                }
             }
         }
         SnackbarHost(
@@ -336,8 +390,16 @@ fun TodayPane(
                     selectedCardId = null
                 }
             },
-            onOpenEvidenceThread = null,
-            onOpenExecution = if (card.kind == "task" && routerThreadId != null) {
+            onOpenEvidenceThread = { threadId ->
+                selectedCardId = null
+                onOpenThread(card.agentId, threadId)
+            },
+            onOpenExecution = if (card.executionThreadId != null) {
+                {
+                    selectedCardId = null
+                    onOpenThread(card.agentId, requireNotNull(card.executionThreadId))
+                }
+            } else if (card.kind == "task" && routerThreadId != null) {
                 {
                     selectedCardId = null
                     onOpenThread(card.agentId, routerThreadId)
@@ -544,10 +606,14 @@ fun SectionTitle(text: String, modifier: Modifier = Modifier) {
 }
 
 @Composable
-private fun ConversationTaskSummaryCard(
+internal fun ConversationTaskSummaryCard(
     task: ConversationTaskEntity,
     subtitle: String,
     onClick: () -> Unit,
+    busy: Boolean = false,
+    onComplete: (() -> Unit)? = null,
+    onDefer: (() -> Unit)? = null,
+    onIgnore: (() -> Unit)? = null,
 ) {
     Surface(
         modifier = Modifier
@@ -579,6 +645,57 @@ private fun ConversationTaskSummaryCard(
                 maxLines = 2,
                 overflow = TextOverflow.Ellipsis,
             )
+            val deferredUntil = task.deferredUntilMillis()
+            if (deferredUntil != null && deferredUntil > task.updatedAt) {
+                Spacer(Modifier.height(6.dp))
+                Text(
+                    text = stringResource(
+                        R.string.task_action_deferred_hint,
+                        DateUtils.getRelativeTimeSpanString(
+                            deferredUntil,
+                            System.currentTimeMillis(),
+                            DateUtils.MINUTE_IN_MILLIS,
+                        ).toString(),
+                    ),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            if (onComplete != null || onDefer != null || onIgnore != null) {
+                Spacer(Modifier.height(4.dp))
+                HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.12f))
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.End,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    if (busy) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(18.dp),
+                            strokeWidth = 2.dp,
+                        )
+                    } else {
+                        onComplete?.let {
+                            TextButton(onClick = it) {
+                                Text(stringResource(R.string.task_action_complete))
+                            }
+                        }
+                        onDefer?.let {
+                            TextButton(onClick = it) {
+                                Text(stringResource(R.string.task_action_defer))
+                            }
+                        }
+                        onIgnore?.let {
+                            TextButton(onClick = it) {
+                                Text(
+                                    text = stringResource(R.string.task_action_ignore),
+                                    color = MaterialTheme.colorScheme.error,
+                                )
+                            }
+                        }
+                    }
+                }
+            }
         }
     }
 }
@@ -586,16 +703,27 @@ private fun ConversationTaskSummaryCard(
 internal data class TodayTaskGroups(
     val needsUser: List<ConversationTaskEntity>,
     val active: List<ConversationTaskEntity>,
+    val deferred: List<ConversationTaskEntity> = emptyList(),
 )
 
-internal fun groupTodayTasks(tasks: List<ConversationTaskEntity>): TodayTaskGroups =
-    TodayTaskGroups(
-        needsUser = tasks.filter { it.status == ConversationTaskStatus.NEEDS_USER },
-        active = tasks.filter {
-            it.status == ConversationTaskStatus.OPEN ||
-                it.status == ConversationTaskStatus.IN_PROGRESS
+internal fun groupTodayTasks(
+    tasks: List<ConversationTaskEntity>,
+    nowMillis: Long = System.currentTimeMillis(),
+): TodayTaskGroups {
+    val actionable = tasks.filter { it.canActOn() }
+    val deferred = actionable.filter { it.isDeferred(nowMillis) }
+    return TodayTaskGroups(
+        needsUser = actionable.filter {
+            it.status == ConversationTaskStatus.NEEDS_USER && !it.isDeferred(nowMillis)
         },
+        active = actionable.filter {
+            (it.status == ConversationTaskStatus.OPEN ||
+                it.status == ConversationTaskStatus.IN_PROGRESS) &&
+                !it.isDeferred(nowMillis)
+        },
+        deferred = deferred,
     )
+}
 
 private fun todayTaskStatusLabel(status: String): Int = when (status) {
     ConversationTaskStatus.NEEDS_USER -> R.string.today_task_status_needs_user

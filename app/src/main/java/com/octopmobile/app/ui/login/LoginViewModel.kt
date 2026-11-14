@@ -9,6 +9,7 @@ import androidx.lifecycle.viewModelScope
 import androidx.lifecycle.viewmodel.initializer
 import androidx.lifecycle.viewmodel.viewModelFactory
 import com.octopmobile.app.data.AppContainer
+import com.octopmobile.app.data.prefs.AccountIdentity
 import com.octopmobile.app.data.remote.ApiError
 import com.octopmobile.app.data.remote.ApiResult
 import com.octopmobile.app.ui.appContainer
@@ -62,9 +63,21 @@ class LoginViewModel(private val container: AppContainer) : ViewModel() {
                 return@launch
             }
 
+            val previous = AccountIdentity(
+                host = container.securePrefs.host,
+                userId = container.securePrefs.userId,
+                username = container.securePrefs.username,
+            )
             val result = container.instanceRepository(host).login(state.username.trim(), state.password)
             uiState = when (result) {
-                is ApiResult.Ok -> uiState.copy(submitting = false, password = "", done = true)
+                is ApiResult.Ok -> {
+                    val user = result.value
+                    if (previous.differsFrom(host, user.id, user.username ?: state.username.trim())) {
+                        container.database.clearAll()
+                        container.prefs.setSelectedAgent(null)
+                    }
+                    uiState.copy(submitting = false, password = "", done = true)
+                }
                 is ApiResult.Failure -> uiState.copy(submitting = false, error = result.error)
             }
         }

@@ -33,6 +33,10 @@ data class ThreadDto(
     @SerialName("turn_active") val turnActive: Boolean = false,
     /** 卡在 HITL 等人工确认。 */
     @SerialName("awaiting_user") val awaitingUser: Boolean = false,
+    /** 旧版服务端只回路径。 */
+    val artifacts: List<String> = emptyList(),
+    /** 新版服务端回带 agent 归属的产物引用。 */
+    @SerialName("artifact_refs") val artifactRefs: List<ArtifactRefDto> = emptyList(),
 )
 
 object ConversationMode {

@@ -40,6 +40,9 @@ interface ConversationTaskDao {
     @Upsert
     suspend fun upsertAll(entities: List<ConversationTaskEntity>)
 
+    @Query("DELETE FROM conversation_tasks WHERE taskId NOT IN (:taskIds)")
+    suspend fun deleteNotIn(taskIds: List<String>)
+
     @Query("DELETE FROM conversation_tasks")
     suspend fun clear()
 }

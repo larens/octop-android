@@ -211,6 +211,12 @@ data class TaskApprovalDecisionBody(
 )
 
 @Serializable
+data class ConversationTaskActionBody(
+    val action: String,
+    @SerialName("defer_hours") val deferHours: Int = 4,
+)
+
+@Serializable
 data class ContextPackManifestDto(
     @SerialName("pack_id") val packId: String,
     @SerialName("conversation_id") val conversationId: String,

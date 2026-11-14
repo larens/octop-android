@@ -27,6 +27,7 @@ data class AppSettings(
     val taskResultNotifications: Boolean,
     val confirmationNotifications: Boolean,
     val scheduledTaskNotifications: Boolean,
+    val quietHoursEnabled: Boolean,
 )
 
 class SettingsPreferences(context: Context) {
@@ -42,6 +43,7 @@ class SettingsPreferences(context: Context) {
             taskResultNotifications = prefs[KEY_TASK_RESULTS] ?: true,
             confirmationNotifications = prefs[KEY_CONFIRMATIONS] ?: true,
             scheduledTaskNotifications = prefs[KEY_SCHEDULED_TASKS] ?: true,
+            quietHoursEnabled = prefs[KEY_QUIET_HOURS] ?: true,
         )
     }
 
@@ -55,6 +57,7 @@ class SettingsPreferences(context: Context) {
     suspend fun setTaskResultNotifications(value: Boolean) = edit { it[KEY_TASK_RESULTS] = value }
     suspend fun setConfirmationNotifications(value: Boolean) = edit { it[KEY_CONFIRMATIONS] = value }
     suspend fun setScheduledTaskNotifications(value: Boolean) = edit { it[KEY_SCHEDULED_TASKS] = value }
+    suspend fun setQuietHoursEnabled(value: Boolean) = edit { it[KEY_QUIET_HOURS] = value }
 
     private suspend fun edit(block: (MutablePreferences) -> Unit) = store.edit(block)
 
@@ -70,5 +73,6 @@ class SettingsPreferences(context: Context) {
         val KEY_TASK_RESULTS = booleanPreferencesKey("task_result_notifications")
         val KEY_CONFIRMATIONS = booleanPreferencesKey("confirmation_notifications")
         val KEY_SCHEDULED_TASKS = booleanPreferencesKey("scheduled_task_notifications")
+        val KEY_QUIET_HOURS = booleanPreferencesKey("notification_quiet_hours")
     }
 }

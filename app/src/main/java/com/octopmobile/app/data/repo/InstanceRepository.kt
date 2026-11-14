@@ -58,6 +58,7 @@ class InstanceRepository(
                         token = response.accessToken,
                         username = response.user?.username ?: username,
                         displayName = response.user?.displayName,
+                        userId = response.user?.id,
                     )
                     ApiResult.Ok(response.user ?: UserDto(username = username))
                 }

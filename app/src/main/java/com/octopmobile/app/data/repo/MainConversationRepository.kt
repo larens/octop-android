@@ -9,6 +9,7 @@ import com.octopmobile.app.data.remote.ApiResult
 import com.octopmobile.app.data.remote.OctopApi
 import com.octopmobile.app.data.remote.dto.ConversationEventDto
 import com.octopmobile.app.data.remote.dto.ConversationTaskDto
+import com.octopmobile.app.data.remote.dto.ConversationTaskActionBody
 import com.octopmobile.app.data.remote.dto.ConversationTraceDto
 import com.octopmobile.app.data.remote.dto.DispatchPlanDto
 import com.octopmobile.app.data.remote.dto.MainConversationDto
@@ -58,12 +59,30 @@ class MainConversationRepository(
     suspend fun cachedConversation(): MainConversationEntity? = conversationDao.find(agentId)
 
     suspend fun refreshTasks(): ApiResult<Int> =
-        when (val result = api.conversationTasks(agentId)) {
+        when (val result = refreshAllTasks()) {
+            is ApiResult.Failure -> result
+            is ApiResult.Ok -> ApiResult.Ok(result.value.size)
+        }
+
+    /** All conversation tasks for the agent, not only the current Router conversation. */
+    suspend fun refreshAllTasks(): ApiResult<List<ConversationTaskEntity>> =
+        when (val result = api.conversationTasks(agentId, limit = TASK_SYNC_LIMIT)) {
             is ApiResult.Failure -> result
             is ApiResult.Ok -> {
                 val tasks = result.value.map { it.toEntity() }
-                database.withTransaction { taskDao.upsertAll(tasks) }
-                ApiResult.Ok(tasks.size)
+                database.withTransaction {
+                    if (tasks.isEmpty()) {
+                        taskDao.clear()
+                    } else {
+                        taskDao.upsertAll(tasks)
+                        // The list endpoint is a full snapshot below its cap. Reconcile
+                        // deletions so server-side cleanup also disappears on device.
+                        if (tasks.size < TASK_SYNC_LIMIT) {
+                            taskDao.deleteNotIn(tasks.map(ConversationTaskEntity::taskId))
+                        }
+                    }
+                }
+                ApiResult.Ok(tasks)
             }
         }
 
@@ -94,6 +113,27 @@ class MainConversationRepository(
             }
         }
     }
+
+    /** 用户对任务做闭环动作；服务端成功后再更新本地镜像。 */
+    suspend fun applyTaskAction(
+        taskId: String,
+        action: String,
+        deferHours: Int = 4,
+    ): ApiResult<ConversationTaskEntity> =
+        when (
+            val result = api.conversationTaskAction(
+                agentId = agentId,
+                taskId = taskId,
+                body = ConversationTaskActionBody(action = action, deferHours = deferHours),
+            )
+        ) {
+            is ApiResult.Failure -> result
+            is ApiResult.Ok -> {
+                val entity = result.value.toEntity()
+                taskDao.upsertAll(listOf(entity))
+                ApiResult.Ok(entity)
+            }
+        }
 
     suspend fun refreshAll(): ApiResult<Unit> {
         when (val conversation = refreshConversation()) {
@@ -209,6 +249,7 @@ class MainConversationRepository(
 
     private companion object {
         const val DEFAULT_EVENT_LIMIT = 200
+        const val TASK_SYNC_LIMIT = 500
     }
 }
 

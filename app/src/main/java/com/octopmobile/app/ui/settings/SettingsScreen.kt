@@ -199,6 +199,7 @@ fun ProfileSettingsScreen(
                 container.instanceRepository(baseUrl).logout()
             }
             container.database.clearAll()
+            container.prefs.setSelectedAgent(null)
             Toast.makeText(context, context.getString(R.string.settings_logged_out), Toast.LENGTH_SHORT).show()
             onLoggedOut()
         }
@@ -610,6 +611,7 @@ private fun defaultSettings() = AppSettings(
     taskResultNotifications = true,
     confirmationNotifications = true,
     scheduledTaskNotifications = true,
+    quietHoursEnabled = true,
 )
 
 private fun openWebFallback(context: Context, host: String?) {

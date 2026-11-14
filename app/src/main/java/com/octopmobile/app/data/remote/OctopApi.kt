@@ -12,6 +12,7 @@ import com.octopmobile.app.data.remote.dto.CronJobPatchBody
 import com.octopmobile.app.data.remote.dto.ConnectorInstanceDto
 import com.octopmobile.app.data.remote.dto.ConversationEventDto
 import com.octopmobile.app.data.remote.dto.ConversationTaskDto
+import com.octopmobile.app.data.remote.dto.ConversationTaskActionBody
 import com.octopmobile.app.data.remote.dto.ConversationTraceDto
 import com.octopmobile.app.data.remote.dto.DispatchPlanBudgetContinueBody
 import com.octopmobile.app.data.remote.dto.DispatchPlanDecisionBody
@@ -206,6 +207,23 @@ class OctopApi(
         execute(
             request = Request.Builder()
                 .url(url(API, AGENTS, agentId, TASKS, taskId))
+                .build(),
+            deserializer = ConversationTaskDto.serializer(),
+        )
+
+    /** 用户闭环：完成、忽略或延后一个任务。 */
+    suspend fun conversationTaskAction(
+        agentId: String,
+        taskId: String,
+        body: ConversationTaskActionBody,
+    ): ApiResult<ConversationTaskDto> =
+        execute(
+            request = Request.Builder()
+                .url(url(API, AGENTS, agentId, TASKS, taskId, ACTION))
+                .post(
+                    json.encodeToString(ConversationTaskActionBody.serializer(), body)
+                        .toRequestBody(JSON_MEDIA_TYPE),
+                )
                 .build(),
             deserializer = ConversationTaskDto.serializer(),
         )
@@ -994,6 +1012,7 @@ class OctopApi(
         private const val MAIN_CONVERSATION = "main-conversation"
         private const val EVENTS = "events"
         private const val TASKS = "tasks"
+        private const val ACTION = "action"
         private const val APPROVALS = "approvals"
         private const val DISPATCH_PLANS = "dispatch-plans"
         private const val APPROVE = "approve"

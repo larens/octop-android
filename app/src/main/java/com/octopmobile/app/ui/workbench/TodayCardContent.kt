@@ -423,6 +423,7 @@ internal data class TodayReadingBook(
     val date: String,
     val title: String,
     val marks: String,
+    val coverUrl: String?,
 )
 
 internal data class TodayReadingSummary(
@@ -486,6 +487,7 @@ internal data class TodayIndustrySignal(
     val change: String,
     val uncertainty: String?,
     val relevance: String?,
+    val sourceUrl: String?,
 )
 
 internal data class TodaySignalDetails(
@@ -516,7 +518,10 @@ internal fun TodayCardEntity.isNewsRecommendationCard(): Boolean = when (kind) {
     else -> false
 }
 
-internal fun parseTodayReadingSummary(card: TodayCardEntity): TodayReadingSummary? {
+internal fun parseTodayReadingSummary(
+    card: TodayCardEntity,
+    evidence: List<TodayEvidenceDto> = decodeTodayCardEvidence(card.evidenceJson),
+): TodayReadingSummary? {
     if (card.kind != "review") return null
     val sections = parseTodayCardSummary(card.summary)
     val overview = sections.firstOrNull {
@@ -524,13 +529,21 @@ internal fun parseTodayReadingSummary(card: TodayCardEntity): TodayReadingSummar
     } ?: return null
     val stats = ReadingStatPattern.findAll(overview.body)
         .map { match ->
+            val label = match.groupValues[1].trim()
+            val number = match.groupValues[2].trim()
+            val unit = match.groupValues[3].trim()
             TodayReadingMetric(
-                label = match.groupValues[1].trim(),
-                value = match.groupValues[2].trim(),
+                label = label,
+                value = if (label == "阅读时长" || label == "阅读天数" || label == "听书") {
+                    if (unit.isEmpty()) number else "$number $unit"
+                } else {
+                    number
+                },
             )
         }
         .toList()
     if (stats.isEmpty()) return null
+    val covers = todayReadingCovers(evidence)
     val books = sections.firstOrNull {
         it.heading == "本周在读" || it.heading == "阅读书目"
     }?.body
@@ -542,6 +555,7 @@ internal fun parseTodayReadingSummary(card: TodayCardEntity): TodayReadingSummar
                 date = match.groupValues[1].trim(),
                 title = match.groupValues[2].trim().trim('《', '》'),
                 marks = match.groupValues[3].trim(),
+                coverUrl = covers[normalizeReadingBookTitle(match.groupValues[2].trim().trim('《', '》'))],
             )
         }
         ?.toList()
@@ -551,6 +565,84 @@ internal fun parseTodayReadingSummary(card: TodayCardEntity): TodayReadingSummar
         metrics = stats,
         books = books,
         remainingSections = sections.filterNot { it.heading in consumedHeadings },
+    )
+}
+
+private fun todayReadingCovers(evidence: List<TodayEvidenceDto>): Map<String, String> =
+    evidence.mapNotNull { item ->
+        val title = item.title?.trim()?.trim('《', '》')?.takeIf(String::isNotBlank)
+        val imageUrl = item.imageUrl
+            ?.trim()
+            ?.takeIf { it.startsWith("https://") || it.startsWith("http://") }
+        if (title == null || imageUrl == null) null else normalizeReadingBookTitle(title) to imageUrl
+    }.toMap()
+
+private fun normalizeReadingBookTitle(value: String): String =
+    value.replace(Regex("\\s+"), "").lowercase()
+
+internal data class TodayUsageDetails(
+    val cost: String,
+    val savings: String,
+    val total: String,
+    val cacheHit: String,
+    val sessions: String,
+    val calls: String,
+    val reasoning: String,
+    val breakdown: String?,
+    val models: String?,
+    val composition: String?,
+    val comparison: String?,
+)
+
+private val UsageMetricPattern = Regex(
+    """(总花费|缓存节省|总 Token|缓存命中|模型调用|会话|推理)：([^\s·]+)""",
+)
+
+internal fun parseTodayUsage(card: TodayCardEntity): TodayUsageDetails? {
+    if (card.kind != "usage") return null
+    val sections = parseTodayCardSummary(card.summary)
+    val overview = sections.firstOrNull {
+        it.heading == "今日花费" || it.heading == "今日用量"
+    } ?: return null
+    val metrics = UsageMetricPattern.findAll(overview.body).associate {
+        it.groupValues[1] to it.groupValues[2]
+    }
+    return TodayUsageDetails(
+        cost = metrics["总花费"] ?: "—",
+        savings = metrics["缓存节省"] ?: "—",
+        total = metrics["总 Token"] ?: return null,
+        cacheHit = metrics["缓存命中"] ?: "—",
+        sessions = metrics["会话"] ?: "—",
+        calls = metrics["模型调用"] ?: "—",
+        reasoning = metrics["推理"] ?: "—",
+        breakdown = sections.firstOrNull { it.heading == "花费构成" }
+            ?.body
+            ?.lineSequence()
+            ?.map(String::trim)
+            ?.filter(String::isNotEmpty)
+            ?.joinToString(" · ")
+            ?.takeIf(String::isNotBlank),
+        models = sections.firstOrNull { it.heading == "模型花费" }
+            ?.body
+            ?.lineSequence()
+            ?.map(String::trim)
+            ?.filter(String::isNotEmpty)
+            ?.joinToString(" · ")
+            ?.takeIf(String::isNotBlank),
+        composition = sections.firstOrNull {
+            it.heading == "来源花费" || it.heading == "用量构成"
+        }
+            ?.body
+            ?.lineSequence()
+            ?.map(String::trim)
+            ?.filter(String::isNotEmpty)
+            ?.joinToString(" · ")
+            ?.takeIf(String::isNotBlank),
+        comparison = sections.firstOrNull { it.heading == "对比昨日" }
+            ?.body
+            ?.lineSequence()
+            ?.map(String::trim)
+            ?.firstOrNull(String::isNotEmpty),
     )
 }
 
@@ -792,6 +884,7 @@ private fun parseSignalItems(body: String): List<TodayIndustrySignal> {
                 change = it.change,
                 uncertainty = it.uncertainty,
                 relevance = it.relevance,
+                sourceUrl = it.sourceUrl,
             )
         }
         current = null
@@ -831,6 +924,7 @@ private fun parseSignalItems(body: String): List<TodayIndustrySignal> {
                     "核心变化" -> builder.change = value
                     "不确定性" -> builder.uncertainty = value.takeIf(String::isNotBlank)
                     "对我的意义" -> builder.relevance = value.takeIf(String::isNotBlank)
+                    "来源", "source" -> builder.sourceUrl = preferredSignalSourceUrl(value)
                 }
             }
         } else if (builder.change.isBlank()) {
@@ -875,7 +969,7 @@ internal fun parseDailyWeather(value: String): TodayWeatherDetails? {
         ?.replace(WeatherTemperaturePattern, "")
         ?.trim()
         ?.takeIf(String::isNotBlank)
-    val labeledTemperature = WeatherTemperaturePattern.find(value)?.value
+    val labeledTemperature = extractWeatherTemperature(value)
     if (labeledLocation != null || labeledCondition != null) {
         return TodayWeatherDetails(
             location = labeledLocation,
@@ -896,7 +990,7 @@ internal fun parseDailyWeather(value: String): TodayWeatherDetails? {
         val body = cityMatch.groupValues[2].trim()
         val temperature = WeatherMinMaxPattern.find(body)?.let { match ->
             "${match.groupValues[1]}–${match.groupValues[2]}°C"
-        } ?: WeatherTemperaturePattern.find(body)?.value
+        } ?: extractWeatherTemperature(body)
         val condition = WeatherConditionWords
             .sortedByDescending(String::length)
             .firstOrNull(body::contains)
@@ -942,7 +1036,7 @@ internal fun parseDailyWeather(value: String): TodayWeatherDetails? {
         WeatherTemperaturePattern.containsMatchIn(it)
     }
     val temperature = segments.getOrNull(temperatureIndex)
-        ?.let { WeatherTemperaturePattern.find(it)?.value }
+        ?.let(::extractWeatherTemperature)
     val conditionIndex = segments.indices.firstOrNull { index ->
         index != temperatureIndex &&
             index != 0 &&
@@ -1031,7 +1125,7 @@ private class CityWeatherAccumulator(
         val body = WeatherCityDatePrefixPattern.replace(cityBody, "").trim()
         val temperature = WeatherMinMaxPattern.find(body)?.let { match ->
             "${match.groupValues[1]}–${match.groupValues[2]}°C"
-        } ?: WeatherTemperaturePattern.find(body)?.value
+        } ?: extractWeatherTemperature(body)
         if (temperature == null) return null
         val condition = WeatherConditionLabelPattern.find(body)
             ?.groupValues
@@ -1288,6 +1382,7 @@ internal data class TodayCardFact(
     val sourceType: String,
     val sourceRecordId: String?,
     val url: String?,
+    val imageUrl: String?,
 )
 
 internal fun decodeTodayCardEvidence(evidenceJson: String): List<TodayEvidenceDto> =
@@ -1321,6 +1416,9 @@ internal fun todayCardFacts(evidence: List<TodayEvidenceDto>, limit: Int = 3): L
                 sourceType = item.sourceType,
                 sourceRecordId = item.sourceRecordId,
                 url = url,
+                imageUrl = item.imageUrl
+                    ?.trim()
+                    ?.takeIf { it.startsWith("https://") || it.startsWith("http://") },
             )
         }
         .take(limit)
@@ -1437,12 +1535,24 @@ private const val HOUR_MILLIS = 60 * MINUTE_MILLIS
 private val RainProbabilityPattern = Regex("(?:降雨|降水)概率[^0-9]{0,8}(\\d{1,3})\\s*%")
 private val RainWords = listOf("小雨", "中雨", "大雨", "暴雨", "阵雨", "有雨", "下雨", "雷雨")
 private val SignalItemPattern = Regex("^(?:\\d+[.)、]|[-•])\\s*(.+)$")
-private val SignalFieldPattern = Regex("(成熟度|证据强度|核心变化|不确定性|对我的意义)\\s*[：:]\\s*")
+private val SignalFieldPattern = Regex(
+    "(成熟度|证据强度|核心变化|不确定性|对我的意义|来源|source)\\s*[：:]\\s*",
+    RegexOption.IGNORE_CASE,
+)
+private val SignalSourceUrlPattern = Regex("""https?://[^\s)）]+""")
+private val SignalFirstPartyUrlPattern = Regex(
+    """第一方原文\s*[：:]?\s*(https?://[^\s、，;；)）]+)""",
+)
+internal fun preferredSignalSourceUrl(value: String): String? =
+    SignalFirstPartyUrlPattern.find(value)?.groupValues?.get(1)
+        ?: SignalSourceUrlPattern.find(value)?.value
 private val SignalNameSeparator = Regex("\\s*[｜|]\\s*")
 private val SignalEvidenceLevelPattern = Regex("([1-3])")
 private val CoffeePickupCodePattern = Regex("""^[A-Za-z0-9]+(?:[-_][A-Za-z0-9]+)*$""")
 private val CoffeePickupQrPattern = Regex("""^[A-Za-z0-9+/=_-]+$""")
-private val ReadingStatPattern = Regex("""(本周阅读|新增划线|书架)\s*(\d+)\s*(?:本|条)""")
+private val ReadingStatPattern = Regex(
+    """(本周阅读|新增划线|书架|阅读时长|阅读天数|听书)\s*[：:]?\s*(\d+(?:\.\d+)?)\s*(本|条|小时|天|分钟)?""",
+)
 private val ReadingBookLinePattern = Regex("""^(\d{1,2}[-/]\d{1,2})\s*《([^》]+)》\s*[·｜|]\s*(.+)$""")
 private val QuickReplyRequestMarkers = listOf(
     "想跟你确认",
@@ -1460,6 +1570,23 @@ private val WeatherLocationLabelPattern =
     Regex("(?:查询城市|城市|地点)\\s*[：:]\\s*([^。，,；;\\n（(]+)")
 private val WeatherConditionLabelPattern = Regex(
     "(?:当前实况|实时实况|天气状况|天气)\\s*(?:[：:]|\\s)\\s*([^，,。；;\\n·]{1,16})",
+)
+internal fun extractWeatherTemperature(value: String): String? {
+    val range = WeatherTemperatureRangeWithUnitPattern.find(value)
+        ?: WeatherTemperatureRangePattern.find(value)
+    if (range != null) {
+        return "${range.groupValues[1]}–${range.groupValues[2]}°C"
+    }
+    return WeatherTemperaturePattern.find(value)?.value
+}
+
+private val WeatherTemperatureRangeWithUnitPattern = Regex(
+    """(-?\d+(?:\.\d+)?)\s*(?:°\s*[CF]?|℃)\s*[~～\-至到]\s*""" +
+        """(-?\d+(?:\.\d+)?)\s*(?:°\s*[CF]?|℃)""",
+)
+private val WeatherTemperatureRangePattern = Regex(
+    """(-?\d+(?:\.\d+)?)\s*[~～\-至到]\s*""" +
+        """(-?\d+(?:\.\d+)?)\s*(?:°\s*[CF]?|℃)""",
 )
 private val WeatherTemperaturePattern =
     Regex("""-?\d+(?:\.\d+)?\s*(?:[~～\-至到]\s*-?\d+(?:\.\d+)?)?\s*(?:°\s*[CF]?|℃)""")
@@ -1559,6 +1686,7 @@ private data class SignalItemBuilder(
     var change: String = "",
     var uncertainty: String? = null,
     var relevance: String? = null,
+    var sourceUrl: String? = null,
 )
 
 private val DailyPlanHeadings = setOf(

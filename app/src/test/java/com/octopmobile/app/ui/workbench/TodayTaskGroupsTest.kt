@@ -21,7 +21,29 @@ class TodayTaskGroupsTest {
         assertEquals(listOf("running", "queued"), groups.active.map { it.taskId })
     }
 
-    private fun task(id: String, status: String) = ConversationTaskEntity(
+    @Test
+    fun deferredTasksLeaveTodayButStayInTheDeferredGroup() {
+        val now = 2_000_000_000_000L
+        val tasks = listOf(
+            task(
+                "later",
+                ConversationTaskStatus.NEEDS_USER,
+                capsuleJson = """{"deferred_until":${(now + 3_600_000) / 1000}}""",
+            ),
+            task("waiting", ConversationTaskStatus.NEEDS_USER),
+        )
+
+        val groups = groupTodayTasks(tasks, now)
+
+        assertEquals(listOf("waiting"), groups.needsUser.map { it.taskId })
+        assertEquals(listOf("later"), groups.deferred.map { it.taskId })
+    }
+
+    private fun task(
+        id: String,
+        status: String,
+        capsuleJson: String = "{}",
+    ) = ConversationTaskEntity(
         taskId = id,
         conversationId = "conversation",
         taskType = "read_only",
@@ -30,7 +52,7 @@ class TodayTaskGroupsTest {
         objective = id,
         status = status,
         requiresUser = status == ConversationTaskStatus.NEEDS_USER,
-        capsuleJson = "{}",
+        capsuleJson = capsuleJson,
         priority = 0,
         createdAt = 1,
         updatedAt = 1,

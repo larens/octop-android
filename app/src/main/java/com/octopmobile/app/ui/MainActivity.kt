@@ -53,6 +53,7 @@ class MainActivity : ComponentActivity() {
      * `singleTask` 下 App 已经在栈里时点通知不会再走 `onCreate`，得由 [onNewIntent] 续上。
      */
     private var deepLink by mutableStateOf<Uri?>(null)
+    private var deepLinkFromNewIntent by mutableStateOf(false)
     private var shareEntryPending by mutableStateOf(false)
 
     /**
@@ -83,6 +84,7 @@ class MainActivity : ComponentActivity() {
                     taskResultNotifications = true,
                     confirmationNotifications = true,
                     scheduledTaskNotifications = true,
+                    quietHoursEnabled = true,
                 ),
             )
             CompositionLocalProvider(
@@ -139,15 +141,18 @@ class MainActivity : ComponentActivity() {
                     val todayCardId = Routes.todayCardIdFromDeepLink(deepLink)
                     if (threadId == null && todayCardId == null) return@LaunchedEffect
                     val destination = startDestination ?: return@LaunchedEffect
+                    val fromNewIntent = deepLinkFromNewIntent
                     // 先消费掉：接下来无论跳不跳，这次深链都算处理完了
                     deepLink = null
+                    deepLinkFromNewIntent = false
                     if (destination != Routes.THREADS_PATTERN) return@LaunchedEffect
 
                     pendingRoute = if (todayCardId != null) {
                         PendingTodayCard.arm(todayCardId)
                         // 冷启动已经直接落在 Today 时不需要再导航一次：会话栏的默认入口会
                         // 自动建会话，和深链抢导航会把它重新盖回“新会话”。
-                        if (startWorkbenchTab == WorkbenchTab.TODAY) {
+                        // 但 App 已在栈里时（点通知）必须显式切回 Today。
+                        if (!fromNewIntent && startWorkbenchTab == WorkbenchTab.TODAY) {
                             null
                         } else {
                             Routes.threads(WorkbenchTab.TODAY.routeValue())
@@ -200,6 +205,7 @@ class MainActivity : ComponentActivity() {
         // 只认深链：从 WebView 兜底页 startActivity 回来时 intent 里没有 data，不该被清掉
         if (Routes.threadIdFromDeepLink(intent.data) != null || Routes.todayCardIdFromDeepLink(intent.data) != null) {
             deepLink = intent.data
+            deepLinkFromNewIntent = true
         }
         handleSystemEntry(intent)
     }

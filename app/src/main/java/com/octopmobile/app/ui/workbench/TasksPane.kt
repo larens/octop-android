@@ -1,5 +1,9 @@
 package com.octopmobile.app.ui.workbench
 
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.content.Context
+import android.content.Intent
 import android.widget.Toast
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.BorderStroke
@@ -28,8 +32,10 @@ import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.AutoStories
 import androidx.compose.material.icons.filled.Email
 import androidx.compose.material.icons.filled.EventAvailable
+import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.Newspaper
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.TaskAlt
 import androidx.compose.material.icons.filled.WbSunny
 import androidx.compose.material.icons.filled.AutoAwesome
@@ -37,12 +43,14 @@ import androidx.compose.material.icons.filled.Celebration
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -78,17 +86,25 @@ import com.octopmobile.app.data.db.AutomationTaskEntity
 import com.octopmobile.app.data.db.AutomationTaskStatus
 import com.octopmobile.app.data.model.automationTaskDisplayTitle
 import com.octopmobile.app.data.model.cleanAutomationTaskText
+import com.octopmobile.app.data.remote.ApiError
 import com.octopmobile.app.data.remote.dto.ConnectorInstanceDto
 import com.octopmobile.app.data.repo.ScheduleRule
 import com.octopmobile.app.data.repo.ScheduleRules
+import com.octopmobile.app.ui.chat.ArtifactPreviewDialog
+import com.octopmobile.app.ui.chat.ChatNotice
 import com.octopmobile.app.ui.asText
+import com.octopmobile.app.ui.AppActions
+import com.octopmobile.app.ui.Handoff
+import com.octopmobile.app.ui.PendingChatStart
+import java.text.DateFormat
 import java.time.Instant
 import java.time.LocalDate
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import java.time.temporal.ChronoUnit
+import java.util.Date
 
-private enum class TasksTab { ADDED, RECOMMENDED }
+private enum class TasksTab { TASKS, ARTIFACTS, RECOMMENDED }
 
 private enum class RecommendationKind { NEWS, MAIL, READING, WEATHER }
 
@@ -191,13 +207,15 @@ private val TASK_RECOMMENDATIONS = listOf(
 @Composable
 fun TasksPane(
     onNeedsLogin: () -> Unit,
+    onOpenConversation: () -> Unit,
+    onOpenThread: (agentId: String, threadId: String) -> Unit,
     onComposerChanged: (Boolean) -> Unit = {},
 ) {
     val context = LocalContext.current
     val viewModel: TasksViewModel = viewModel(factory = TasksViewModel.Factory)
     val state = viewModel.uiState
     val tasks by viewModel.tasks.collectAsStateWithLifecycle()
-    var tab by rememberSaveable { mutableStateOf(TasksTab.ADDED) }
+    var tab by rememberSaveable { mutableStateOf(TasksTab.TASKS) }
     var naturalTaskOpen by remember { mutableStateOf(false) }
     var naturalTaskInitial by remember { mutableStateOf("") }
     var naturalTaskMcpServers by remember { mutableStateOf(emptyList<String>()) }
@@ -223,6 +241,23 @@ fun TasksPane(
             Toast.LENGTH_SHORT,
         ).show()
         viewModel.consumeNotice()
+    }
+    LaunchedEffect(state.artifactNotice) {
+        val notice = state.artifactNotice ?: return@LaunchedEffect
+        val text = when (notice) {
+            ChatNotice.DownloadStarted -> context.getString(R.string.chat_download_started)
+            ChatNotice.DownloadFailed -> context.getString(R.string.err_download_failed)
+            ChatNotice.PreviewFailed -> context.getString(R.string.chat_artifact_preview_failed)
+            ChatNotice.ArtifactMissing -> context.getString(R.string.chat_artifact_missing)
+            is ChatNotice.Failure -> when (val error = notice.error) {
+                is ApiError.Http -> error.message
+                is ApiError.Network -> error.message
+                is ApiError.Parse -> error.message
+            }
+            else -> null
+        }
+        viewModel.consumeArtifactNotice()
+        if (text != null) Toast.makeText(context, text, Toast.LENGTH_SHORT).show()
     }
 
     DisposableEffect(naturalTaskOpen) {
@@ -259,6 +294,8 @@ fun TasksPane(
     Column(modifier = Modifier.fillMaxSize()) {
         TasksHeader(
             taskCount = tasks.size,
+            needsUserCount = state.needsUserCount(),
+            activeCount = state.activeTaskCount(),
             onAdd = {
                 naturalTaskInitial = ""
                 naturalTaskMcpServers = emptyList()
@@ -274,14 +311,44 @@ fun TasksPane(
             modifier = Modifier.weight(1f),
         ) {
             when (tab) {
-                TasksTab.ADDED -> AddedTasks(
-                    tasks = tasks,
+                TasksTab.TASKS -> TaskCenterPane(
                     state = state,
-                    onOpen = { task ->
+                    automationTasks = tasks,
+                    onOpenAutomation = { task ->
                         naturalTaskInitial = ""
                         naturalTaskMcpServers = emptyList()
                         naturalTaskTarget = task
                         naturalTaskOpen = true
+                    },
+                    onOpenConversation = onOpenConversation,
+                    onApprove = viewModel::approveTaskApproval,
+                    onReject = viewModel::rejectTaskApproval,
+                    onTaskAction = viewModel::applyTaskAction,
+                )
+                TasksTab.ARTIFACTS -> ArtifactWorkbenchPane(
+                    items = state.artifacts,
+                    loading = state.syncing,
+                    busyKey = state.artifactBusyKey,
+                    shareBusyKey = state.artifactShareBusyKey,
+                    onPreview = { item -> viewModel.previewArtifact(context, item) },
+                    onDownload = { item -> viewModel.downloadArtifact(context, item) },
+                    onOpenThread = { item ->
+                        state.agentId?.let { onOpenThread(it, item.threadId) }
+                    },
+                    onShare = viewModel::shareArtifact,
+                    onContinue = { item ->
+                        state.agentId?.let { agentId ->
+                            PendingChatStart.arm(
+                                Handoff(
+                                    text = context.getString(
+                                        R.string.artifacts_continue_prompt,
+                                        item.artifact.filename,
+                                    ),
+                                    action = AppActions.REFINE_ARTIFACT,
+                                ),
+                            )
+                            onOpenThread(agentId, item.threadId)
+                        }
                     },
                 )
                 TasksTab.RECOMMENDED -> RecommendedTasks(
@@ -299,11 +366,102 @@ fun TasksPane(
         }
     }
 
+    state.artifactPreview?.let { preview ->
+        ArtifactPreviewDialog(
+            preview = preview,
+            onClose = viewModel::closeArtifactPreview,
+        )
+    }
+
+    state.artifactShare?.let { link ->
+        val expiresAt = remember(link.expiresAt) {
+            DateFormat.getDateTimeInstance(DateFormat.MEDIUM, DateFormat.SHORT)
+                .format(Date(link.expiresAt * 1000))
+        }
+        AlertDialog(
+            onDismissRequest = viewModel::clearArtifactShare,
+            title = { Text(stringResource(R.string.chat_artifact_share_title)) },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Text(
+                        text = stringResource(R.string.chat_artifact_share_public_notice),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Text(
+                        text = stringResource(R.string.chat_artifact_share_expires, expiresAt),
+                        style = MaterialTheme.typography.labelSmall,
+                    )
+                    Surface(
+                        shape = RoundedCornerShape(10.dp),
+                        color = MaterialTheme.colorScheme.surfaceContainerHighest,
+                    ) {
+                        Text(
+                            text = link.url,
+                            style = MaterialTheme.typography.bodySmall,
+                            modifier = Modifier.padding(10.dp),
+                        )
+                    }
+                    OutlinedButton(
+                        onClick = {
+                            val send = Intent(Intent.ACTION_SEND).apply {
+                                type = "text/plain"
+                                putExtra(Intent.EXTRA_TEXT, link.url)
+                            }
+                            context.startActivity(
+                                Intent.createChooser(
+                                    send,
+                                    context.getString(R.string.chat_artifact_share_system),
+                                ),
+                            )
+                        },
+                    ) {
+                        Icon(
+                            imageVector = Icons.Filled.Share,
+                            contentDescription = null,
+                            modifier = Modifier.size(18.dp),
+                        )
+                        Spacer(Modifier.width(8.dp))
+                        Text(stringResource(R.string.chat_artifact_share_system))
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE)
+                            as ClipboardManager
+                        clipboard.setPrimaryClip(
+                            ClipData.newPlainText(
+                                context.getString(R.string.chat_artifact_share_title),
+                                link.url,
+                            ),
+                        )
+                        Toast.makeText(
+                            context,
+                            R.string.chat_artifact_link_copied,
+                            Toast.LENGTH_SHORT,
+                        ).show()
+                        viewModel.clearArtifactShare()
+                    },
+                ) {
+                    Text(stringResource(R.string.chat_artifact_copy_link))
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = viewModel::clearArtifactShare) {
+                    Text(stringResource(R.string.action_close))
+                }
+            },
+        )
+    }
 }
 
 @Composable
 private fun TasksHeader(
     taskCount: Int,
+    needsUserCount: Int,
+    activeCount: Int,
     onAdd: () -> Unit,
 ) {
     Row(
@@ -324,7 +482,12 @@ private fun TasksHeader(
             )
             Spacer(Modifier.height(3.dp))
             Text(
-                stringResource(R.string.tasks_header_summary, taskCount),
+                stringResource(
+                    R.string.tasks_header_summary_center,
+                    needsUserCount,
+                    activeCount,
+                    taskCount,
+                ),
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -359,14 +522,22 @@ private fun TasksTabs(selected: TasksTab, onSelect: (TasksTab) -> Unit) {
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     Icon(
-                        if (tab == TasksTab.ADDED) Icons.Filled.TaskAlt else Icons.Filled.EventAvailable,
+                        when (tab) {
+                            TasksTab.TASKS -> Icons.Filled.TaskAlt
+                            TasksTab.ARTIFACTS -> Icons.Filled.Folder
+                            TasksTab.RECOMMENDED -> Icons.Filled.EventAvailable
+                        },
                         contentDescription = null,
                         modifier = Modifier.size(19.dp),
                     )
                     Spacer(Modifier.size(7.dp))
                     Text(
                         stringResource(
-                            if (tab == TasksTab.ADDED) R.string.tasks_tab_added else R.string.tasks_tab_recommended,
+                            when (tab) {
+                                TasksTab.TASKS -> R.string.tasks_tab_added
+                                TasksTab.ARTIFACTS -> R.string.tasks_tab_artifacts
+                                TasksTab.RECOMMENDED -> R.string.tasks_tab_recommended
+                            },
                         ),
                         style = MaterialTheme.typography.titleSmall,
                     )
@@ -377,60 +548,7 @@ private fun TasksTabs(selected: TasksTab, onSelect: (TasksTab) -> Unit) {
 }
 
 @Composable
-private fun AddedTasks(
-    tasks: List<AutomationTaskEntity>,
-    state: TasksUiState,
-    onOpen: (AutomationTaskEntity) -> Unit,
-) {
-    LazyColumn(
-        modifier = Modifier.fillMaxSize(),
-        contentPadding = PaddingValues(start = 16.dp, end = 16.dp, bottom = 20.dp),
-        verticalArrangement = Arrangement.spacedBy(10.dp),
-    ) {
-        when {
-            !state.loaded -> item {
-                Box(Modifier.fillMaxWidth().padding(48.dp), contentAlignment = Alignment.Center) {
-                    CircularProgressIndicator(modifier = Modifier.size(24.dp), strokeWidth = 2.dp)
-                }
-            }
-            tasks.isEmpty() -> item {
-                Box(Modifier.padding(16.dp)) {
-                    EmptyCard(
-                        title = stringResource(R.string.tasks_empty_title),
-                        body = if (state.agentId == null) {
-                            stringResource(R.string.tasks_agent_missing)
-                        } else {
-                            state.error?.asText() ?: stringResource(R.string.tasks_empty_body)
-                        },
-                    )
-                }
-            }
-            else -> {
-                val groups = groupAutomationTasks(tasks, System.currentTimeMillis())
-                groups.forEach { group ->
-                    item(key = "header-${group.bucket.name}") {
-                        Text(
-                            text = stringResource(group.bucket.labelRes),
-                            style = MaterialTheme.typography.titleMedium,
-                            fontWeight = FontWeight.SemiBold,
-                            modifier = Modifier.padding(start = 4.dp, top = 8.dp, bottom = 2.dp),
-                        )
-                    }
-                    item(key = "group-${group.bucket.name}") {
-                        AutomationTaskGroupCard(
-                            tasks = group.tasks,
-                            showPausedLabel = group.bucket != AutomationTaskBucket.PAUSED,
-                            onOpen = onOpen,
-                        )
-                    }
-                }
-            }
-        }
-    }
-}
-
-@Composable
-private fun AutomationTaskGroupCard(
+internal fun AutomationTaskGroupCard(
     tasks: List<AutomationTaskEntity>,
     showPausedLabel: Boolean,
     onOpen: (AutomationTaskEntity) -> Unit,

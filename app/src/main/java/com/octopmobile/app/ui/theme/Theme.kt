@@ -2,11 +2,14 @@ package com.octopmobile.app.ui.theme
 
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.LocalContentColor
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.compositeOver
 import com.octopmobile.app.data.settings.ThemeColor
 import com.octopmobile.app.data.settings.ThemeMode
 
@@ -91,11 +94,16 @@ fun ThemeColor.color(): Color = when (this) {
 
 /** 全应用共用的品牌渐变：顶部带主题色，向下过渡到页面底色。 */
 @Composable
-fun octopBackgroundBrush(): Brush = Brush.verticalGradient(
-    0f to MaterialTheme.colorScheme.primary.copy(alpha = 0.20f),
-    0.42f to MaterialTheme.colorScheme.primary.copy(alpha = 0.07f),
-    1f to MaterialTheme.colorScheme.background,
-)
+fun octopBackgroundBrush(): Brush {
+    val background = MaterialTheme.colorScheme.background
+    val primary = MaterialTheme.colorScheme.primary
+    return Brush.verticalGradient(
+        // 先与页面底色合成，避免半透明渐变透出系统窗口色。
+        0f to primary.copy(alpha = 0.20f).compositeOver(background),
+        0.42f to primary.copy(alpha = 0.07f).compositeOver(background),
+        1f to background,
+    )
+}
 
 @Composable
 fun OctopTheme(
@@ -111,6 +119,12 @@ fun OctopTheme(
     }
     MaterialTheme(
         colorScheme = if (useDark) darkColors(color.color()) else lightColors(color.color()),
-        content = content,
-    )
+    ) {
+        // 根布局改用透明 Scaffold 铺渐变后，Scaffold 无法从容器色推导内容色，
+        // 会退回 Compose 默认的黑色文字。这里统一提供与页面底色匹配的内容色。
+        CompositionLocalProvider(
+            LocalContentColor provides MaterialTheme.colorScheme.onBackground,
+            content = content,
+        )
+    }
 }

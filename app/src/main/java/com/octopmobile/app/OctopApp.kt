@@ -3,6 +3,7 @@ package com.octopmobile.app
 import android.app.Application
 import com.octopmobile.app.data.AppContainer
 import com.octopmobile.app.data.mobile.MobileSyncWorker
+import com.octopmobile.app.data.mobile.TodayNotificationWorker
 
 /**
  * 原生客户端的 Application：装配全局依赖（DB / 配置 / HTTP），供 Compose 层取用。
@@ -18,5 +19,6 @@ class OctopApp : Application() {
         super.onCreate()
         container = AppContainer(this)
         MobileSyncWorker.schedule(this)
+        TodayNotificationWorker.schedule(this)
     }
 }

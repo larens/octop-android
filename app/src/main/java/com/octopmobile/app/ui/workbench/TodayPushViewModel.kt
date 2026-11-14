@@ -20,7 +20,6 @@ import kotlinx.coroutines.launch
 /** Owns exactly one dashboard notification socket while the workbench is foregrounded. */
 class TodayPushViewModel(private val container: AppContainer) : ViewModel() {
     private var foregroundJob: Job? = null
-    private val notifiedAt = mutableMapOf<String, Long>()
 
     fun start() {
         if (foregroundJob?.isActive == true) return
@@ -34,7 +33,7 @@ class TodayPushViewModel(private val container: AppContainer) : ViewModel() {
                         socket.todayCards.collect { push ->
                             if (push.agentId == selectedAgentId) {
                                 container.todayRepository(host, selectedAgentId).refresh()
-                                maybeNotify(push.cardId, push)
+                                maybeNotify(host, selectedAgentId, push)
                             }
                         }
                     }
@@ -72,7 +71,7 @@ class TodayPushViewModel(private val container: AppContainer) : ViewModel() {
         foregroundJob = null
     }
 
-    private suspend fun maybeNotify(cardId: String, push: TodayCardPush) {
+    private suspend fun maybeNotify(host: String, agentId: String, push: TodayCardPush) {
         val settings = container.settings.current()
         if (!TodayNotificationRules.shouldNotify(
                 push.priority,
@@ -82,17 +81,12 @@ class TodayPushViewModel(private val container: AppContainer) : ViewModel() {
         ) {
             return
         }
-        val now = System.currentTimeMillis()
-        val fresh = synchronized(notifiedAt) {
-            val last = notifiedAt[cardId]
-            if (TodayNotificationRules.shouldDedupe(last, now)) return@synchronized false
-            notifiedAt.entries.removeAll { now - it.value >= TodayNotificationRules.DEDUPE_WINDOW_MILLIS }
-            notifiedAt[cardId] = now
-            true
-        }
-        if (fresh) {
-            TodayNotifications.show(container.appContext, push)
-        }
+        val version = container.todayRepository(host, agentId)
+            .observeCards()
+            .first()
+            .firstOrNull { it.id == push.cardId }
+            ?.updatedAt
+        TodayNotifications.show(container.appContext, push, version)
     }
 
     companion object {

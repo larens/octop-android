@@ -1,21 +1,28 @@
 package com.octopmobile.app.ui.workbench
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawingPadding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.MenuBook
 import androidx.compose.material3.Button
+import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
@@ -28,7 +35,11 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
@@ -36,6 +47,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
+import coil3.compose.AsyncImage
 import androidx.compose.foundation.text.KeyboardOptions
 import com.octopmobile.app.R
 
@@ -103,29 +115,44 @@ internal fun ReadingSummaryPanel(
                         Row(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .padding(vertical = 3.dp),
+                                .padding(vertical = 5.dp),
                             verticalAlignment = Alignment.CenterVertically,
                         ) {
-                            Text(
-                                text = book.date,
-                                style = MaterialTheme.typography.labelMedium,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            TodayMediaImage(
+                                imageUrl = book.coverUrl,
+                                fallbackText = book.title,
+                                fallbackIcon = Icons.AutoMirrored.Filled.MenuBook,
+                                accent = accent,
+                                modifier = Modifier
+                                    .width(46.dp)
+                                    .height(62.dp),
+                                shape = RoundedCornerShape(8.dp),
                             )
-                            Spacer(Modifier.width(8.dp))
-                            Text(
-                                text = "《${book.title}》",
-                                modifier = Modifier.weight(1f),
-                                style = MaterialTheme.typography.bodyMedium.copy(
-                                    fontWeight = FontWeight.Medium,
-                                ),
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis,
-                            )
-                            Text(
-                                text = book.marks,
-                                style = MaterialTheme.typography.labelMedium,
-                                color = accent,
-                            )
+                            Spacer(Modifier.width(10.dp))
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = "《${book.title}》",
+                                    style = MaterialTheme.typography.bodyMedium.copy(
+                                        fontWeight = FontWeight.Medium,
+                                    ),
+                                    maxLines = 2,
+                                    overflow = TextOverflow.Ellipsis,
+                                )
+                                Spacer(Modifier.height(3.dp))
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Text(
+                                        text = book.date,
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    )
+                                    Spacer(Modifier.width(6.dp))
+                                    Text(
+                                        text = book.marks,
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = accent,
+                                    )
+                                }
+                            }
                         }
                     }
                 }
@@ -160,6 +187,210 @@ internal fun ReadingSummaryPanel(
                     )
                 }
             }
+        }
+    }
+}
+
+@Composable
+internal fun TodayMediaImage(
+    imageUrl: String?,
+    fallbackText: String,
+    fallbackIcon: ImageVector,
+    accent: Color,
+    modifier: Modifier,
+    shape: RoundedCornerShape = RoundedCornerShape(12.dp),
+) {
+    Box(
+        modifier = modifier
+            .clip(shape)
+            .background(
+                Brush.linearGradient(
+                    listOf(
+                        accent.copy(alpha = 0.22f),
+                        accent.copy(alpha = 0.07f),
+                    ),
+                ),
+            )
+            .border(1.dp, accent.copy(alpha = 0.10f), shape),
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(
+            text = fallbackText.trim().firstOrNull()?.uppercaseChar()?.toString() ?: "·",
+            style = MaterialTheme.typography.headlineSmall.copy(fontWeight = FontWeight.Bold),
+            color = accent.copy(alpha = 0.42f),
+        )
+        Icon(
+            imageVector = fallbackIcon,
+            contentDescription = null,
+            tint = accent.copy(alpha = 0.55f),
+            modifier = Modifier
+                .align(Alignment.BottomEnd)
+                .padding(5.dp)
+                .size(14.dp),
+        )
+        imageUrl?.let { url ->
+            AsyncImage(
+                model = url,
+                contentDescription = null,
+                contentScale = ContentScale.Crop,
+                modifier = Modifier.fillMaxSize(),
+            )
+        }
+    }
+}
+
+@Composable
+internal fun TodayUsagePanel(
+    details: TodayUsageDetails,
+    accent: Color,
+) {
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(7.dp),
+        ) {
+            UsageMetricTile(
+                label = stringResource(R.string.today_usage_cost),
+                value = details.cost,
+                accent = accent,
+                emphasized = true,
+                modifier = Modifier.weight(1f),
+            )
+            UsageMetricTile(
+                label = stringResource(R.string.today_usage_savings),
+                value = details.savings,
+                accent = accent,
+                emphasized = true,
+                modifier = Modifier.weight(1f),
+            )
+        }
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(7.dp),
+        ) {
+            UsageMetricTile(
+                label = stringResource(R.string.today_usage_total),
+                value = details.total,
+                accent = accent,
+                modifier = Modifier.weight(1f),
+            )
+            UsageMetricTile(
+                label = stringResource(R.string.today_usage_cache),
+                value = details.cacheHit,
+                accent = accent,
+                modifier = Modifier.weight(1f),
+            )
+            UsageMetricTile(
+                label = stringResource(R.string.today_usage_calls),
+                value = details.calls,
+                accent = accent,
+                modifier = Modifier.weight(1f),
+            )
+        }
+        val meta = listOfNotNull(
+            details.sessions.takeIf { it != "—" }?.let {
+                stringResource(R.string.today_usage_meta_sessions, it)
+            },
+            details.reasoning.takeIf { it != "—" }?.let {
+                stringResource(R.string.today_usage_meta_reasoning, it)
+            },
+        ).joinToString(" · ")
+        if (meta.isNotBlank()) {
+            Text(
+                text = meta,
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        details.breakdown?.let { breakdown ->
+            UsageDetailBlock(
+                label = stringResource(R.string.today_usage_breakdown),
+                value = breakdown,
+                accent = accent,
+            )
+        }
+        details.models?.let { models ->
+            UsageDetailBlock(
+                label = stringResource(R.string.today_usage_models),
+                value = models,
+                accent = accent,
+            )
+        }
+        details.composition?.let { composition ->
+            UsageDetailBlock(
+                label = stringResource(R.string.today_usage_sources),
+                value = composition,
+                accent = accent,
+            )
+        }
+        details.comparison?.let { comparison ->
+            Text(
+                text = comparison,
+                style = MaterialTheme.typography.labelMedium,
+                color = accent,
+            )
+        }
+    }
+}
+
+@Composable
+private fun UsageDetailBlock(
+    label: String,
+    value: String,
+    accent: Color,
+) {
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(14.dp),
+        color = MaterialTheme.colorScheme.surfaceContainerLow,
+    ) {
+        Column(modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp)) {
+            Text(
+                text = label,
+                style = MaterialTheme.typography.labelMedium.copy(
+                    fontWeight = FontWeight.SemiBold,
+                ),
+                color = accent,
+            )
+            Spacer(Modifier.height(4.dp))
+            Text(
+                text = value,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+    }
+}
+
+@Composable
+private fun UsageMetricTile(
+    label: String,
+    value: String,
+    accent: Color,
+    modifier: Modifier = Modifier,
+    emphasized: Boolean = false,
+) {
+    Surface(
+        modifier = modifier,
+        shape = RoundedCornerShape(13.dp),
+        color = accent.copy(alpha = 0.09f),
+    ) {
+        Column(modifier = Modifier.padding(horizontal = 10.dp, vertical = 9.dp)) {
+            Text(
+                text = label,
+                style = MaterialTheme.typography.labelSmall,
+                color = accent.copy(alpha = 0.82f),
+            )
+            Spacer(Modifier.height(3.dp))
+            Text(
+                text = value,
+                style = if (emphasized) {
+                    MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold)
+                } else {
+                    MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold)
+                },
+                color = MaterialTheme.colorScheme.onSurface,
+            )
         }
     }
 }

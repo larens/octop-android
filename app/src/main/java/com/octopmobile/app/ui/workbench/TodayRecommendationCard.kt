@@ -27,6 +27,7 @@ import androidx.compose.material.icons.automirrored.filled.Chat
 import androidx.compose.material.icons.automirrored.filled.OpenInNew
 import androidx.compose.material.icons.filled.AccessTime
 import androidx.compose.material.icons.filled.AutoAwesome
+import androidx.compose.material.icons.filled.BarChart
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material.icons.filled.Close
@@ -82,6 +83,7 @@ import com.octopmobile.app.R
 import com.octopmobile.app.data.db.TodayCardEntity
 import com.octopmobile.app.data.remote.dto.TodayCardActionState
 import com.octopmobile.app.data.remote.dto.TodayFeedbackType
+import java.net.URI
 import java.time.Instant
 import java.time.LocalDate
 import java.time.ZoneId
@@ -116,8 +118,11 @@ internal fun TodayRecommendationCard(
     val industrySignal = remember(card.kind, card.summary) {
         parseTodaySignal(card)
     }
-    val readingSummary = remember(card.kind, card.summary) {
+    val readingSummary = remember(card.kind, card.summary, card.evidenceJson) {
         parseTodayReadingSummary(card)
+    }
+    val usageDetails = remember(card.kind, card.summary) {
+        parseTodayUsage(card)
     }
     val rideDetails = remember(card.kind, card.summary) {
         parseTodayRide(card)
@@ -170,6 +175,7 @@ internal fun TodayRecommendationCard(
                 industrySignal != null ||
                 rideDetails != null ||
                 coffeeDetails != null ||
+                usageDetails != null ||
                 tracking != null -> emptyList()
             card.kind.isNewsCard() -> newsFacts.take(3)
             else -> todayCardFacts(evidence)
@@ -427,6 +433,7 @@ internal fun TodayRecommendationCard(
                 readingSummary == null &&
                 rideDetails == null &&
                 coffeeDetails == null &&
+                usageDetails == null &&
                 summaryPreview.isNotBlank()
             ) {
                 Spacer(Modifier.height(5.dp))
@@ -480,6 +487,12 @@ internal fun TodayRecommendationCard(
                     details = coffeeDetails,
                     accent = accent,
                 )
+            } else if (usageDetails != null) {
+                Spacer(Modifier.height(12.dp))
+                TodayUsagePanel(
+                    details = usageDetails,
+                    accent = accent,
+                )
             } else if (healthVisualization != null) {
                 Spacer(Modifier.height(12.dp))
                 HealthVisualPanel(healthVisualization, accent)
@@ -490,21 +503,36 @@ internal fun TodayRecommendationCard(
                 industrySignal == null &&
                 readingSummary == null &&
                 rideDetails == null &&
-                coffeeDetails == null
+                coffeeDetails == null &&
+                usageDetails == null
             ) {
                 if (hasPendingMail) {
                     Spacer(Modifier.height(12.dp))
                     PendingMailPanel(pendingPreview, accent)
                 } else if (facts.isNotEmpty() && !structuredEmail && card.kind != "health") {
                     Spacer(Modifier.height(12.dp))
-                    Column(verticalArrangement = Arrangement.spacedBy(7.dp)) {
-                        facts.forEachIndexed { index, fact ->
-                            FactCard(
-                                index = index,
-                                fact = fact,
-                                accent = accent,
-                                onOpen = fact.url?.let { url -> { uriHandler.openUri(url) } },
-                            )
+                    if (card.kind.isNewsCard()) {
+                        Column(verticalArrangement = Arrangement.spacedBy(9.dp)) {
+                            facts.forEachIndexed { index, fact ->
+                                NewsStoryCard(
+                                    index = index,
+                                    fact = fact,
+                                    accent = accent,
+                                    featured = index == 0,
+                                    onOpen = fact.url?.let { url -> { uriHandler.openUri(url) } },
+                                )
+                            }
+                        }
+                    } else {
+                        Column(verticalArrangement = Arrangement.spacedBy(7.dp)) {
+                            facts.forEachIndexed { index, fact ->
+                                FactCard(
+                                    index = index,
+                                    fact = fact,
+                                    accent = accent,
+                                    onOpen = fact.url?.let { url -> { uriHandler.openUri(url) } },
+                                )
+                            }
                         }
                     }
                 }
@@ -992,7 +1020,7 @@ internal fun TodayRecommendationDetail(
     val industrySignal = remember(card.kind, card.summary) {
         parseTodaySignal(card)
     }
-    val readingSummary = remember(card.kind, card.summary) {
+    val readingSummary = remember(card.kind, card.summary, card.evidenceJson) {
         parseTodayReadingSummary(card)
     }
     val rideDetails = remember(card.kind, card.summary) {
@@ -1181,6 +1209,23 @@ internal fun TodayRecommendationDetail(
                                 accent = accent,
                                 expanded = true,
                             )
+                            onOpenExecution?.let { openExecution ->
+                                Spacer(Modifier.height(4.dp))
+                                OutlinedButton(
+                                    onClick = openExecution,
+                                    shape = RoundedCornerShape(50),
+                                    contentPadding = PaddingValues(horizontal = 14.dp, vertical = 8.dp),
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.AutoMirrored.Filled.OpenInNew,
+                                        contentDescription = null,
+                                        tint = accent,
+                                        modifier = Modifier.size(16.dp),
+                                    )
+                                    Spacer(Modifier.width(6.dp))
+                                    Text(stringResource(R.string.today_signal_open_full_text))
+                                }
+                            }
                         }
                         if (readingSummary != null) {
                             Spacer(Modifier.height(12.dp))
@@ -1271,6 +1316,14 @@ internal fun TodayRecommendationDetail(
                                         ContactHighlightCard(
                                             fact = fact,
                                             accent = accent,
+                                            onOpen = onOpen,
+                                        )
+                                    } else if (card.kind.isNewsCard()) {
+                                        NewsStoryCard(
+                                            index = index,
+                                            fact = fact,
+                                            accent = accent,
+                                            featured = index == 0,
                                             onOpen = onOpen,
                                         )
                                     } else {
@@ -1707,6 +1760,7 @@ private fun IndustrySignalEvent(
     accent: Color,
     expanded: Boolean,
 ) {
+    val uriHandler = LocalUriHandler.current
     Column {
         Row(verticalAlignment = Alignment.Top) {
             Column(modifier = Modifier.weight(1f)) {
@@ -1801,6 +1855,27 @@ private fun IndustrySignalEvent(
                     color = accent,
                     maxLines = if (expanded) Int.MAX_VALUE else 2,
                     overflow = if (expanded) TextOverflow.Clip else TextOverflow.Ellipsis,
+                )
+            }
+        }
+
+        signal.sourceUrl?.let { sourceUrl ->
+            Spacer(Modifier.height(6.dp))
+            TextButton(
+                onClick = { uriHandler.openUri(sourceUrl) },
+                contentPadding = PaddingValues(horizontal = 0.dp, vertical = 2.dp),
+            ) {
+                Icon(
+                    imageVector = Icons.AutoMirrored.Filled.OpenInNew,
+                    contentDescription = null,
+                    tint = accent,
+                    modifier = Modifier.size(15.dp),
+                )
+                Spacer(Modifier.width(4.dp))
+                Text(
+                    text = stringResource(R.string.today_signal_view_original),
+                    style = MaterialTheme.typography.labelMedium,
+                    color = accent,
                 )
             }
         }
@@ -2045,7 +2120,8 @@ private fun WeatherMetricRow(
             label = stringResource(R.string.today_weather_temperature),
             value = weather.temperature.orEmpty(),
             accent = accent,
-            modifier = Modifier.weight(1f),
+            valueStyle = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.SemiBold),
+            modifier = Modifier.weight(1.15f),
         )
     }
 }
@@ -2056,6 +2132,7 @@ private fun WeatherMetric(
     value: String,
     accent: Color,
     modifier: Modifier,
+    valueStyle: TextStyle = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.SemiBold),
 ) {
     Surface(
         modifier = modifier,
@@ -2071,7 +2148,7 @@ private fun WeatherMetric(
             Spacer(Modifier.height(2.dp))
             Text(
                 text = value,
-                style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.SemiBold),
+                style = valueStyle,
                 color = MaterialTheme.colorScheme.onSurface,
                 maxLines = 2,
                 overflow = TextOverflow.Ellipsis,
@@ -2383,6 +2460,148 @@ private fun ContactHighlightCard(
 }
 
 @Composable
+private fun NewsStoryCard(
+    index: Int,
+    fact: TodayCardFact,
+    accent: Color,
+    featured: Boolean,
+    onOpen: (() -> Unit)?,
+) {
+    val shape = RoundedCornerShape(if (featured) 16.dp else 14.dp)
+    val source = todayNewsSource(fact.url)
+    val modifier = if (onOpen != null) {
+        Modifier.fillMaxWidth().clickable(onClick = onOpen)
+    } else {
+        Modifier.fillMaxWidth()
+    }
+    Surface(
+        modifier = modifier,
+        shape = shape,
+        color = MaterialTheme.colorScheme.surfaceVariant.copy(
+            alpha = if (featured) 0.62f else 0.46f,
+        ),
+    ) {
+        if (featured) {
+            Column {
+                TodayMediaImage(
+                    imageUrl = fact.imageUrl,
+                    fallbackText = source ?: fact.title,
+                    fallbackIcon = Icons.Filled.Newspaper,
+                    accent = accent,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(142.dp),
+                    shape = RoundedCornerShape(
+                        topStart = 16.dp,
+                        topEnd = 16.dp,
+                        bottomStart = 0.dp,
+                        bottomEnd = 0.dp,
+                    ),
+                )
+                Column(modifier = Modifier.padding(horizontal = 13.dp, vertical = 11.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(
+                            text = (index + 1).toString().padStart(2, '0'),
+                            style = MaterialTheme.typography.labelMedium,
+                            color = accent,
+                        )
+                        source?.let {
+                            Spacer(Modifier.width(7.dp))
+                            Text(
+                                text = it,
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                        Spacer(Modifier.weight(1f))
+                        if (onOpen != null) {
+                            Icon(
+                                imageVector = Icons.AutoMirrored.Filled.OpenInNew,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.size(15.dp),
+                            )
+                        }
+                    }
+                    Spacer(Modifier.height(5.dp))
+                    Text(
+                        text = fact.title,
+                        style = MaterialTheme.typography.titleMedium.copy(
+                            fontWeight = FontWeight.SemiBold,
+                        ),
+                        maxLines = 3,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                    fact.excerpt?.let { excerpt ->
+                        Spacer(Modifier.height(4.dp))
+                        Text(
+                            text = excerpt,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 2,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
+                }
+            }
+        } else {
+            Row(
+                modifier = Modifier.padding(horizontal = 11.dp, vertical = 10.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    text = (index + 1).toString().padStart(2, '0'),
+                    style = MaterialTheme.typography.labelMedium,
+                    color = accent,
+                    modifier = Modifier.width(25.dp),
+                )
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = fact.title,
+                        style = MaterialTheme.typography.bodyMedium.copy(
+                            fontWeight = FontWeight.Medium,
+                        ),
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                    fact.excerpt?.let { excerpt ->
+                        Spacer(Modifier.height(3.dp))
+                        Text(
+                            text = excerpt,
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 2,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
+                    source?.let {
+                        Spacer(Modifier.height(4.dp))
+                        Text(
+                            text = it,
+                            style = MaterialTheme.typography.labelSmall,
+                            color = accent.copy(alpha = 0.84f),
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
+                }
+                Spacer(Modifier.width(9.dp))
+                TodayMediaImage(
+                    imageUrl = fact.imageUrl,
+                    fallbackText = source ?: fact.title,
+                    fallbackIcon = Icons.Filled.Newspaper,
+                    accent = accent,
+                    modifier = Modifier
+                        .width(82.dp)
+                        .height(62.dp),
+                    shape = RoundedCornerShape(10.dp),
+                )
+            }
+        }
+    }
+}
+
+@Composable
 private fun FactCard(
     index: Int,
     fact: TodayCardFact,
@@ -2409,6 +2628,17 @@ private fun FactCard(
                 color = accent,
                 modifier = Modifier.width(25.dp),
             )
+            fact.imageUrl?.let { imageUrl ->
+                TodayMediaImage(
+                    imageUrl = imageUrl,
+                    fallbackText = fact.title,
+                    fallbackIcon = Icons.Filled.Newspaper,
+                    accent = accent,
+                    modifier = Modifier.size(56.dp),
+                    shape = RoundedCornerShape(11.dp),
+                )
+                Spacer(Modifier.width(10.dp))
+            }
             Column(modifier = Modifier.weight(1f)) {
                 Text(
                     text = fact.title,
@@ -2443,6 +2673,12 @@ private fun FactCard(
         }
     }
 }
+
+private fun todayNewsSource(url: String?): String? =
+    runCatching { URI(url).host }
+        .getOrNull()
+        ?.removePrefix("www.")
+        ?.takeIf(String::isNotBlank)
 
 @Composable
 private fun AdvicePanel(text: String, accent: Color) {
@@ -2578,6 +2814,7 @@ private fun todayCardCategoryName(kind: String): String = stringResource(
         "mail" -> R.string.today_card_category_mail
         "news" -> R.string.today_card_category_news
         "signal" -> R.string.today_card_category_signal
+        "usage" -> R.string.today_card_category_usage
         else -> R.string.today_card_category_update
     },
 )
@@ -2594,6 +2831,7 @@ private fun todayCardIcon(kind: String): ImageVector = when (kind) {
     "mail" -> Icons.Filled.Email
     "news" -> Icons.Filled.Newspaper
     "signal" -> Icons.Filled.AutoAwesome
+    "usage" -> Icons.Filled.BarChart
     else -> Icons.Filled.AutoAwesome
 }
 
@@ -2673,6 +2911,7 @@ private fun todayCardAdvice(
     card.kind == "mail" -> stringResource(R.string.today_card_advice_mail)
     card.kind == "news" -> stringResource(R.string.today_card_advice_news)
     card.kind == "signal" -> stringResource(R.string.today_signal_advice)
+    card.kind == "usage" -> stringResource(R.string.today_card_advice_usage)
     card.kind == "review" -> stringResource(R.string.today_card_advice_review)
     else -> stringResource(R.string.today_card_advice_default)
 }

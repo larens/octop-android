@@ -249,6 +249,10 @@ fun WorkbenchScreen(
 
                 WorkbenchTab.TASKS -> TasksPane(
                     onNeedsLogin = onNeedsLogin,
+                    onOpenConversation = {
+                        mainConversationTarget?.let { openThread(it.agentId, it.threadId) }
+                    },
+                    onOpenThread = openThread,
                     onComposerChanged = { taskComposerOpen = it },
                 )
 
@@ -409,6 +413,27 @@ private fun NewConversationPane(
                 }
             }) {
                 Text(stringResource(R.string.main_retry))
+            }
+        } else if (state.agentsLoaded && state.selectedAgentId == null) {
+            // 新账号还没有可用助理时，这里以前是静默 return，界面会永远转圈。
+            // 现在明确说明缺什么，并给一次重新检查（助理可能刚在其他端建好）。
+            Text(
+                text = stringResource(R.string.chat_agent_missing_title),
+                style = MaterialTheme.typography.titleMedium,
+                modifier = Modifier.padding(horizontal = 24.dp),
+                textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+            )
+            Spacer(Modifier.height(8.dp))
+            Text(
+                text = stringResource(R.string.chat_agent_missing_body),
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(horizontal = 24.dp),
+                textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+            )
+            Spacer(Modifier.height(16.dp))
+            Button(onClick = viewModel::retry) {
+                Text(stringResource(R.string.chat_agent_missing_retry))
             }
         } else if (
             !state.mainConversationLoading &&

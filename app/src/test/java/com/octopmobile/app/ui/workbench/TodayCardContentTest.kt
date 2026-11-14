@@ -257,7 +257,7 @@ class TodayCardContentTest {
         val evidence = decodeTodayCardEvidence(
             """
             [
-              {"source_type":"web_search","event_type":"web.search_result","occurred_at":1,"privacy_class":"public_web","title":"GPT-6 Astra Pro","excerpt":"并行 agent 交付","url":"https://example.com/a"},
+              {"source_type":"web_search","event_type":"web.search_result","occurred_at":1,"privacy_class":"public_web","title":"GPT-6 Astra Pro","excerpt":"并行 agent 交付","url":"https://example.com/a","image_url":"https://example.com/a.jpg"},
               {"source_type":"web_search","event_type":"web.search_result","occurred_at":2,"privacy_class":"public_web","title":"GPT-6 Astra Pro","excerpt":"重复来源","url":"https://example.com/a"},
               {"source_type":"web_search","event_type":"web.search_result","occurred_at":3,"privacy_class":"public_web","excerpt":"只有摘要也值得保留"}
             ]
@@ -268,6 +268,7 @@ class TodayCardContentTest {
 
         assertEquals(2, facts.size)
         assertEquals("GPT-6 Astra Pro", facts[0].title)
+        assertEquals("https://example.com/a.jpg", facts[0].imageUrl)
         assertTrue(facts[1].title.contains("只有摘要"))
     }
 
@@ -735,9 +736,20 @@ class TodayCardContentTest {
 
         assertEquals("北京", summary?.location)
         assertEquals("晴转小雨", summary?.condition)
-        assertEquals("6~15°C", summary?.temperature)
+        assertEquals("6–15°C", summary?.temperature)
         assertEquals("降雨概率 60%。早晚偏冷。", summary?.detail)
         assertTrue(summary?.isStructured == true)
+    }
+
+    @Test
+    fun weatherSummaryShowsTheFullTemperatureRangeWhenBothEndsHaveUnits() {
+        val summary = parseDailyWeather(
+            "北京：晴，0.4℃ ~ 13.2℃，昼夜温差约 12.8℃，降雨概率 0%，无天气预警。",
+        )
+
+        assertEquals("北京", summary?.location)
+        assertEquals("晴", summary?.condition)
+        assertEquals("0.4–13.2°C", summary?.temperature)
     }
 
     @Test
@@ -829,7 +841,7 @@ class TodayCardContentTest {
         assertTrue(weather.cities[0].note.orEmpty().contains("今晚有雨转停"))
         assertTrue(weather.cities[0].note.orEmpty().contains("较今天回升"))
         assertEquals("多云", weather.cities[1].condition)
-        assertEquals("5.3~18.2°C", weather.cities[1].temperature)
+        assertEquals("5.3–18.2°C", weather.cities[1].temperature)
         assertEquals("到京后约 10°C，备外套", weather.cities[1].note)
         assertEquals(
             "早晚偏凉，薄外套即可；返京随身带",
@@ -898,6 +910,111 @@ class TodayCardContentTest {
         assertEquals("Token经济", summary.books[0].title)
         assertEquals("0 条", summary.books[0].marks)
         assertEquals(listOf("核心观点"), summary.remainingSections.map { it.heading })
+    }
+
+    @Test
+    fun readingReviewPromotesDurationDaysAndListening() {
+        val reading = card(
+            "weekly-reading-richer",
+            kind = "review",
+            occurredAt = at(2026, 11, 14, 20, 0),
+            summary = """
+                【阅读概览】
+                本周阅读 2 本 · 阅读时长 5.4 小时 · 阅读天数 6 天 · 听书 3.5 小时 · 新增划线 1 条 · 书架 1205 本
+
+                【本周在读】
+                11-14《AI原生组织》· 27% · 1 条
+
+                【核心观点】
+                - 组织断点比外部竞争更致命。
+            """.trimIndent(),
+        ).copy(title = "每周阅读总结")
+
+        val summary = requireNotNull(parseTodayReadingSummary(reading))
+
+        assertEquals(
+            listOf(
+                "本周阅读" to "2",
+                "阅读时长" to "5.4 小时",
+                "阅读天数" to "6 天",
+                "听书" to "3.5 小时",
+                "新增划线" to "1",
+                "书架" to "1205",
+            ),
+            summary.metrics.map { it.label to it.value },
+        )
+        assertEquals("27% · 1 条", summary.books.single().marks)
+    }
+
+    @Test
+    fun readingBooksUseCoverEvidenceWhenAvailable() {
+        val reading = card(
+            "weekly-reading-cover",
+            kind = "review",
+            occurredAt = at(2026, 11, 14, 20, 0),
+            summary = """
+                【阅读概览】
+                本周阅读 1 本 · 阅读时长 1.2 小时
+
+                【本周在读】
+                11-14《AI原生组织》· 27% · 1 条
+            """.trimIndent(),
+            evidenceJson = """
+                [{"source_type":"conversation","source_record_id":"thread-1","event_type":"conversation.context","occurred_at":1,"privacy_class":"private_user_content","title":"AI原生组织","excerpt":"阅读书目封面","image_url":"https://cdn.example.com/book.jpg"}]
+            """.trimIndent(),
+        ).copy(title = "每周阅读总结")
+
+        val summary = requireNotNull(parseTodayReadingSummary(reading))
+
+        assertEquals(
+            "https://cdn.example.com/book.jpg",
+            summary.books.single().coverUrl,
+        )
+    }
+
+    @Test
+    fun usageCardPromotesCostAndModelBreakdown() {
+        val usage = card(
+            "daily-usage",
+            kind = "usage",
+            occurredAt = at(2026, 11, 14, 21, 30),
+            summary = """
+                【今日花费】
+                总花费：¥2.02 · 按官方价估算
+                缓存节省：¥4.83
+                总 Token：6.7M · 缓存命中：75%
+                模型调用：135 · 会话：9 · 轮次：15 · 推理：106.7k
+
+                【花费构成】
+                未命中 81.5% · 缓存 4.9% · 输出 13.6%
+
+                【来源花费】
+                定时任务：¥1.63 · 聊天：¥0.39 · 其他：<¥0.01
+
+                【模型花费】
+                mimo-v2.6-flash：¥2.02 · 6.7M
+
+                【对比昨日】
+                比昨天多 87%（昨天 ¥1.08）
+            """.trimIndent(),
+        )
+
+        val details = requireNotNull(parseTodayUsage(usage))
+
+        assertEquals("¥2.02", details.cost)
+        assertEquals("¥4.83", details.savings)
+        assertEquals("6.7M", details.total)
+        assertEquals("75%", details.cacheHit)
+        assertEquals("9", details.sessions)
+        assertEquals("135", details.calls)
+        assertEquals("106.7k", details.reasoning)
+        assertEquals("未命中 81.5% · 缓存 4.9% · 输出 13.6%", details.breakdown)
+        assertEquals("mimo-v2.6-flash：¥2.02 · 6.7M", details.models)
+        assertEquals(
+            "定时任务：¥1.63 · 聊天：¥0.39 · 其他：<¥0.01",
+            details.composition,
+        )
+        assertEquals("比昨天多 87%（昨天 ¥1.08）", details.comparison)
     }
 
     @Test
@@ -1058,6 +1175,7 @@ class TodayCardContentTest {
                 核心变化：多个 agent 并行推进同一任务，过程实时可见。
                 不确定性：Pro 档仍在灰度。
                 对我的意义：今天就能对照现有流程试一次。
+                来源：https://openai.com/index/gpt-6
                 2. Anthropic｜企业交易 agent
                 成熟度：仅发布方口径
                 证据强度：1/3
@@ -1079,10 +1197,27 @@ class TodayCardContentTest {
         assertEquals("可验证进展", details.signals[0].maturity)
         assertEquals(3, details.signals[0].evidenceStrength)
         assertTrue(details.signals[0].change.contains("并行推进"))
+        assertEquals("https://openai.com/index/gpt-6", details.signals[0].sourceUrl)
         assertEquals("先观望。", details.signals[1].relevance)
         assertEquals("先验证已经开放的能力，交易类进展等第三方证据。", details.advice)
         assertTrue(signal.isNewsRecommendationCard())
         assertFalse(signal.supportsScheduleReminder())
+    }
+
+    @Test
+    fun preferredSignalSourceUrlChoosesTheFirstPartyArticle() {
+        assertEquals(
+            "https://github.blog/changelog/2026-11-10-gemini-4-carbon-in-github-copilot/",
+            preferredSignalSourceUrl(
+                "https://superpowerdaily.com/posts/x （站点直读）；第一方原文：" +
+                    "https://github.blog/changelog/2026-11-10-gemini-4-carbon-in-github-copilot/ " +
+                    "、https://docs.github.com/copilot/reference/billing",
+            ),
+        )
+        assertEquals(
+            "https://example.com/a",
+            preferredSignalSourceUrl("https://example.com/a"),
+        )
     }
 
     @Test

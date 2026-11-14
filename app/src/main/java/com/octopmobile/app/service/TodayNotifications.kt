@@ -7,9 +7,12 @@ import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
 import com.octopmobile.app.R
+import com.octopmobile.app.data.settings.SettingsPreferences
 import com.octopmobile.app.data.ws.TodayCardPush
 import com.octopmobile.app.ui.MainActivity
 import com.octopmobile.app.ui.Routes
+import java.time.LocalDate
+import java.time.LocalTime
 
 /**
  * 重要 Today 变动在手机上提示。
@@ -24,8 +27,29 @@ object TodayNotifications {
     const val CHANNEL_IMPORTANT = "today_important"
     const val CHANNEL_BRIEFING = "today_briefing"
 
-    fun show(context: Context, push: TodayCardPush): Boolean {
+    suspend fun show(context: Context, push: TodayCardPush, version: Long? = null): Boolean {
         val channel = TodayNotificationRules.channelFor(push.priority) ?: return false
+        val now = System.currentTimeMillis()
+        val settings = SettingsPreferences(context).current()
+        val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        val today = LocalDate.now().toString()
+        val shownToday = TodayNotificationRules.dailyCount(
+            storedDate = prefs.getString(KEY_DAILY_DATE, null),
+            today = today,
+            storedCount = prefs.getInt(KEY_DAILY_COUNT, 0),
+        )
+        if (!TodayNotificationRules.shouldPost(
+                channel = channel,
+                quietHoursEnabled = settings.quietHoursEnabled,
+                now = LocalTime.now(),
+                shownToday = shownToday,
+            )
+        ) {
+            return false
+        }
+        val dedupeKey = version?.let { "${push.cardId}@$it" } ?: push.cardId
+        val lastShownAt = prefs.getLong(dedupeKey, 0L)
+        if (TodayNotificationRules.shouldDedupe(lastShownAt, now)) return false
         ensureChannel(context, channel)
         val manager = context.getSystemService(NotificationManager::class.java) ?: return false
         val title = push.title.ifBlank { context.getString(R.string.notif_today_default_title) }
@@ -47,10 +71,18 @@ object TodayNotifications {
             .setCategory(Notification.CATEGORY_RECOMMENDATION)
             .setVisibility(Notification.VISIBILITY_PRIVATE)
             .build()
-        return runCatching {
+        val shown = runCatching {
             manager.notify(notificationId(push), notification)
             true
         }.getOrDefault(false)
+        if (shown) {
+            prefs.edit()
+                .putLong(dedupeKey, now)
+                .putString(KEY_DAILY_DATE, today)
+                .putInt(KEY_DAILY_COUNT, shownToday + 1)
+                .apply()
+        }
+        return shown
     }
 
     private fun notificationId(push: TodayCardPush): Int = "${push.agentId}:${push.cardId}".hashCode()
@@ -92,6 +124,10 @@ object TodayNotifications {
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
         )
     }
+
+    private const val PREFS_NAME = "today_notification_history"
+    private const val KEY_DAILY_DATE = "daily_date"
+    private const val KEY_DAILY_COUNT = "daily_count"
 }
 
 /** 纯规则，便于单测：哪些 push 该弹、弹哪条通道。 */
@@ -108,6 +144,39 @@ object TodayNotificationRules {
         scheduledTaskNotifications: Boolean,
     ): Boolean = notificationsEnabled && scheduledTaskNotifications && channelFor(priority) != null
 
+    /** 安静时段只约束简报；p0 是紧急提醒，允许穿透。 */
+    fun shouldRespectQuietHours(channel: String?, quietHoursEnabled: Boolean): Boolean =
+        quietHoursEnabled && channel == TodayNotifications.CHANNEL_BRIEFING
+
+    fun isQuietHours(
+        now: LocalTime,
+        start: LocalTime = QUIET_START,
+        end: LocalTime = QUIET_END,
+    ): Boolean = if (start <= end) {
+        now >= start && now < end
+    } else {
+        now >= start || now < end
+    }
+
+    /** 每日上限只约束简报，避免汇总类提醒堆积。 */
+    fun canReachDailyLimit(shownToday: Int, limit: Int = DAILY_LIMIT): Boolean = shownToday < limit
+
+    fun shouldPost(
+        channel: String?,
+        quietHoursEnabled: Boolean,
+        now: LocalTime,
+        shownToday: Int,
+        dailyLimit: Int = DAILY_LIMIT,
+    ): Boolean {
+        if (channel == null) return false
+        if (shouldRespectQuietHours(channel, quietHoursEnabled) && isQuietHours(now)) return false
+        if (channel == TodayNotifications.CHANNEL_BRIEFING && !canReachDailyLimit(shownToday, dailyLimit)) return false
+        return true
+    }
+
+    fun dailyCount(storedDate: String?, today: String, storedCount: Int): Int =
+        if (storedDate == today) storedCount.coerceAtLeast(0) else 0
+
     /** 同一个卡片 6 小时内只弹一次，避免重连或重复帧把同一条提醒刷成多条。 */
     fun shouldDedupe(
         lastShownAt: Long?,
@@ -116,4 +185,7 @@ object TodayNotificationRules {
     ): Boolean = lastShownAt != null && now - lastShownAt < windowMillis
 
     const val DEDUPE_WINDOW_MILLIS = 6 * 60 * 60 * 1000L
+    const val DAILY_LIMIT = 5
+    private val QUIET_START: LocalTime = LocalTime.of(22, 0)
+    private val QUIET_END: LocalTime = LocalTime.of(7, 30)
 }

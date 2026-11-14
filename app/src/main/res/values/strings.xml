@@ -35,6 +35,7 @@
     <string name="today_title">Today</string>
     <string name="tasks_title">Tasks</string>
     <string name="tasks_header_summary">%1$d scheduled tasks, handled on your behalf</string>
+    <string name="tasks_header_summary_center">%1$d need you · %2$d in progress · %3$d scheduled</string>
     <string name="memory_title">Memory</string>
     <string name="settings_instance">Instance</string>
     <string name="settings_host_label">Address</string>
@@ -87,6 +88,8 @@
     <string name="settings_notification_confirmation_summary">Notify when an action needs your confirmation.</string>
     <string name="settings_notification_scheduled">Scheduled task notifications</string>
     <string name="settings_notification_scheduled_summary">Notify about scheduled task results.</string>
+    <string name="settings_notification_quiet_hours">Quiet hours</string>
+    <string name="settings_notification_quiet_hours_summary">Mute briefings from 22:00 to 07:30. Urgent alerts still come through.</string>
     <string name="settings_notification_background_note">Reliable notification delivery after the app is closed requires the matching server-side notification service or a vendor push channel.</string>
     <string name="settings_storage">Storage</string>
     <string name="settings_server">Server address</string>
@@ -213,6 +216,9 @@
     <string name="chat_new_title">New conversation</string>
     <string name="chat_opening_main_conversation">Opening your main conversation…</string>
     <string name="chat_open_main_conversation">Open main conversation</string>
+    <string name="chat_agent_missing_title">No agent available yet</string>
+    <string name="chat_agent_missing_body">This account has no agent on the server yet, so Chats, Today, Tasks and Memory all stay empty. Create one in the web console or on the server, then check again.</string>
+    <string name="chat_agent_missing_retry">Check again</string>
     <string name="chat_model_loading">Loading models…</string>
     <string name="chat_model_auto">Auto model</string>
     <string name="chat_send">Send</string>
@@ -338,6 +344,11 @@
     <string name="today_hero_body">Start with the tasks that need you or are still running. Their execution details stay in the background.</string>
     <string name="today_header_summary">%1$d to handle now · %2$d in the next 3 days</string>
     <string name="today_header_clear">Nothing urgent today. Stay with what matters.</string>
+    <string name="today_morning_digest_title">Morning briefing</string>
+    <string name="today_morning_digest_subtitle">%1$d items merged · tap one to open the original</string>
+    <string name="today_digest_must_do">Must handle</string>
+    <string name="today_digest_can_draft">I can draft</string>
+    <string name="today_digest_later">Can wait</string>
     <string name="today_waiting_title">Waiting On You</string>
     <string name="today_waiting_subtitle">This task needs more information or confirmation.</string>
     <string name="today_running_title">Still Running</string>
@@ -346,6 +357,8 @@
     <string name="today_recent_subtitle">Keep the next step moving without opening an execution session.</string>
     <string name="today_empty_title">Nothing to organize yet</string>
     <string name="today_empty_body">Run a few real tasks first. This page will then start surfacing progress, waiting items, and next steps.</string>
+    <string name="today_agent_missing_title">No agent available yet</string>
+    <string name="today_agent_missing_body">Today cards belong to the current agent. Create one on the server or in the web console so this account gets its own Today.</string>
     <string name="today_unread_count">%1$d unread</string>
     <string name="today_memory_title">Distilled memory</string>
     <string name="today_memory_empty">Nothing worth distilling yet.</string>
@@ -509,6 +522,7 @@
     <string name="today_card_category_mail">Mail</string>
     <string name="today_card_category_news">News &amp; updates</string>
     <string name="today_card_category_signal">AI &amp; tech signals</string>
+    <string name="today_card_category_usage">Spend</string>
     <string name="today_ride_category">Ride</string>
     <string name="today_coffee_category">Coffee pickup</string>
     <string name="today_card_category_update">Update</string>
@@ -616,7 +630,22 @@
     <string name="today_signal_uncertainty">Uncertainty</string>
     <string name="today_signal_relevance">Why it matters: %1$s</string>
     <string name="today_signal_view_analysis">Compare in detail</string>
+    <string name="today_signal_view_original">Read original</string>
+    <string name="today_signal_open_full_text">Read full signal</string>
     <string name="today_signal_advice">Test what is already available first; keep vendor-only claims in the watch list.</string>
+    <string name="today_card_advice_usage">If spend is higher than usual, check scheduled tasks for duplicate runs first; reuse context when cache hits are low.</string>
+    <string name="today_usage_cost">Today\'s spend</string>
+    <string name="today_usage_savings">Cache savings</string>
+    <string name="today_usage_total">Total tokens</string>
+    <string name="today_usage_cache">Cache hit</string>
+    <string name="today_usage_sessions">Conversations</string>
+    <string name="today_usage_calls">Model calls</string>
+    <string name="today_usage_reasoning">Reasoning</string>
+    <string name="today_usage_breakdown">Cost breakdown</string>
+    <string name="today_usage_models">By model</string>
+    <string name="today_usage_sources">By source</string>
+    <string name="today_usage_meta_sessions">%1$s conversations</string>
+    <string name="today_usage_meta_reasoning">Reasoning %1$s</string>
     <string name="today_signal_evidence_sources">Evidence sources · %1$d</string>
     <string name="today_weather_location">Location</string>
     <string name="today_weather_condition">Weather</string>
@@ -764,7 +793,38 @@
     <!-- Automations (server cron, docs/spec.md §23.3, protocol §5.5) -->
     <string name="tasks_refresh">Refresh tasks and recommendations</string>
     <string name="tasks_tab_added">Tasks</string>
+    <string name="tasks_tab_artifacts">Artifacts</string>
     <string name="tasks_tab_recommended">Recommended</string>
+    <string name="task_center_needs_user">Needs you</string>
+    <string name="task_center_active">In progress</string>
+    <string name="task_center_scheduled">Scheduled</string>
+    <string name="task_center_needs_user_hint">This task is waiting for your input or a decision</string>
+    <string name="task_center_active_hint">Working in the background; the result returns to the main conversation</string>
+    <string name="task_center_empty_title">Nothing needs you right now</string>
+    <string name="task_center_empty_body">Tasks that need approval, are running in the background, or are scheduled will be collected here.</string>
+    <string name="task_center_deferred">Deferred</string>
+    <string name="task_action_complete">Done</string>
+    <string name="task_action_defer">Later</string>
+    <string name="task_action_ignore">Ignore</string>
+    <string name="task_action_ignore_title">Ignore this task?</string>
+    <string name="task_action_ignore_body">The task will be closed and its unfinished background work cancelled.</string>
+    <string name="task_action_deferred_hint">Deferred until %1$s</string>
+    <string name="task_action_failed">Could not update the task. Try again later.</string>
+
+    <string name="artifacts_filter_all">All</string>
+    <string name="artifacts_filter_web">Web</string>
+    <string name="artifacts_filter_doc">Docs</string>
+    <string name="artifacts_filter_sheet">Sheets</string>
+    <string name="artifacts_filter_deck">Decks</string>
+    <string name="artifacts_filter_other">Other</string>
+    <string name="artifacts_empty_title">No artifacts yet</string>
+    <string name="artifacts_empty_body">Web pages, reports, spreadsheets, and decks produced by the agent are collected here by conversation, so you no longer have to dig through chat history.</string>
+    <string name="artifacts_from_thread">From %1$s · %2$s</string>
+    <string name="artifacts_open_thread">Open source conversation</string>
+    <string name="artifacts_more_actions">More artifact actions</string>
+    <string name="artifacts_share">Share public link</string>
+    <string name="artifacts_continue">Continue from this</string>
+    <string name="artifacts_continue_prompt">Continue working from “%1$s” and keep the same sources and format. What should I change or add?</string>
     <string name="tasks_group_today">Today</string>
     <string name="tasks_group_week">Next 7 days</string>
     <string name="tasks_group_later">Later</string>
@@ -849,6 +909,7 @@
     <string name="tasks_run_triggered">Triggered on the server.</string>
     <string name="tasks_delete_message">Delete “%1$s”? The server will stop running it.</string>
     <string name="tasks_agent_missing">No agent selected yet.</string>
+    <string name="tasks_agent_missing_body">Tasks belong to an agent. Until this account has one on the server, tasks and artifacts stay empty.</string>
     <string name="err_schedule_required">Enter a trigger rule.</string>
     <string name="err_prompt_required">Enter what the automation should run.</string>
 

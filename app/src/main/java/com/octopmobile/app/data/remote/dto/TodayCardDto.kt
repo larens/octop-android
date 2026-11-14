@@ -14,6 +14,7 @@ data class TodayEvidenceDto(
     val url: String? = null,
     val title: String? = null,
     val excerpt: String? = null,
+    @SerialName("image_url") val imageUrl: String? = null,
 )
 
 @Serializable

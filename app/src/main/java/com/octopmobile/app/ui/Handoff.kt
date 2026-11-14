@@ -28,6 +28,7 @@ object AppActions {
     const val NEW_THREAD = "com.octopmobile.app.action.NEW_THREAD"
     const val CAMERA = "com.octopmobile.app.action.CAMERA"
     const val TASK_REPLY = "com.octopmobile.app.action.TASK_REPLY"
+    const val REFINE_ARTIFACT = "com.octopmobile.app.action.REFINE_ARTIFACT"
 
     /** 分享入口没有自己的 action 常量（用的是系统的 `ACTION_SEND`），这里给它一个内部标识。 */
     const val SHARE = "com.octopmobile.app.action.SHARE"
