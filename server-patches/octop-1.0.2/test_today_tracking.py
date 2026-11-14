@@ -77,6 +77,7 @@ class FakeDatabase:
                 url TEXT,
                 title TEXT,
                 excerpt TEXT,
+                image_url TEXT,
                 created_at INTEGER NOT NULL
             );
             """

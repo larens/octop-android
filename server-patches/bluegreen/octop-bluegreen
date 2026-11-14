@@ -21,6 +21,11 @@ fi
 PYTHON3="${PYTHON3:-python3}"
 PACKAGE_SPEC="${OCTOP_PACKAGE_SPEC:-}"
 SEED_RELEASE="${OCTOP_SEED_RELEASE:-}"
+LOCAL_EMBEDDING_SPEC="${OCTOP_LOCAL_EMBEDDING_SPEC:-fastembed>=0.4 huggingface_hub>=0.20}"
+LOCAL_EMBEDDING_INDEX="${OCTOP_LOCAL_EMBEDDING_INDEX:-}"
+if [ -n "$SEED_RELEASE" ]; then
+  SEED_RELEASE="$(readlink -f "$SEED_RELEASE")"
+fi
 RELEASE_KEEP="${OCTOP_RELEASE_KEEP:-4}"
 JOURNAL_MAX_USE="${OCTOP_JOURNAL_MAX_USE:-512M}"
 
@@ -213,7 +218,12 @@ apply_patch_pack() {
     "$release/venv/bin/python" install_router_phase3.py
     "$release/venv/bin/python" install_router_phase35.py
     "$release/venv/bin/python" install_router_phase4.py
+    "$release/venv/bin/python" install_conversation_efficiency.py
     "$release/venv/bin/python" install_feishu_group_monitor.py
+    "$release/venv/bin/python" install_usage_today_cards.py
+    if [ -f install_weread_reading.py ]; then
+      "$release/venv/bin/python" install_weread_reading.py
+    fi
   )
   OCTOP_SITE_PACKAGES="$site" \
     OCTOP_BACKUPS_DIR="$release/patch-backups" \
@@ -226,6 +236,7 @@ apply_patch_pack() {
     "$site/octop/api/routers/conversation_router.py" \
     "$site/octop/infra/conversation/service.py" \
     "$site/octop/infra/conversation/context.py" \
+    "$site/octop/infra/conversation/feed.py" \
     "$site/octop/infra/conversation/budget.py" \
     "$site/octop/infra/conversation/shadow.py" \
     "$site/octop/infra/conversation/retention.py" \
@@ -248,6 +259,7 @@ apply_patch_pack() {
     "$site/octop/infra/today/didi_ride_cards.py" \
     "$site/octop/infra/today/coffee_order_cards.py" \
     "$site/octop/infra/today/health_cards.py" \
+    "$site/octop/infra/today/usage_cards.py" \
     "$site/octop/infra/today/automatic.py" \
     "$site/octop/infra/today/cards.py" \
     "$site/octop/infra/today/feishu_group_monitor.py" \
@@ -280,12 +292,17 @@ run_patch_tests() {
     "$release/venv/bin/python" test_router_phase3.py
     "$release/venv/bin/python" test_router_phase35.py
     "$release/venv/bin/python" test_router_phase4.py
+    "$release/venv/bin/python" test_conversation_efficiency.py
+    "$release/venv/bin/python" test_feed_and_router_governance.py
     "$release/venv/bin/python" test_artifact_shares.py
     "$release/venv/bin/python" test_artifact_lifecycle.py
     "$release/venv/bin/python" test_feishu_mcp.py
     "$release/venv/bin/python" test_feishu_user_auth_recovery.py
     "$release/venv/bin/python" test_mcp_connectors.py
     "$release/venv/bin/python" test_lifestyle_mcp_connectors.py
+    if [ -f test_weread_reading.py ]; then
+      "$release/venv/bin/python" test_weread_reading.py
+    fi
     "$release/venv/bin/python" test_agent_tooling.py
     "$release/venv/bin/python" test_feishu_group_monitor.py
     "$release/venv/bin/python" -m unittest -v \
@@ -294,6 +311,7 @@ run_patch_tests() {
       test_coffee_today_cards.py \
       test_health_today_cards.py \
       test_health_trend_memory.py \
+      test_usage_today_cards.py \
       test_today_feedback_semantics.py
   )
 }
@@ -497,15 +515,14 @@ PY
 import sys
 from pathlib import Path
 
-old = str(Path(sys.argv[1]) / "bin/python").encode()
 new = str(Path(sys.argv[2]) / "bin/python").encode()
-prefix = b"#!" + old
 for path in (Path(sys.argv[2]) / "bin").iterdir():
     if path.is_symlink() or not path.is_file():
         continue
     data = path.read_bytes()
-    if data.startswith(prefix):
-        path.write_bytes(b"#!" + new + data[len(prefix):])
+    first, separator, rest = data.partition(b"\n")
+    if first.startswith(b"#!") and b"/venv/bin/python" in first:
+        path.write_bytes(b"#!" + new + separator + rest)
 PY
   else
     uv venv --python 3.12 "$release/venv"
@@ -513,6 +530,21 @@ PY
       --link-mode=copy \
       --python "$release/venv/bin/python" \
       "${PACKAGE_SPEC:-octop==$version}"
+  fi
+  # A plain octop wheel omits the local embedding runtime. Install it directly:
+  # the octop[local-embedding] extra conflicts with octop-harness's pillow pin.
+  if ! "$release/venv/bin/python" -c 'import fastembed, huggingface_hub' >/dev/null 2>&1; then
+    local embedding_index_args=()
+    local embedding_specs=()
+    if [ -n "$LOCAL_EMBEDDING_INDEX" ]; then
+      embedding_index_args=(--default-index "$LOCAL_EMBEDDING_INDEX")
+    fi
+    read -r -a embedding_specs <<<"$LOCAL_EMBEDDING_SPEC"
+    uv pip install \
+      --link-mode=copy \
+      --python "$release/venv/bin/python" \
+      "${embedding_index_args[@]}" \
+      "${embedding_specs[@]}"
   fi
   uv pip freeze --python "$release/venv/bin/python" >"$release/requirements.lock"
   apply_patch_pack "$release" "$patch_source"

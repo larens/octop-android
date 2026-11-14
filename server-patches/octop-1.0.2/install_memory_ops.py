@@ -85,7 +85,7 @@ Type=oneshot
 User=root
 Group=root
 UMask=0077
-ExecStart=/opt/octop/venv/bin/python /opt/octop/ops/storage_maintenance.py --apply --release-keep=4 --journal-max-use=512M
+ExecStart=/opt/octop/venv/bin/python /opt/octop/ops/storage_maintenance.py --apply --release-keep=4 --journal-max-use=512M --tool-artifact-days=30 --history-days=90 --feed-days=90 --context-pack-days=90
 Nice=10
 IOSchedulingClass=idle
 TimeoutStartSec=10min
@@ -98,7 +98,7 @@ ProtectKernelTunables=true
 ProtectKernelModules=true
 ProtectControlGroups=true
 RestrictSUIDSGID=true
-ReadWritePaths=/opt/octop/releases /opt/octop/state/storage-maintenance /etc/systemd/journald.conf.d
+ReadWritePaths=/opt/octop/releases /opt/octop/state/storage-maintenance /etc/systemd/journald.conf.d /data/agent-workspace /opt/octop/octop.db -/opt/octop/octop.db-wal -/opt/octop/octop.db-shm
 """
     storage_timer = """[Unit]
 Description=Run Octop release and journal storage maintenance daily

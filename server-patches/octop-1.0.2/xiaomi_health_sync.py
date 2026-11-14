@@ -37,6 +37,7 @@ from xiaomi_health_cloud import (
 
 LOG = logging.getLogger("xiaomi_health_sync")
 CREDENTIALS_KEY = "xiaomi_health_cloud"
+CREDENTIALS_KEY_PREFIX = f"{CREDENTIALS_KEY}:"
 LAST_SYNC_KEY = "xiaomi_health.last_sync"
 SOURCE_TYPE = "xiaomi_health"
 DEVICE_ID = "xiaomi-health-cloud"
@@ -603,21 +604,79 @@ def _sync_window_event(
     )
 
 
+def _credentials_key(agent_id: str) -> str:
+    """每个 agent 一条独立密钥；旧实例的全局密钥继续兼容。"""
+    return f"{CREDENTIALS_KEY_PREFIX}{agent_id}"
+
+
+def _last_sync_key(agent_id: str) -> str:
+    return f"{LAST_SYNC_KEY}:{agent_id}"
+
+
 def _load_credentials(
     pool: SqlitePool,
+    key: str = CREDENTIALS_KEY,
 ) -> tuple[dict[str, Any], bytes]:
     secret_repo = SecretRepo(pool)
-    blob = secret_repo.get(CREDENTIALS_KEY)
+    blob = secret_repo.get(key)
     if blob is None:
         raise RuntimeError(
-            "Xiaomi Health credentials are not configured in Octop secrets"
+            f"Xiaomi Health credentials are not configured in Octop secrets ({key})"
         )
     return decrypt_credentials(secret_repo, blob), blob
+
+
+def _load_bindings(pool: SqlitePool) -> list[tuple[str, dict[str, Any]]]:
+    """返回所有可同步的绑定，同一 agent 只保留一条。
+
+    新绑定使用 ``xiaomi_health_cloud:<agent_id>``；旧实例仍可能只有全局
+    ``xiaomi_health_cloud``。按 agent 去重时优先使用按 agent 的新密钥。
+    """
+    with pool.connect() as conn:
+        rows = conn.execute(
+            "SELECT k FROM secrets WHERE k = ? OR k LIKE ? ORDER BY k",
+            (CREDENTIALS_KEY, f"{CREDENTIALS_KEY_PREFIX}%"),
+        ).fetchall()
+        agent_rows = conn.execute(
+            "SELECT agent_id, user_id FROM agents WHERE user_id IS NOT NULL"
+        ).fetchall()
+    owners = {
+        str(row["agent_id"]): int(row["user_id"])
+        for row in agent_rows
+    }
+    keys = [str(row["k"]) for row in rows]
+    # 按 agent 的密钥排在前面，去重时覆盖旧的全局绑定。
+    keys.sort(key=lambda value: value == CREDENTIALS_KEY)
+    bindings: list[tuple[str, dict[str, Any]]] = []
+    seen: set[str] = set()
+    for key in keys:
+        try:
+            credentials, _ = _load_credentials(pool, key)
+        except Exception:
+            LOG.warning("cannot decrypt Xiaomi Health binding %s", key, exc_info=True)
+            continue
+        agent_id = str(credentials.get("agent_id") or "").strip()
+        user_id = credentials.get("user_id")
+        if not agent_id or user_id is None:
+            LOG.warning("ignoring incomplete Xiaomi Health binding %s", key)
+            continue
+        if owners.get(agent_id) != int(user_id):
+            LOG.warning(
+                "ignoring Xiaomi Health binding %s: agent owner mismatch",
+                key,
+            )
+            continue
+        if agent_id in seen:
+            continue
+        seen.add(agent_id)
+        bindings.append((key, credentials))
+    return bindings
 
 
 def _store_credentials(
     pool: SqlitePool,
     credentials: dict[str, Any],
+    key: str = CREDENTIALS_KEY,
 ) -> None:
     secret_repo = SecretRepo(pool)
     blob = encrypt_credentials(secret_repo, credentials)
@@ -625,20 +684,20 @@ def _store_credentials(
     with pool.transaction() as conn:
         updated = conn.execute(
             "UPDATE secrets SET v = ?, rotated_at = ? WHERE k = ?",
-            (blob, now, CREDENTIALS_KEY),
+            (blob, now, key),
         )
         if updated.rowcount == 0:
             conn.execute(
                 "INSERT INTO secrets(k, v, created_at) VALUES (?, ?, ?)",
-                (CREDENTIALS_KEY, blob, now),
+                (key, blob, now),
             )
 
 
-def _read_last_sync(pool: SqlitePool) -> datetime | None:
+def _read_last_sync(pool: SqlitePool, key: str = LAST_SYNC_KEY) -> datetime | None:
     with pool.connect() as conn:
         row = conn.execute(
             "SELECT value FROM settings WHERE key = ?",
-            (LAST_SYNC_KEY,),
+            (key,),
         ).fetchone()
     if row is None:
         return None
@@ -649,12 +708,16 @@ def _read_last_sync(pool: SqlitePool) -> datetime | None:
     return parsed if parsed.tzinfo else parsed.replace(tzinfo=CST)
 
 
-def _write_last_sync(pool: SqlitePool, value: datetime) -> None:
+def _write_last_sync(
+    pool: SqlitePool,
+    value: datetime,
+    key: str = LAST_SYNC_KEY,
+) -> None:
     with pool.transaction() as conn:
         conn.execute(
             "INSERT INTO settings(key, value) VALUES (?, ?) "
             "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-            (LAST_SYNC_KEY, value.isoformat()),
+            (key, value.isoformat()),
         )
 
 
@@ -712,126 +775,193 @@ def _upsert_events(
     return len(rows)
 
 
-def sync(*, force_full: bool = False, publish_cards: bool = True) -> dict[str, int]:
-    db_path = Path(os.environ.get("OCTOP_DB", "/opt/octop/octop.db"))
-    pool = SqlitePool(db_path)
-    try:
-        credentials, _ = _load_credentials(pool)
-        agent_id = str(credentials["agent_id"])
-        octop_user_id = int(credentials["user_id"])
-        now = datetime.now(tz=CST)
-        last_sync = _read_last_sync(pool)
-        full = force_full or last_sync is None
-        lookback_days = DEFAULT_LOOKBACK_DAYS if full else INCREMENTAL_DAYS
-        start = _day_start(now.date() - timedelta(days=lookback_days - 1))
-        workout_start = (
-            start
-            if full
-            else _day_start(now.date() - timedelta(days=WORKOUT_DAYS - 1))
+def _sync_binding(
+    pool: SqlitePool,
+    *,
+    key: str,
+    credentials: dict[str, Any],
+    force_full: bool,
+    publish_cards: bool,
+) -> dict[str, int]:
+    agent_id = str(credentials["agent_id"])
+    octop_user_id = int(credentials["user_id"])
+    now = datetime.now(tz=CST)
+    last_sync = _read_last_sync(pool, _last_sync_key(agent_id))
+    if last_sync is None and key == CREDENTIALS_KEY:
+        # 旧实例只有全局 last_sync；沿用它可以避免升级后做一次无谓的全量回填。
+        last_sync = _read_last_sync(pool, LAST_SYNC_KEY)
+    full = force_full or last_sync is None
+    lookback_days = DEFAULT_LOOKBACK_DAYS if full else INCREMENTAL_DAYS
+    start = _day_start(now.date() - timedelta(days=lookback_days - 1))
+    workout_start = (
+        start
+        if full
+        else _day_start(now.date() - timedelta(days=WORKOUT_DAYS - 1))
+    )
+
+    with MiHealthCloudClient(
+        xiaomi_user_id=str(credentials["xiaomi_user_id"]),
+        pass_token=str(credentials["pass_token"]),
+        region=str(credentials.get("region") or "cn"),
+    ) as client:
+        drafts: list[EventDraft] = []
+        drafts.extend(_daily_events(client, start, now))
+        try:
+            drafts.extend(_daily_goal_events(client, start, now))
+        except Exception:
+            LOG.warning(
+                "Xiaomi daily activity goal is unavailable",
+                exc_info=True,
+            )
+        drafts.extend(_sleep_events(client, start, now))
+        drafts.extend(
+            _daily_metric_events(
+                client,
+                "heart_rate",
+                "health.heart_rate_daily",
+                start,
+                now,
+            )
         )
+        try:
+            drafts.extend(
+                _daily_metric_events(
+                    client,
+                    "resting_heart_rate",
+                    "health.resting_heart_rate_daily",
+                    start,
+                    now,
+                )
+            )
+        except Exception:
+            LOG.warning(
+                "Xiaomi resting heart rate is unavailable",
+                exc_info=True,
+            )
+        drafts.extend(
+            _daily_metric_events(
+                client,
+                "spo2",
+                "health.oxygen_saturation_daily",
+                start,
+                now,
+            )
+        )
+        drafts.extend(
+            _daily_metric_events(
+                client,
+                "stress",
+                "health.stress_daily",
+                start,
+                now,
+            )
+        )
+        drafts.extend(_standing_events(client, start, now))
+        drafts.extend(_workout_events(client, workout_start, now))
+        sync_window = _sync_window_event(now.date(), now)
+        if sync_window is not None:
+            drafts.append(sync_window)
+        if client.pass_token != credentials["pass_token"]:
+            credentials["pass_token"] = client.pass_token
+            _store_credentials(pool, credentials, key=key)
 
-        with MiHealthCloudClient(
-            xiaomi_user_id=str(credentials["xiaomi_user_id"]),
-            pass_token=str(credentials["pass_token"]),
-            region=str(credentials.get("region") or "cn"),
-        ) as client:
-            drafts: list[EventDraft] = []
-            drafts.extend(_daily_events(client, start, now))
-            try:
-                drafts.extend(_daily_goal_events(client, start, now))
-            except Exception:
-                LOG.warning(
-                    "Xiaomi daily activity goal is unavailable",
-                    exc_info=True,
-                )
-            drafts.extend(_sleep_events(client, start, now))
-            drafts.extend(
-                _daily_metric_events(
-                    client,
-                    "heart_rate",
-                    "health.heart_rate_daily",
-                    start,
-                    now,
-                )
-            )
-            try:
-                drafts.extend(
-                    _daily_metric_events(
-                        client,
-                        "resting_heart_rate",
-                        "health.resting_heart_rate_daily",
-                        start,
-                        now,
-                    )
-                )
-            except Exception:
-                LOG.warning(
-                    "Xiaomi resting heart rate is unavailable",
-                    exc_info=True,
-                )
-            drafts.extend(
-                _daily_metric_events(
-                    client,
-                    "spo2",
-                    "health.oxygen_saturation_daily",
-                    start,
-                    now,
-                )
-            )
-            drafts.extend(
-                _daily_metric_events(
-                    client,
-                    "stress",
-                    "health.stress_daily",
-                    start,
-                    now,
-                )
-            )
-            drafts.extend(_standing_events(client, start, now))
-            drafts.extend(_workout_events(client, workout_start, now))
-            sync_window = _sync_window_event(now.date(), now)
-            if sync_window is not None:
-                drafts.append(sync_window)
-            if client.pass_token != credentials["pass_token"]:
-                credentials["pass_token"] = client.pass_token
-                _store_credentials(pool, credentials)
-
-        by_type: dict[str, int] = defaultdict(int)
-        for draft in drafts:
-            by_type[draft.event_type] += 1
-        upserted = _upsert_events(
+    by_type: dict[str, int] = defaultdict(int)
+    for draft in drafts:
+        by_type[draft.event_type] += 1
+    upserted = _upsert_events(
+        pool,
+        agent_id=agent_id,
+        user_id=octop_user_id,
+        drafts=drafts,
+    )
+    if publish_cards:
+        publish_health_today_cards(
             pool,
             agent_id=agent_id,
             user_id=octop_user_id,
-            drafts=drafts,
+            now=now,
         )
-        if publish_cards:
-            publish_health_today_cards(
-                pool,
-                agent_id=agent_id,
-                user_id=octop_user_id,
-                now=now,
-            )
-        try:
-            sync_health_trend_memory(
-                pool,
-                agent_id=agent_id,
-                user_id=octop_user_id,
-                now=now,
-            )
-        except Exception:
-            LOG.warning("health trend memory update failed", exc_info=True)
-        _write_last_sync(pool, now)
-        LOG.info(
-            "synced=%d full=%s agent=%s event_types=%s",
-            upserted,
-            full,
-            agent_id,
-            dict(sorted(by_type.items())),
+    try:
+        sync_health_trend_memory(
+            pool,
+            agent_id=agent_id,
+            user_id=octop_user_id,
+            now=now,
         )
-        return {"upserted": upserted, **by_type}
+    except Exception:
+        LOG.warning("health trend memory update failed", exc_info=True)
+    _write_last_sync(pool, now, key=_last_sync_key(agent_id))
+    LOG.info(
+        "synced=%d full=%s agent=%s user=%s event_types=%s",
+        upserted,
+        full,
+        agent_id,
+        octop_user_id,
+        dict(sorted(by_type.items())),
+    )
+    return {"upserted": upserted, **by_type}
+
+
+def sync(*, force_full: bool = False, publish_cards: bool = True) -> dict[str, dict[str, int]]:
+    db_path = Path(os.environ.get("OCTOP_DB", "/opt/octop/octop.db"))
+    pool = SqlitePool(db_path)
+    try:
+        bindings = _load_bindings(pool)
+        if not bindings:
+            raise RuntimeError(
+                "Xiaomi Health credentials are not configured in Octop secrets"
+            )
+        results: dict[str, dict[str, int]] = {}
+        auth_failures: list[str] = []
+        failures: list[str] = []
+        for key, credentials in bindings:
+            agent_id = str(credentials["agent_id"])
+            try:
+                results[agent_id] = _sync_binding(
+                    pool,
+                    key=key,
+                    credentials=credentials,
+                    force_full=force_full,
+                    publish_cards=publish_cards,
+                )
+            except MiHealthAuthError:
+                LOG.error(
+                    "Xiaomi login expired for agent=%s; rescan the Mi Health login QR",
+                    agent_id,
+                )
+                auth_failures.append(agent_id)
+            except Exception:
+                LOG.exception("Xiaomi Health sync failed for agent=%s", agent_id)
+                failures.append(agent_id)
+        if failures:
+            raise RuntimeError(
+                "Xiaomi Health sync failed for agents: " + ", ".join(failures)
+            )
+        if auth_failures:
+            raise MiHealthAuthError(
+                "Xiaomi login expired for agents: " + ", ".join(auth_failures)
+            )
+        return results
     finally:
         pool.close()
+
+
+def list_bindings() -> int:
+    db_path = Path(os.environ.get("OCTOP_DB", "/opt/octop/octop.db"))
+    pool = SqlitePool(db_path)
+    try:
+        bindings = _load_bindings(pool)
+    finally:
+        pool.close()
+    if not bindings:
+        print("no Xiaomi Health bindings configured")
+        return 1
+    for key, credentials in bindings:
+        print(
+            f"agent={credentials['agent_id']} user={credentials['user_id']} "
+            f"key={key} region={credentials.get('region') or 'cn'}"
+        )
+    return 0
 
 
 def main() -> int:
@@ -846,6 +976,11 @@ def main() -> int:
         action="store_true",
         help="Only sync events; do not publish Today cards",
     )
+    parser.add_argument(
+        "--list",
+        action="store_true",
+        help="List configured agent/user bindings without contacting Xiaomi",
+    )
     args = parser.parse_args()
     logging.basicConfig(
         level=logging.WARNING,
@@ -856,6 +991,8 @@ def main() -> int:
     # httpx logs full request URLs at INFO, including signed Xiaomi auth URLs.
     logging.getLogger("httpx").setLevel(logging.WARNING)
     logging.getLogger("httpcore").setLevel(logging.WARNING)
+    if args.list:
+        return list_bindings()
     try:
         sync(force_full=args.full, publish_cards=not args.no_cards)
     except MiHealthAuthError:

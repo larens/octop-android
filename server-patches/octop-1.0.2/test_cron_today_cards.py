@@ -6,6 +6,8 @@ import sqlite3
 import sys
 import types
 import unittest
+from contextlib import contextmanager
+from unittest import mock
 from pathlib import Path
 
 
@@ -27,6 +29,7 @@ def _load_module():
     _install_module("octop.infra.db.repos.agents", AgentRepo=object)
     class Evidence:
         def __init__(self, **values: object) -> None:
+            values.setdefault("image_url", None)
             self.__dict__.update(values)
 
     _install_module(
@@ -73,6 +76,85 @@ class CronResultFreshnessTest(unittest.TestCase):
             )
         )
 
+    def test_moderation_rejections_do_not_produce_today_content(self) -> None:
+        for text in (
+            "The request was rejected because it was considered high risk",
+            "Your request was rejected as a result of our safety system.",
+            "I'm sorry, but I can't assist with that request.",
+            "抱歉，我无法协助处理这个请求。",
+            "该请求已被拒绝。",
+        ):
+            with self.subTest(text=text):
+                self.assertFalse(
+                    cron_today_cards.cron_result_has_new_information(
+                        text,
+                        task_kind="news",
+                    )
+                )
+
+    def test_risk_wording_inside_a_real_review_is_kept(self) -> None:
+        self.assertTrue(
+            cron_today_cards.cron_result_has_new_information(
+                "本周值得追踪：市场把高估值视为 considered high risk 的因素。",
+                task_kind="news",
+            )
+        )
+
+    def test_rejected_run_dismisses_only_its_leaked_card(self) -> None:
+        conn = sqlite3.connect(":memory:")
+        conn.row_factory = sqlite3.Row
+        conn.execute(
+            "CREATE TABLE threads ("
+            "thread_id TEXT, agent_id TEXT, user_id INTEGER, title TEXT)"
+        )
+        conn.execute(
+            "INSERT INTO threads VALUES ('thread-1', 'agent-1', 1, '每周新闻回顾')"
+        )
+        conn.execute(
+            "CREATE TABLE today_cards ("
+            "card_id TEXT PRIMARY KEY, agent_id TEXT, user_id INTEGER, "
+            "dedupe_key TEXT, summary TEXT, lifecycle TEXT, "
+            "snoozed_until INTEGER, updated_at INTEGER)"
+        )
+        conn.executemany(
+            "INSERT INTO today_cards VALUES (?, 'agent-1', 1, ?, ?, ?, NULL, 1)",
+            [
+                (
+                    "leaked",
+                    "agent:cron:cron-1",
+                    "The request was rejected because it was considered high risk",
+                    "unread",
+                ),
+                (
+                    "healthy",
+                    "agent:cron:cron-1",
+                    "本周通胀与利率出现分化。",
+                    "unread",
+                ),
+            ],
+        )
+
+        result = cron_today_cards.publish_cron_task_card(
+            _ConnectionDb(conn),
+            cron_id="cron-1",
+            task_name="每周新闻回顾",
+            prompt="",
+            agent_id="agent-1",
+            user_id=1,
+            thread_id="thread-1",
+            text="The request was rejected because it was considered high risk",
+            last_run_at=100,
+            status="ok",
+        )
+
+        self.assertFalse(result["changed"])
+        lifecycles = {
+            row["card_id"]: row["lifecycle"]
+            for row in conn.execute("SELECT card_id, lifecycle FROM today_cards")
+        }
+        self.assertEqual("dismissed", lifecycles["leaked"])
+        self.assertEqual("unread", lifecycles["healthy"])
+
     def test_failed_run_has_no_fallback_summary(self) -> None:
         self.assertEqual(
             "",
@@ -83,6 +165,22 @@ class CronResultFreshnessTest(unittest.TestCase):
                 error="服务器暂时不可用",
                 kind="weather",
             ),
+        )
+
+    def test_anniversary_silent_markers_are_treated_as_no_update(self) -> None:
+        for text in (
+            "(无命中，静默)",
+            "无命中",
+            "今天没有纪念日，保持静默。",
+            "今天没有生日提醒。",
+            "「纪念日提醒（每日 8:00）」已执行完成，查看完整结果与来源。",
+        ):
+            with self.subTest(text=text):
+                self.assertTrue(cron_today_cards._anniversary_is_silent(text))
+        self.assertFalse(
+            cron_today_cards._anniversary_is_silent(
+                "今天是杞子星的生日，晚上一起吃饭。"
+            )
         )
 
 
@@ -400,6 +498,54 @@ class WeatherSummaryTest(unittest.TestCase):
 
 
 class ReadingSummaryTest(unittest.TestCase):
+    def test_normalized_weekly_digest_keeps_duration_days_and_listening(self) -> None:
+        text = """
+**一句话结论：本周阅读动作在恢复，但只有 1 条新划线，沉淀仍然偏弱。**
+
+## 阅读概览
+本周阅读 2 本 · 阅读时长 5.4 小时 · 阅读天数 6 天 · 听书 3.5 小时 · 新增划线 1 条 · 书架 1205 本
+
+## 本周在读
+| 日期 | 书名 | 进度 | 新增划线 |
+|---|---|---|---|
+| 11-14 | 《AI原生组织》 | 27% | 1 条 |
+| 11-12 | 《一个故事的99种讲法》 | 0% | 0 条 |
+
+## 核心观点
+本周只有 1 条划线："未来一些组织将不是被AI淘汰，而是被断点淘汰。" 这句话把淘汰来源从外部竞争移到了内部结构。
+
+## 可行动
+- 把《AI原生组织》第三章的组织断点对照一次当前团队。
+
+## 下一步阅读
+- 《Token经济》
+
+## 数据说明
+- 本周在读按翻书或笔记动作统计，不等于读完。
+- 听书时长计入总时长，且只汇总了可见的长听书条目。
+"""
+
+        summary = cron_today_cards.task_result_summary(
+            text,
+            task_name="每周阅读总结",
+            status="ok",
+            error=None,
+            kind="review",
+        )
+
+        self.assertIn("阅读时长 5.4 小时", summary)
+        self.assertIn("阅读天数 6 天", summary)
+        self.assertIn("听书 3.5 小时", summary)
+        self.assertIn("本周阅读 2 本", summary)
+        self.assertIn("新增划线 1 条", summary)
+        self.assertIn("11-14《AI原生组织》· 27% · 1 条", summary)
+        self.assertIn("11-12《一个故事的99种讲法》· 0% · 0 条", summary)
+        self.assertIn("未来一些组织将不是被AI淘汰", summary)
+        self.assertIn("《Token经济》", summary)
+        self.assertIn("【数据说明】", summary)
+        self.assertIn("本周在读按翻书或笔记动作统计", summary)
+        self.assertLess(summary.index("【下一步阅读】"), summary.index("【数据说明】"))
+
     def test_live_weekly_reading_format_keeps_inline_books_and_counts(self) -> None:
         text = """
 **结论一句话：这周你翻了 2 本书，但一条划线都没留。阅读动作合格，沉淀不及格。**
@@ -564,9 +710,58 @@ class IndustrySignalSummaryTest(unittest.TestCase):
         self.assertIn("Anthropic｜企业交易 agent", summary)
         self.assertIn("仅发布方口径", summary)
         self.assertIn("【行动建议】", summary)
-        self.assertNotIn("https://example.com", summary)
+        self.assertIn("来源：https://example.com/openai", summary)
         self.assertLess(summary.index("【总判断】"), summary.index("【关键信号】"))
         self.assertLess(summary.index("【关键信号】"), summary.index("【行动建议】"))
+
+    def test_signal_summary_keeps_each_source_url_for_the_original_article(self) -> None:
+        text = """
+【关键信号】
+1. OpenAI｜GPT-6 Astra Pro
+成熟度：可验证进展
+证据强度：3/3
+核心变化：多 agent 并行推进。
+来源：https://openai.com/index/gpt-6
+2. Anthropic｜企业交易 agent
+成熟度：仅发布方口径
+证据强度：1/3
+核心变化：agent 开始替企业做交易决策。
+来源：https://www.anthropic.com/news/enterprise-agent
+
+【行动建议】
+先验证已经开放的能力。
+"""
+
+        summary = cron_today_cards.task_result_summary(
+            text,
+            task_name="AI 与科技行业信号",
+            status="ok",
+            error=None,
+            kind="signal",
+        )
+        evidence = cron_today_cards._signal_source_evidence(text, occurred_at=1)
+
+        self.assertIn("来源：https://openai.com/index/gpt-6", summary)
+        self.assertEqual(
+            [
+                "OpenAI｜GPT-6 Astra Pro",
+                "Anthropic｜企业交易 agent",
+            ],
+            [item.title for item in evidence],
+        )
+        self.assertEqual(
+            [
+                "https://openai.com/index/gpt-6",
+                "https://www.anthropic.com/news/enterprise-agent",
+            ],
+            [item.url for item in evidence],
+        )
+
+    def test_overlong_url_is_not_published_as_evidence(self) -> None:
+        url = "https://example.com/" + "a" * 600
+        items = cron_today_cards._web_evidence(url, occurred_at=1)
+
+        self.assertEqual([], items)
 
     def test_signal_summary_is_silent_when_nothing_important_happened(self) -> None:
         self.assertEqual(
@@ -662,7 +857,7 @@ class IndustrySignalSummaryTest(unittest.TestCase):
             [item.url for item in items],
         )
 
-    def test_connector_json_keeps_titled_article_links_and_drops_images(self) -> None:
+    def test_connector_json_keeps_titled_article_links_and_cover_images(self) -> None:
         payload = {
             "news_list": [
                 {
@@ -683,6 +878,7 @@ class IndustrySignalSummaryTest(unittest.TestCase):
         self.assertEqual(1, len(items))
         self.assertIn("每日经济新闻", items[0][0])
         self.assertEqual("https://view.inews.qq.com/a/example", items[0][1])
+        self.assertEqual("https://inews.gtimg.com/example.jpg", items[0][2])
 
     def test_github_trending_uses_repository_name_instead_of_the_ui_json(self) -> None:
         payload = {
@@ -703,7 +899,10 @@ class IndustrySignalSummaryTest(unittest.TestCase):
 
         items = cron_today_cards._embedded_web_items(payload)
 
-        self.assertEqual([("heydamir/unslop", "https://github.com/heydamir/unslop")], items)
+        self.assertEqual(
+            [("heydamir/unslop", "https://github.com/heydamir/unslop", None)],
+            items,
+        )
         self.assertEqual(
             "",
             cron_today_cards._clean_fact_title(
@@ -759,6 +958,7 @@ class IndustrySignalSummaryTest(unittest.TestCase):
             (
                 "Anthropic 出手：Claude Opus 5.5 不再帮你“AI 复刻游戏”",
                 "https://www.ithome.com/1/020/471.htm",
+                "https://img.ithome.com/example.png",
             ),
             article,
         )
@@ -884,6 +1084,173 @@ class IndustrySignalSummaryTest(unittest.TestCase):
         )
         self.assertEqual([primary_url, discovered_url], [item.url for item in merged])
 
+    def test_connector_cover_image_survives_evidence_merge(self) -> None:
+        url = "https://view.inews.qq.com/a/example"
+        primary = [
+            cron_today_cards.TodayEvidenceInput(
+                source_type="web_search",
+                reference=url,
+                url=url,
+                title="原文标题",
+                excerpt="",
+                occurred_at=1,
+            )
+        ]
+        discovered = [
+            cron_today_cards.TodayEvidenceInput(
+                source_type="web_search",
+                reference=url,
+                url=url,
+                title="连接器标题",
+                excerpt="",
+                image_url="https://inews.gtimg.com/example.jpg",
+                occurred_at=2,
+            )
+        ]
+
+        merged = cron_today_cards._merge_web_evidence(primary, discovered)
+
+        self.assertEqual("https://inews.gtimg.com/example.jpg", merged[0].image_url)
+
+    def test_article_image_skips_tracking_pixels_and_resolves_relative_urls(self) -> None:
+        html = """
+        <meta property="og:image" content="//img.ithome.com/images/v2/t.png">
+        <img src="//img.ithome.com/newsuploadfiles/2026/11/cover.jpg">
+        <img src="/logo.png">
+        """
+
+        self.assertEqual(
+            "https://img.ithome.com/newsuploadfiles/2026/11/cover.jpg",
+            cron_today_cards._article_image_url(html, "https://www.ithome.com/1/026/994.htm"),
+        )
+
+    def test_article_image_fetch_rejects_private_hosts(self) -> None:
+        self.assertFalse(cron_today_cards._is_safe_public_url("http://127.0.0.1/a"))
+        self.assertFalse(cron_today_cards._is_safe_public_url("http://localhost/a"))
+        self.assertFalse(cron_today_cards._is_safe_public_url("http://10.0.0.1/a"))
+        self.assertTrue(cron_today_cards._is_safe_public_url("https://www.ithome.com/a.htm"))
+
+    def test_web_image_fill_reuses_a_stored_cover_without_fetching(self) -> None:
+        conn = sqlite3.connect(":memory:")
+        conn.row_factory = sqlite3.Row
+        conn.execute(
+            "CREATE TABLE today_card_evidence ("
+            "agent_id TEXT, url TEXT, image_url TEXT)"
+        )
+        conn.execute(
+            "INSERT INTO today_card_evidence VALUES (?, ?, ?)",
+            ("agent", "https://example.com/story", "https://example.com/cover.jpg"),
+        )
+        item = cron_today_cards.TodayEvidenceInput(
+            source_type="web_search",
+            reference="https://example.com/story",
+            url="https://example.com/story",
+            title="story",
+            occurred_at=1,
+        )
+        with mock.patch.object(
+            cron_today_cards,
+            "_fetch_article_image",
+            side_effect=AssertionError("should not fetch"),
+        ):
+            cron_today_cards._fill_web_images(
+                _ConnectionDb(conn),
+                agent_id="agent",
+                items=[item],
+            )
+
+        self.assertEqual("https://example.com/cover.jpg", item.image_url)
+
+    def test_web_image_fill_skips_repository_pages_without_using_the_fetch_budget(self) -> None:
+        conn = sqlite3.connect(":memory:")
+        conn.row_factory = sqlite3.Row
+        conn.execute(
+            "CREATE TABLE today_card_evidence ("
+            "agent_id TEXT, url TEXT, image_url TEXT)"
+        )
+        repo = cron_today_cards.TodayEvidenceInput(
+            source_type="web_search",
+            reference="https://github.com/deepseek-ai/chat-demo",
+            url="https://github.com/deepseek-ai/chat-demo",
+            title="chat-demo",
+            occurred_at=1,
+        )
+        article = cron_today_cards.TodayEvidenceInput(
+            source_type="web_search",
+            reference="https://example.com/story",
+            url="https://example.com/story",
+            title="story",
+            occurred_at=2,
+        )
+        fetched: list[str] = []
+
+        def fake_fetch(url: str) -> str:
+            fetched.append(url)
+            return "https://example.com/cover.jpg"
+
+        with mock.patch.object(
+            cron_today_cards,
+            "_fetch_article_image",
+            side_effect=fake_fetch,
+        ):
+            cron_today_cards._fill_web_images(
+                _ConnectionDb(conn),
+                agent_id="agent",
+                items=[repo, article],
+                limit=1,
+            )
+
+        self.assertEqual(["https://example.com/story"], fetched)
+        self.assertIsNone(repo.image_url)
+        self.assertEqual("https://example.com/cover.jpg", article.image_url)
+
+    def test_reading_covers_are_recovered_from_the_weekly_digest(self) -> None:
+        self.assertEqual(
+            {"AI原生组织"},
+            cron_today_cards._reading_book_titles(
+                "【阅读概览】\n本周阅读 1 本\n\n【本周在读】\n11-14《AI原生组织》· 27% · 1 条\n\n【核心观点】\n- 组织断点"
+            ),
+        )
+        conn = sqlite3.connect(":memory:")
+        conn.row_factory = sqlite3.Row
+        conn.execute(
+            "CREATE TABLE thread_messages ("
+            "seq INTEGER PRIMARY KEY, thread_id TEXT, role TEXT, "
+            "message_json TEXT, created_at INTEGER)"
+        )
+        digest = {
+            "ok": True,
+            "books": [
+                {
+                    "book_id": "b1",
+                    "title": "AI原生组织",
+                    "cover": "https://cdn.weread.qq.com/cover/b1.jpg",
+                },
+                {
+                    "book_id": "b2",
+                    "title": "一个故事的99种讲法",
+                    "cover": "https://cdn.weread.qq.com/cover/b2.jpg",
+                },
+            ],
+        }
+        conn.execute(
+            "INSERT INTO thread_messages VALUES (?, ?, ?, ?, ?)",
+            (1, "thread", "tool", _message_text(json.dumps(digest)), 10),
+        )
+
+        evidence = cron_today_cards._thread_reading_covers(
+            _ConnectionDb(conn),
+            thread_id="thread",
+            titles={"AI原生组织"},
+            occurred_at=12,
+        )
+
+        self.assertEqual(["AI原生组织"], [item.title for item in evidence])
+        self.assertEqual(
+            ["https://cdn.weread.qq.com/cover/b1.jpg"],
+            [item.image_url for item in evidence],
+        )
+
     def test_weekly_table_source_number_is_removed_from_the_article_title(self) -> None:
         self.assertEqual(
             "新华网·五中全会公报",
@@ -942,6 +1309,15 @@ class _ConnectionDb:
 
     def connect(self) -> sqlite3.Connection:
         return self.conn
+
+    @contextmanager
+    def transaction(self):
+        try:
+            yield self.conn
+            self.conn.commit()
+        except Exception:
+            self.conn.rollback()
+            raise
 
 
 class AnniversaryCardTest(unittest.TestCase):

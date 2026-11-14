@@ -406,6 +406,86 @@ class RouterPhase0Test(unittest.TestCase):
         )
         self.assertEqual(task_after["status"], "in_progress")
 
+    def test_user_can_complete_ignore_and_defer_owned_tasks(self) -> None:
+        conversation = self.conversation()
+        complete = self.service.create_task(
+            conversation_id=conversation["conversation_id"],
+            task_type="reply",
+            title="Reply to the client",
+            subject_key="reply-client",
+            objective="Draft and send a reply",
+            requires_user=True,
+        )
+        self.service.transition_task(task_id=complete["task_id"], status="needs_user")
+        run = self.service.create_run(task_id=complete["task_id"])
+        done = self.service.user_task_action(
+            agent_id="agent-a",
+            user_id=1,
+            task_id=complete["task_id"],
+            action="complete",
+        )
+        self.assertEqual(done["status"], "done")
+        cancelled_run = self.service.get_task(
+            agent_id="agent-a", user_id=1, task_id=complete["task_id"]
+        )["runs"][0]
+        self.assertEqual(cancelled_run["run_id"], run["run_id"])
+        self.assertEqual(cancelled_run["status"], "cancelled")
+        events = self.service.list_events(
+            agent_id="agent-a",
+            user_id=1,
+            conversation_id=conversation["conversation_id"],
+            after_seq=0,
+            limit=100,
+        )
+        self.assertIn("task.user_completed", [event["event_type"] for event in events])
+        with self.assertRaises(InvalidTransitionError):
+            self.service.user_task_action(
+                agent_id="agent-a",
+                user_id=1,
+                task_id=complete["task_id"],
+                action="ignore",
+            )
+
+        ignored = self.service.create_task(
+            conversation_id=conversation["conversation_id"],
+            task_type="reply",
+            title="Ignore me",
+            subject_key="ignore-me",
+            objective="No longer useful",
+        )
+        closed = self.service.user_task_action(
+            agent_id="agent-a",
+            user_id=1,
+            task_id=ignored["task_id"],
+            action="ignore",
+        )
+        self.assertEqual(closed["status"], "cancelled")
+
+        deferred = self.service.create_task(
+            conversation_id=conversation["conversation_id"],
+            task_type="reply",
+            title="Defer me",
+            subject_key="defer-me",
+            objective="Not urgent",
+        )
+        snoozed = self.service.user_task_action(
+            agent_id="agent-a",
+            user_id=1,
+            task_id=deferred["task_id"],
+            action="defer",
+            defer_hours=6,
+        )
+        self.assertEqual(snoozed["status"], "open")
+        self.assertGreater(snoozed["capsule"]["deferred_until"], snoozed["capsule"]["deferred_at"])
+
+        with self.assertRaises(NotFoundError):
+            self.service.user_task_action(
+                agent_id="agent-a",
+                user_id=2,
+                task_id=deferred["task_id"],
+                action="complete",
+            )
+
     def test_events_are_ordered_idempotent_and_scope_checked(self) -> None:
         conversation = self.conversation()
         first = self.service.append_event(
@@ -1097,7 +1177,12 @@ class RouterPhase0Test(unittest.TestCase):
         )
         self.assertEqual(
             [event["event_type"] for event in events],
-            ["router.received", "context.pack.compiled", "router.shadow.decision"],
+            [
+                "router.received",
+                "context.pack.compiled",
+                "router.gate.decision",
+                "router.shadow.decision",
+            ],
         )
         trace = self.service.get_trace(
             agent_id="agent-a",

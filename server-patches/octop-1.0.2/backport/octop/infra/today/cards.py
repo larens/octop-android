@@ -61,9 +61,10 @@ class TodayEvidenceInput(BaseModel):
     title: str | None = Field(default=None, max_length=500)
     excerpt: str | None = Field(default=None, max_length=2000)
     url: str | None = Field(default=None, max_length=2000)
+    image_url: str | None = Field(default=None, max_length=2000)
     occurred_at: int | None = None
 
-    @field_validator("reference", "title", "excerpt", "url")
+    @field_validator("reference", "title", "excerpt", "url", "image_url")
     @classmethod
     def strip_text(cls, value: str | None) -> str | None:
         if value is None:
@@ -323,7 +324,7 @@ def _payload_title_excerpt(payload_json: str) -> tuple[str, str]:
 
 
 def _evidence_id(item: TodayEvidenceInput, *, source_type: str, url: str | None) -> str:
-    identity = f"{source_type}|{item.reference}|{url or ''}"
+    identity = f"{source_type}|{item.reference}|{url or ''}|{item.image_url or ''}"
     return hashlib.sha256(identity.encode()).hexdigest()
 
 
@@ -506,8 +507,9 @@ class TodayCardPublisher:
                     conn.execute(
                         "INSERT INTO today_card_evidence("
                         "agent_id, card_id, evidence_id, source_type, source_record_id, "
-                        "event_type, occurred_at, privacy_class, url, title, excerpt, created_at"
-                        ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                        "event_type, occurred_at, privacy_class, url, title, excerpt, "
+                        "image_url, created_at"
+                        ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                         (
                             agent_id,
                             card_id,
@@ -520,6 +522,7 @@ class TodayCardPublisher:
                             item["url"],
                             item["title"],
                             item["excerpt"],
+                            item["image_url"],
                             now,
                         ),
                     )
@@ -589,6 +592,7 @@ class TodayCardPublisher:
                         "url": item.url,
                         "title": item.title or payload_title or None,
                         "excerpt": item.excerpt or payload_excerpt or None,
+                        "image_url": item.image_url,
                     }
                 )
             elif item.source_type == "web":
@@ -606,6 +610,7 @@ class TodayCardPublisher:
                         "url": url,
                         "title": item.title or url,
                         "excerpt": item.excerpt,
+                        "image_url": item.image_url,
                     }
                 )
             else:
@@ -634,6 +639,7 @@ class TodayCardPublisher:
                         "url": item.url,
                         "title": item.title or _text(row["title"]) or "对话上下文",
                         "excerpt": item.excerpt,
+                        "image_url": item.image_url,
                     }
                 )
         return resolved

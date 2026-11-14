@@ -26,7 +26,7 @@ TERMINAL_RUN_STATUSES = frozenset({"succeeded", "failed", "cancelled", "interrup
 TASK_TRANSITIONS: dict[str, frozenset[str]] = {
     "open": frozenset({"in_progress", "needs_user", "done", "failed", "cancelled", "expired"}),
     "in_progress": frozenset({"needs_user", "done", "failed", "cancelled", "expired"}),
-    "needs_user": frozenset({"in_progress", "cancelled", "expired"}),
+    "needs_user": frozenset({"in_progress", "done", "cancelled", "expired"}),
     "done": frozenset(),
     "failed": frozenset(),
     "cancelled": frozenset(),
@@ -467,6 +467,97 @@ class ConversationService:
                 "SELECT * FROM conversation_tasks WHERE task_id = ?", (task_id,)
             ).fetchone()
         assert updated is not None
+        return _task_payload(updated)
+
+    def user_task_action(
+        self,
+        *,
+        agent_id: str,
+        user_id: int,
+        task_id: str,
+        action: str,
+        defer_hours: int = 4,
+        note: str | None = None,
+    ) -> dict[str, Any]:
+        """Close or defer a task on behalf of its owner.
+
+        This is the user-facing counterpart of ``transition_task``: it verifies
+        ownership, cancels outstanding runs before closing, and records an audit
+        event. Deferring keeps the task active but records ``deferred_until`` in
+        the existing capsule so Today can hide it without a schema migration.
+        """
+        if action not in {"complete", "ignore", "defer"}:
+            raise RouterPhase0Error(f"unknown task action: {action}")
+        if not 1 <= int(defer_hours) <= 168:
+            raise RouterPhase0Error("defer_hours must be between 1 and 168")
+        now = _now()
+        with self._db.transaction() as conn:
+            row = conn.execute(
+                "SELECT t.* FROM conversation_tasks t "
+                "JOIN main_conversations c ON c.conversation_id = t.conversation_id "
+                "WHERE t.task_id = ? AND c.agent_id = ? AND c.user_id = ?",
+                (task_id, agent_id, user_id),
+            ).fetchone()
+            if row is None:
+                raise NotFoundError("task not found")
+            current = str(_row_value(row, "status"))
+            if current in TERMINAL_TASK_STATUSES:
+                raise InvalidTransitionError(f"task is already closed as {current}")
+            conversation_id = str(_row_value(row, "conversation_id"))
+            capsule = _json_value(_row_value(row, "capsule_json", "{}"), default={})
+            if not isinstance(capsule, dict):
+                capsule = {}
+
+            if action == "defer":
+                new_status = current
+                capsule = {
+                    **capsule,
+                    "deferred_at": now,
+                    "deferred_until": now + int(defer_hours) * 3600,
+                }
+                if note and note.strip():
+                    capsule["defer_note"] = _clip(note.strip(), 500)
+                event_type = "task.user_deferred"
+            else:
+                new_status = "done" if action == "complete" else "cancelled"
+                if new_status not in TASK_TRANSITIONS[current]:
+                    raise InvalidTransitionError(
+                        f"task cannot move from {current} to {new_status}"
+                    )
+                event_type = (
+                    "task.user_completed" if action == "complete" else "task.user_cancelled"
+                )
+
+            conn.execute(
+                "UPDATE conversation_tasks SET status = ?, capsule_json = ?, updated_at = ? "
+                "WHERE task_id = ?",
+                (new_status, _json_text(capsule, default={}), now, task_id),
+            )
+            if new_status in TERMINAL_TASK_STATUSES:
+                conn.execute(
+                    "UPDATE task_runs SET status = 'cancelled', finished_at = ? "
+                    "WHERE task_id = ? AND status IN ('queued', 'running', 'waiting_user')",
+                    (now, task_id),
+                )
+            updated = conn.execute(
+                "SELECT * FROM conversation_tasks WHERE task_id = ?", (task_id,)
+            ).fetchone()
+        assert updated is not None
+        self.append_event(
+            conversation_id=conversation_id,
+            trace_id=f"trace-task-action-{task_id}",
+            task_id=task_id,
+            event_type=event_type,
+            status=new_status,
+            summary=f"User action: {action}",
+            payload={
+                "action": action,
+                "previous_status": current,
+                "status": new_status,
+                "deferred_until": capsule.get("deferred_until"),
+                "note": note.strip() if note and note.strip() else None,
+            },
+        )
         return _task_payload(updated)
 
     def create_run(

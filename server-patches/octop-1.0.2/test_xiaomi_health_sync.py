@@ -86,6 +86,237 @@ class FakeClient:
         return self.daily_reports
 
 
+class _FakeConnection:
+    def __init__(self, keys: list[str], owners: dict[str, int]) -> None:
+        self._keys = keys
+        self._owners = owners
+        self._sql = ""
+
+    def execute(self, sql: str, _params: object = None) -> _FakeConnection:
+        self._sql = sql
+        return self
+
+    def fetchall(self) -> list[dict[str, object]]:
+        if "FROM agents" in self._sql:
+            return [
+                {"agent_id": agent_id, "user_id": user_id}
+                for agent_id, user_id in self._owners.items()
+            ]
+        return [{"k": key} for key in self._keys]
+
+
+class _FakePool:
+    def __init__(self, keys: list[str], owners: dict[str, int] | None = None) -> None:
+        self._connection = _FakeConnection(keys, owners or {})
+
+    def connect(self) -> _FakePool:
+        return self
+
+    def __enter__(self) -> _FakeConnection:
+        return self._connection
+
+    def __exit__(self, *_args: object) -> bool:
+        return False
+
+
+class XiaomiBindingTest(unittest.TestCase):
+    def test_credentials_key_is_scoped_per_agent(self) -> None:
+        self.assertEqual(
+            "xiaomi_health_cloud:18CCXQ",
+            sync._credentials_key("18CCXQ"),
+        )
+        self.assertNotEqual(
+            sync._credentials_key("agent-a"),
+            sync._credentials_key("agent-b"),
+        )
+
+    def test_load_bindings_prefers_agent_scoped_and_deduplicates_agents(self) -> None:
+        keys = [
+            "xiaomi_health_cloud",
+            "xiaomi_health_cloud:18CCXQ",
+            "xiaomi_health_cloud:NEW001",
+        ]
+        credentials = {
+            "xiaomi_health_cloud": {
+                "agent_id": "18CCXQ",
+                "user_id": 2,
+                "pass_token": "legacy",
+            },
+            "xiaomi_health_cloud:18CCXQ": {
+                "agent_id": "18CCXQ",
+                "user_id": 2,
+                "pass_token": "scoped",
+            },
+            "xiaomi_health_cloud:NEW001": {
+                "agent_id": "NEW001",
+                "user_id": 3,
+                "pass_token": "friend",
+            },
+        }
+        original = sync._load_credentials
+        sync._load_credentials = lambda _pool, key=sync.CREDENTIALS_KEY: (
+            credentials[key],
+            b"",
+        )
+        try:
+            bindings = sync._load_bindings(
+                _FakePool(keys, {"18CCXQ": 2, "NEW001": 3})
+            )
+        finally:
+            sync._load_credentials = original
+
+        self.assertEqual(
+            ["xiaomi_health_cloud:18CCXQ", "xiaomi_health_cloud:NEW001"],
+            [key for key, _ in bindings],
+        )
+        self.assertEqual(["18CCXQ", "NEW001"], [row["agent_id"] for _, row in bindings])
+        self.assertEqual(["scoped", "friend"], [row["pass_token"] for _, row in bindings])
+
+    def test_load_bindings_skips_incomplete_binding(self) -> None:
+        original = sync._load_credentials
+        sync._load_credentials = lambda _pool, key=sync.CREDENTIALS_KEY: (
+            {"agent_id": "", "user_id": 2},
+            b"",
+        )
+        try:
+            bindings = sync._load_bindings(_FakePool(["xiaomi_health_cloud:EMPTY"]))
+        finally:
+            sync._load_credentials = original
+
+        self.assertEqual([], bindings)
+
+    def test_load_bindings_skips_agent_owner_mismatch(self) -> None:
+        original = sync._load_credentials
+        sync._load_credentials = lambda _pool, key=sync.CREDENTIALS_KEY: (
+            {"agent_id": "STOLEN", "user_id": 3},
+            b"",
+        )
+        try:
+            bindings = sync._load_bindings(
+                _FakePool(["xiaomi_health_cloud:STOLEN"], {"STOLEN": 2})
+            )
+        finally:
+            sync._load_credentials = original
+
+        self.assertEqual([], bindings)
+
+
+class _FakeCloudClient:
+    def __init__(self, **kwargs: object) -> None:
+        self.pass_token = str(kwargs.get("pass_token") or "")
+        self.fetched: list[tuple[object, ...]] = []
+
+    def __enter__(self) -> _FakeCloudClient:
+        return self
+
+    def __exit__(self, *_args: object) -> bool:
+        return False
+
+    def fetch_key(self, *args: object, **kwargs: object) -> list[object]:
+        self.fetched.append(("key", *args))
+        return []
+
+    def fetch_daily_reports(self, *args: object, **kwargs: object) -> list[object]:
+        self.fetched.append(("daily", *args))
+        return []
+
+    def fetch_sport_records(self, *args: object, **kwargs: object) -> list[object]:
+        self.fetched.append(("sport", *args))
+        return []
+
+
+class XiaomiMultiBindingSyncTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.originals = {
+            name: getattr(sync, name)
+            for name in (
+                "_read_last_sync",
+                "_write_last_sync",
+                "_upsert_events",
+                "publish_health_today_cards",
+                "sync_health_trend_memory",
+                "MiHealthCloudClient",
+                "SqlitePool",
+                "_load_bindings",
+                "_sync_binding",
+            )
+        }
+        self.calls: list[tuple[object, ...]] = []
+        sync._read_last_sync = lambda *_args, **_kwargs: None
+        sync._write_last_sync = (
+            lambda *_args, key=sync.LAST_SYNC_KEY, **_kwargs: self.calls.append(
+                ("last_sync", key)
+            )
+        )
+        sync._upsert_events = (
+            lambda _pool, *, agent_id, user_id, drafts: self.calls.append(
+                ("upsert", agent_id, user_id)
+            )
+            or len(list(drafts))
+        )
+        sync.publish_health_today_cards = (
+            lambda _pool, *, agent_id, user_id, now: self.calls.append(
+                ("cards", agent_id, user_id)
+            )
+            or []
+        )
+        sync.sync_health_trend_memory = (
+            lambda _pool, *, agent_id, user_id, now: self.calls.append(
+                ("memory", agent_id, user_id)
+            )
+        )
+        sync.MiHealthCloudClient = _FakeCloudClient
+
+    def tearDown(self) -> None:
+        for name, value in self.originals.items():
+            setattr(sync, name, value)
+
+    def test_each_binding_writes_only_to_its_agent_and_user(self) -> None:
+        result = sync._sync_binding(
+            object(),
+            key="xiaomi_health_cloud:NEW001",
+            credentials={
+                "agent_id": "NEW001",
+                "user_id": 3,
+                "xiaomi_user_id": "friend",
+                "pass_token": "friend-token",
+            },
+            force_full=True,
+            publish_cards=True,
+        )
+
+        self.assertEqual(1, result["upserted"])
+        self.assertIn(("upsert", "NEW001", 3), self.calls)
+        self.assertIn(("cards", "NEW001", 3), self.calls)
+        self.assertIn(("memory", "NEW001", 3), self.calls)
+        self.assertIn(("last_sync", "xiaomi_health.last_sync:NEW001"), self.calls)
+        self.assertNotIn(("cards", "18CCXQ", 2), self.calls)
+
+    def test_one_expired_binding_does_not_block_other_users(self) -> None:
+        class _ClosablePool:
+            def close(self) -> None:
+                pass
+
+        sync.SqlitePool = lambda _path: _ClosablePool()
+        sync._load_bindings = lambda _pool: [
+            ("xiaomi_health_cloud:OLD", {"agent_id": "OLD", "user_id": 2}),
+            ("xiaomi_health_cloud:NEW", {"agent_id": "NEW", "user_id": 3}),
+        ]
+
+        def fake_sync(_pool: object, *, key: str, **_kwargs: object) -> dict[str, int]:
+            self.calls.append(("binding", key))
+            if key.endswith(":OLD"):
+                raise sync.MiHealthAuthError("expired")
+            return {"upserted": 1}
+
+        sync._sync_binding = fake_sync
+        with self.assertRaises(sync.MiHealthAuthError):
+            sync.sync(force_full=True)
+
+        self.assertIn(("binding", "xiaomi_health_cloud:OLD"), self.calls)
+        self.assertIn(("binding", "xiaomi_health_cloud:NEW"), self.calls)
+
+
 class XiaomiDailyMetricTest(unittest.TestCase):
     def test_resting_heart_rate_uses_bpm_and_daily_average(self) -> None:
         noon = datetime(2026, 10, 28, 12, 0, tzinfo=CST)

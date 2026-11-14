@@ -45,6 +45,7 @@ class _Evidence:
     title: str | None
     excerpt: str | None = None
     url: str | None = None
+    image_url: str | None = None
 
 
 @dataclass(frozen=True)
@@ -105,6 +106,7 @@ def _evidence_id(item: _Evidence) -> str:
             item.event_type,
             item.url or "",
             item.title or "",
+            item.image_url or "",
         )
     )
     return hashlib.sha256(identity.encode()).hexdigest()
@@ -396,6 +398,7 @@ async def _load_news(
                         280,
                     ),
                     url=url,
+                    image_url=_compact(item.get("image") or item.get("imageUrl"), 2000),
                 )
             )
             if len(evidence) >= _MAX_NEWS:
@@ -526,8 +529,9 @@ def _upsert_card(
         conn.execute(
             "INSERT INTO today_card_evidence("
             "agent_id, card_id, evidence_id, source_type, source_record_id, "
-            "event_type, occurred_at, privacy_class, url, title, excerpt, created_at"
-            ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "event_type, occurred_at, privacy_class, url, title, excerpt, "
+            "image_url, created_at"
+            ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 agent_id,
                 card_id,
@@ -540,6 +544,7 @@ def _upsert_card(
                 item.url,
                 item.title,
                 item.excerpt,
+                item.image_url,
                 now,
             ),
         )

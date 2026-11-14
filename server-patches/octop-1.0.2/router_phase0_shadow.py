@@ -132,6 +132,22 @@ _HOW_TO_RE = re.compile(
     r"(?:(?:怎么|如何|怎样)把|^\s*how\s+(?:do|can|should|to)\b)",
     re.I,
 )
+_MEMORY_RECALL_RE = re.compile(
+    r"(?:你还记得|还记得|上次我(?:说|提)|之前我(?:说|提)|我的偏好|我习惯|"
+    r"我一般|我以前|记忆里|recall|do you remember|what did i)",
+    re.I,
+)
+_FEED_FOLLOWUP_RE = re.compile(
+    r"(?:(?:这条|那条|这个|那个|上一条|刚才那条).{0,6}"
+    r"(?:新闻|推送|事件|提醒|卡片|消息)"
+    r"|(?:新闻|推送|事件|提醒|卡片).{0,6}(?:是什么|怎么回事|展开|详情|说说))",
+    re.I,
+)
+_MULTI_STEP_RE = re.compile(
+    r"(?:先.{0,24}(?:再|然后)|然后.{0,24}(?:再|并)|分[步两三四五六七八九十]+步|"
+    r"端到端|依次执行|先做.{0,24}再做|step\s+by\s+step)",
+    re.I,
+)
 
 
 def _clip(value: Any, limit: int) -> str:
@@ -435,6 +451,7 @@ def classify_shadow_route(
     *,
     has_attachments: bool = False,
     target_agent_ids: Sequence[str] = (),
+    feed_event_count: int = 0,
 ) -> dict[str, Any]:
     """Return a deterministic Phase 0 routing proxy without invoking an LLM."""
     normalized = str(text or "").strip()
@@ -456,18 +473,36 @@ def classify_shadow_route(
 
     if side_effect_hits:
         intent = "side_effect_task"
+        multi_step = bool(_MULTI_STEP_RE.search(normalized)) or len(set(side_effect_hits)) >= 2
+        route_class = "multi_step_worker" if multi_step else "side_effect_task"
         confidence = 0.86 if read_hits else 0.8
         task_type = "side_effect"
+    elif feed_event_count > 0 and _FEED_FOLLOWUP_RE.search(normalized):
+        intent = "feed_event"
+        route_class = "feed_event"
+        confidence = 0.78
+        task_type = "router_reply"
+    elif _MEMORY_RECALL_RE.search(normalized):
+        intent = "memory_recall"
+        route_class = "memory_recall"
+        confidence = 0.72
+        task_type = "router_reply"
     elif read_hits and not _HOW_TO_RE.search(normalized):
         intent = "read_only_task"
+        route_class = "read_only_tool"
         confidence = 0.74
         task_type = "read_only"
     else:
         intent = "direct_reply"
+        route_class = "direct_reply"
         confidence = 0.58
         task_type = "router_reply"
 
-    requires_task = intent != "direct_reply"
+    requires_task = route_class in {
+        "read_only_tool",
+        "side_effect_task",
+        "multi_step_worker",
+    }
     suggested_task = None
     if requires_task:
         suggested_task = {
@@ -475,18 +510,23 @@ def classify_shadow_route(
             "title": _clip(normalized or "Handle user request", 96),
             "subject_key": f"message:{_short_hash(normalized)}",
             "objective": _clip(normalized, 4_000),
-            "requires_user": intent == "side_effect_task",
+            "requires_user": route_class == "side_effect_task",
         }
     return {
-        "policy_version": "shadow-heuristic-v2",
+        "policy_version": "shadow-heuristic-v3",
         "intent": intent,
+        "route_class": route_class,
         "confidence": confidence,
         "requires_task": requires_task,
+        "worker_required": route_class == "multi_step_worker",
+        "requires_confirmation": route_class == "side_effect_task",
         "suggested_task": suggested_task,
         "reasons": {
             "read_only_terms": read_hits,
             "side_effect_terms": side_effect_hits,
             "input_kinds": input_kinds,
+            "feed_followup": route_class == "feed_event",
+            "memory_recall": route_class == "memory_recall",
         },
         "dispatch_enabled": False,
     }
@@ -519,29 +559,110 @@ def _recent_candidates(
     return candidates
 
 
+def project_task_capsule(task: Mapping[str, Any]) -> dict[str, str]:
+    """Project an internal task into the bounded main-conversation capsule."""
+    raw = task.get("capsule")
+    capsule: Mapping[str, Any] = raw if isinstance(raw, Mapping) else {}
+    goal = _clip(
+        capsule.get("goal")
+        or capsule.get("objective")
+        or task.get("objective")
+        or task.get("title")
+        or "",
+        600,
+    )
+    result = _clip(
+        capsule.get("result")
+        or capsule.get("output_excerpt")
+        or capsule.get("summary")
+        or "",
+        900,
+    )
+    evidence = _clip(
+        capsule.get("evidence")
+        or capsule.get("context_pack_id")
+        or capsule.get("trace_id")
+        or "",
+        300,
+    )
+    status = str(task.get("status") or "open")
+    next_action = _clip(
+        capsule.get("next_action")
+        or (
+            "等待用户确认"
+            if status == "needs_user" or bool(task.get("requires_user"))
+            else ("等待执行结果" if status in {"open", "in_progress"} else "")
+        ),
+        200,
+    )
+    return {
+        "goal": goal,
+        "result": result,
+        "evidence": evidence,
+        "status": status,
+        "next_action": next_action,
+    }
+
+
+def render_task_capsule(task: Mapping[str, Any]) -> str:
+    capsule = project_task_capsule(task)
+    parts = [f"目标: {capsule['goal'] or task.get('title', '')}"]
+    if capsule["result"]:
+        parts.append(f"结果: {capsule['result']}")
+    if capsule["evidence"]:
+        parts.append(f"引用: {capsule['evidence']}")
+    parts.append(f"状态: {capsule['status']}")
+    if capsule["next_action"]:
+        parts.append(f"后续: {capsule['next_action']}")
+    return "\n".join(parts)
+
+
 def _task_candidates(tasks: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
     candidates: list[dict[str, Any]] = []
     for task in tasks:
-        capsule = task.get("capsule")
-        capsule_text = (
-            json.dumps(capsule, ensure_ascii=False, sort_keys=True)
-            if isinstance(capsule, Mapping) and capsule
-            else ""
-        )
-        content = capsule_text or str(task.get("objective") or "")
-        content = _clip(content, 8_000)
+        content = _clip(render_task_capsule(task), 8_000)
         if not content:
             continue
         candidates.append(
             {
                 "ref": f"task://{task['task_id']}",
-                "summary": f"{task.get('title', '')}: {content}",
+                "summary": content,
                 "tokens": _estimate(content),
                 "priority": int(task.get("priority", 0) or 0),
                 "updated_at": int(task.get("updated_at", 0) or 0),
             }
         )
     return candidates
+
+
+def _feed_candidates(
+    services: Any,
+    *,
+    agent_id: str,
+    user_id: int,
+    limit: int = 4,
+) -> list[dict[str, Any]]:
+    try:
+        from octop.infra.conversation.feed import fetch_feed_candidates
+    except ImportError:
+        try:
+            from feed_governance import fetch_feed_candidates
+        except ImportError:
+            return []
+    try:
+        with services.db.connect() as conn:
+            items = fetch_feed_candidates(
+                conn,
+                agent_id=agent_id,
+                user_id=user_id,
+                limit=limit,
+            )
+    except Exception:
+        logger.debug("shadow feed candidates skipped agent=%s", agent_id, exc_info=True)
+        return []
+    for item in items:
+        item["tokens"] = max(1, _estimate(str(item.get("content") or "")))
+    return items
 
 
 async def observe_shadow_turn(
@@ -604,9 +725,15 @@ async def observe_shadow_turn(
         conversation_id=conversation_id,
         limit=20,
     )
+    feed_items = _feed_candidates(
+        services,
+        agent_id=agent_id,
+        user_id=user_id,
+    )
     context_pack = compile_context_pack(
         task_capsules=_task_candidates(tasks),
         recent_discussion=recent,
+        feed_events=feed_items,
         short_term_memory=memory_candidates,
         knowledge_base=knowledge_candidates,
     )
@@ -624,6 +751,19 @@ async def observe_shadow_turn(
         current_text,
         has_attachments=has_attachments,
         target_agent_ids=target_agent_ids,
+        feed_event_count=len(feed_items),
+    )
+    settings_repo = getattr(services, "settings_repo", None)
+    dispatch_enabled = _setting_enabled(
+        settings_repo,
+        key="router.worker_dispatch.enabled",
+        env_key="OCTOP_ROUTER_WORKER_DISPATCH_ENABLED",
+        default=False,
+    )
+    decision["feed_event_count"] = len(feed_items)
+    decision["worker_dispatch_enabled"] = dispatch_enabled
+    decision["worker_dispatch_candidate"] = bool(
+        decision["worker_required"] and dispatch_enabled
     )
     service.append_event(
         conversation_id=conversation_id,
@@ -661,6 +801,29 @@ async def observe_shadow_turn(
     service.append_event(
         conversation_id=conversation_id,
         trace_id=trace_id,
+        event_type="router.gate.decision",
+        status=(
+            "worker_candidate"
+            if decision["worker_dispatch_candidate"]
+            else "inline"
+        ),
+        summary=(
+            f"Gate: {decision['route_class']} "
+            f"(worker_required={decision['worker_required']}, "
+            f"dispatch_enabled={dispatch_enabled})"
+        ),
+        payload={
+            "route_class": decision["route_class"],
+            "worker_required": decision["worker_required"],
+            "requires_confirmation": decision["requires_confirmation"],
+            "worker_dispatch_enabled": dispatch_enabled,
+            "worker_dispatch_candidate": decision["worker_dispatch_candidate"],
+            "feed_event_count": len(feed_items),
+        },
+    )
+    service.append_event(
+        conversation_id=conversation_id,
+        trace_id=trace_id,
         event_type="router.shadow.decision",
         status=str(decision["intent"]),
         summary=(
@@ -674,6 +837,7 @@ async def observe_shadow_turn(
         "conversation_id": conversation_id,
         "decision": decision,
         "context_pack": pack,
+        "feed_events": feed_items,
     }
 
 

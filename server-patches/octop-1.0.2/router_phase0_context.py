@@ -17,6 +17,7 @@ DEFAULT_CONTEXT_POLICY: dict[str, Any] = {
     "max_total_tokens": 6_000,
     "max_item_chars": 8_000,
     "recent_discussion": {"max_items": 8, "max_tokens": 2_800},
+    "feed_events": {"max_items": 4, "max_tokens": 900},
     "short_term_memory": {"max_items": 6, "max_tokens": 1_200, "min_score": 0.2},
     "knowledge_base": {"max_items": 5, "max_tokens": 1_600, "min_score": 0.25},
     "task_capsules": {"max_items": 6, "max_tokens": 1_200},
@@ -147,6 +148,7 @@ def _active_policy(policy: Mapping[str, Any] | None) -> dict[str, Any]:
     for name, value in policy.items():
         if name in {
             "recent_discussion",
+            "feed_events",
             "short_term_memory",
             "knowledge_base",
             "task_capsules",
@@ -162,6 +164,7 @@ def _active_policy(policy: Mapping[str, Any] | None) -> dict[str, Any]:
 def compile_context_pack(
     *,
     recent_discussion: Sequence[Mapping[str, Any]] = (),
+    feed_events: Sequence[Mapping[str, Any]] = (),
     short_term_memory: Sequence[Mapping[str, Any]] = (),
     knowledge_base: Sequence[Mapping[str, Any]] = (),
     task_capsules: Sequence[Mapping[str, Any]] = (),
@@ -181,6 +184,12 @@ def compile_context_pack(
     recent_all = list(recent_discussion)
     recent_limit = max(0, int(recent_policy.get("max_items", 0)))
     recent_items = recent_all[-recent_limit:] if recent_limit else []
+    feed_policy = _section(active_policy, "feed_events")
+    feeds = sorted(
+        feed_events,
+        key=lambda item: int(item.get("occurred_at", 0)),
+        reverse=True,
+    )
     tasks_policy = _section(active_policy, "task_capsules")
     tasks = sorted(
         task_capsules,
@@ -227,12 +236,21 @@ def compile_context_pack(
             ref=_ref(item, f"recent_discussion:{index}"),
             reason="section_item_limit",
         )
+    feed_limit = max(0, int(feed_policy.get("max_items", 0)))
+    for index, item in enumerate(feeds[feed_limit:]):
+        _record_omission(
+            omitted,
+            omission_counts,
+            ref=_ref(item, f"feed_events:{index}"),
+            reason="section_item_limit",
+        )
 
     sections: list[dict[str, Any]] = []
     used_total = 0
     for name, candidates, section_policy in (
         ("task_capsules", tasks, tasks_policy),
         ("recent_discussion", recent_items, recent_policy),
+        ("feed_events", feeds[:feed_limit] if feed_limit else [], feed_policy),
         ("short_term_memory", memories, memory_policy),
         ("knowledge_base", knowledge, knowledge_policy),
     ):

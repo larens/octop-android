@@ -58,6 +58,7 @@ card_method = '''    async def _publish_today_card_best_effort(
             return
         if not result["notify"]:
             return
+        priority = "p1" if result["kind"] in {"signal", "briefing", "news"} else "p2"
         try:
             await self._gateway.ws_hub.push_to_user(
                 session.user_id,
@@ -66,7 +67,7 @@ card_method = '''    async def _publish_today_card_best_effort(
                     "event": "today.card_changed",
                     "agent_id": command.agent_id,
                     "card_id": result["card_id"],
-                    "priority": "normal",
+                    "priority": priority,
                     "text": f"「{command.cron_name}」已更新到 Today",
                 },
             )
@@ -80,7 +81,11 @@ card_method = '''    async def _publish_today_card_best_effort(
 '''
 method_anchor = '''    async def _notify_best_effort(
 '''
-if "_publish_today_card_best_effort" not in source:
+if "_publish_today_card_best_effort" in source:
+    method_start = source.index("    async def _publish_today_card_best_effort(")
+    method_end = source.index(method_anchor, method_start)
+    source = source[:method_start] + card_method + source[method_end:]
+else:
     if method_anchor not in source:
         raise SystemExit("Octop 1.0.2 cron Today method anchor not found")
     source = source.replace(method_anchor, card_method + method_anchor, 1)

@@ -54,7 +54,12 @@ cp artifact_shares.py "$site/api/routers/artifact_shares.py"
 /opt/octop/venv/bin/python install_router_phase3.py
 /opt/octop/venv/bin/python install_router_phase35.py
 /opt/octop/venv/bin/python install_router_phase4.py
+/opt/octop/venv/bin/python install_conversation_efficiency.py
 /opt/octop/venv/bin/python install_feishu_group_monitor.py
+/opt/octop/venv/bin/python install_usage_today_cards.py
+if [ -f install_weread_reading.py ]; then
+  /opt/octop/venv/bin/python install_weread_reading.py
+fi
 /opt/octop/venv/bin/python migrate_existing_tasks.py
 OCTOP_HOME=/opt/octop OCTOP_DB_PATH=/opt/octop/octop.db \
   /opt/octop/venv/bin/python migrate_agent_tooling.py
@@ -69,10 +74,12 @@ OCTOP_HOME=/opt/octop OCTOP_DB_PATH=/opt/octop/octop.db \
   "$site/infra/today/didi_ride_cards.py" \
   "$site/infra/today/coffee_order_cards.py" \
   "$site/infra/today/health_cards.py" \
+  "$site/infra/today/usage_cards.py" \
   "$site/api/routers/mobile_ingest.py" \
   "$site/api/routers/conversation_router.py" \
   "$site/infra/conversation/service.py" \
   "$site/infra/conversation/context.py" \
+  "$site/infra/conversation/feed.py" \
   "$site/infra/conversation/budget.py" \
   "$site/infra/conversation/shadow.py" \
   "$site/infra/conversation/retention.py" \
@@ -108,7 +115,8 @@ OCTOP_HOME=/opt/octop OCTOP_DB_PATH=/opt/octop/octop.db \
   health_trend_memory.py \
   xiaomi_health_cloud.py \
   xiaomi_health_sync.py \
-  configure_xiaomi_health.py
+  configure_xiaomi_health.py \
+  provision_multi_user.py
 systemctl restart octop
 systemctl is-active --quiet octop
 systemctl daemon-reload

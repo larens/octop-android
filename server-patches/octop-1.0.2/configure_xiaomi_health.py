@@ -11,7 +11,7 @@ from pathlib import Path
 from octop.infra.connectors.crypto import encrypt_credentials
 from octop.infra.db.pool import SqlitePool
 from octop.infra.db.repos.secrets import SecretRepo
-from xiaomi_health_sync import CREDENTIALS_KEY
+from xiaomi_health_sync import _credentials_key
 
 
 def main() -> int:
@@ -32,27 +32,44 @@ def main() -> int:
         "agent_id": str(payload["agent_id"]),
         "user_id": int(payload["user_id"]),
     }
+    key = _credentials_key(credentials["agent_id"])
     db_path = Path(os.environ.get("OCTOP_DB_PATH", "/opt/octop/octop.db"))
     pool = SqlitePool(db_path)
     try:
+        with pool.connect() as conn:
+            agent = conn.execute(
+                "SELECT user_id FROM agents WHERE agent_id = ?",
+                (credentials["agent_id"],),
+            ).fetchone()
+        if agent is None:
+            print(f"agent not found: {credentials['agent_id']}", file=sys.stderr)
+            return 2
+        if int(agent["user_id"]) != credentials["user_id"]:
+            print(
+                "agent belongs to a different user: "
+                f"agent={credentials['agent_id']} owner={agent['user_id']} "
+                f"requested={credentials['user_id']}",
+                file=sys.stderr,
+            )
+            return 2
         secret_repo = SecretRepo(pool)
         blob = encrypt_credentials(secret_repo, credentials)
         now = int(time.time())
         with pool.transaction() as conn:
             updated = conn.execute(
                 "UPDATE secrets SET v = ?, rotated_at = ? WHERE k = ?",
-                (blob, now, CREDENTIALS_KEY),
+                (blob, now, key),
             )
             if updated.rowcount == 0:
                 conn.execute(
                     "INSERT INTO secrets(k, v, created_at) VALUES (?, ?, ?)",
-                    (CREDENTIALS_KEY, blob, now),
+                    (key, blob, now),
                 )
     finally:
         pool.close()
     print(
         f"configured Xiaomi Health for agent={credentials['agent_id']} "
-        f"user={credentials['user_id']}"
+        f"user={credentials['user_id']} key={key}"
     )
     return 0
 

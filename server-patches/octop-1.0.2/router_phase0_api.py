@@ -74,6 +74,12 @@ class TaskApprovalDecisionBody(BaseModel):
     version: int = Field(ge=1)
 
 
+class TaskActionBody(BaseModel):
+    action: Literal["complete", "ignore", "defer"]
+    defer_hours: int = Field(default=4, ge=1, le=168)
+    note: str | None = Field(default=None, max_length=500)
+
+
 class ClaimWriteBody(BaseModel):
     approval_id: str = Field(min_length=1, max_length=200)
     action_hash: str = Field(min_length=64, max_length=64)
@@ -462,6 +468,34 @@ async def get_task(
         )
     except NotFoundError as exc:
         raise _not_found(str(exc)) from exc
+
+
+@router.post(
+    "/agents/{agent_id}/tasks/{task_id}/action",
+    summary="Complete, ignore, or defer a Router task",
+)
+async def act_on_task(
+    agent_id: str,
+    task_id: str,
+    body: TaskActionBody,
+    as_user: int | None = None,
+    user: Any = Depends(current_user),
+    server: Any = Depends(get_server),
+) -> dict[str, Any]:
+    require_agent_row(agent_id, user=user, as_user=as_user, server=server)
+    try:
+        return _service(server).user_task_action(
+            agent_id=agent_id,
+            user_id=_effective_user_id(user, as_user),
+            task_id=task_id,
+            action=body.action,
+            defer_hours=body.defer_hours,
+            note=body.note,
+        )
+    except NotFoundError as exc:
+        raise _not_found(str(exc)) from exc
+    except (InvalidTransitionError, RouterPhase0Error) as exc:
+        raise OctopError(ErrorCode.INTERNAL_ERROR, str(exc), status=409) from exc
 
 
 @router.post(

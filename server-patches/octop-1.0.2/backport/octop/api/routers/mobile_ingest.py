@@ -88,6 +88,7 @@ class TodayEvidenceResponse(BaseModel):
     url: str | None = None
     title: str | None = None
     excerpt: str | None = None
+    image_url: str | None = None
 
 
 class TodayCardResponse(BaseModel):
@@ -726,7 +727,7 @@ def _evidence_by_card(conn: Any, agent_id: str, card_ids: list[str]) -> dict[str
             )
         )
     web_rows = conn.execute(
-        "SELECT card_id, fingerprint, url, title, excerpt, published_at, observed_at "
+        "SELECT card_id, fingerprint, url, title, excerpt, image_url, published_at, observed_at "
         f"FROM today_web_evidence WHERE agent_id = ? AND card_id IN ({placeholders}) "
         "ORDER BY observed_at DESC",
         (agent_id, *card_ids),
@@ -742,11 +743,12 @@ def _evidence_by_card(conn: Any, agent_id: str, card_ids: list[str]) -> dict[str
                 url=str(row["url"]),
                 title=str(row["title"]),
                 excerpt=str(row["excerpt"]),
+                image_url=str(row["image_url"]) if row["image_url"] is not None else None,
             )
         )
     tool_rows = conn.execute(
         "SELECT card_id, evidence_id, source_type, source_record_id, event_type, "
-        "occurred_at, privacy_class, url, title, excerpt "
+        "occurred_at, privacy_class, url, title, excerpt, image_url "
         f"FROM today_card_evidence WHERE agent_id = ? AND card_id IN ({placeholders}) "
         "ORDER BY created_at DESC, occurred_at DESC",
         (agent_id, *card_ids),
@@ -763,6 +765,7 @@ def _evidence_by_card(conn: Any, agent_id: str, card_ids: list[str]) -> dict[str
                 url=str(row["url"]) if row["url"] is not None else None,
                 title=str(row["title"]) if row["title"] is not None else None,
                 excerpt=str(row["excerpt"]) if row["excerpt"] is not None else None,
+                image_url=str(row["image_url"]) if row["image_url"] is not None else None,
             )
         )
     return evidence

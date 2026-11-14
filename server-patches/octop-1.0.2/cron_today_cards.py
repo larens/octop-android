@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 import hashlib
+import ipaddress
 import json
 import logging
 import re
 import time
 from typing import Any
-from urllib.parse import urlsplit
+from urllib.parse import urljoin, urlsplit
 
 from octop.infra.db.pool import DatabasePool
 from octop.infra.db.repos.agents import AgentRepo
@@ -32,6 +33,28 @@ _HONORIFIC_LEAD_RE = re.compile(
 )
 _MARKDOWN_LINK_RE = re.compile(r"\[([^\]]+)\]\((https?://[^)]+)\)")
 _MARKDOWN_IMAGE_RE = re.compile(r"!\[([^\]]*)\]\([^)]*\)")
+_MARKDOWN_IMAGE_URL_RE = re.compile(r"!\[[^\]]*\]\((https?://[^)\s]+)")
+_META_IMAGE_RE = re.compile(
+    r"""<meta[^>]+(?:property|name)=["'](?:og:image|twitter:image)["'][^>]+content=["'](https?://[^"']+)""",
+    re.IGNORECASE,
+)
+_HTML_META_IMAGE_RE = re.compile(
+    r"""<meta[^>]+(?:property|name)=["'](?:og:image|twitter:image)["'][^>]+content=["']([^"']+)["']""",
+    re.IGNORECASE,
+)
+_HTML_IMAGE_RE = re.compile(
+    r"""<img[^>]+(?:src|data-src|data-original)=["']([^"']+)["']""",
+    re.IGNORECASE,
+)
+_SKIP_IMAGE_RE = re.compile(
+    r"(?:/t\.png|logo|icon|avatar|qrcode|qr-code|spacer|blank|pixel|emoji|placeholder)",
+    re.IGNORECASE,
+)
+_IMAGE_FETCH_LIMIT = 3
+_IMAGE_FETCH_TIMEOUT = 3.0
+_IMAGE_CACHE_TTL = 6 * 60 * 60
+_IMAGE_FETCH_SKIP_HOSTS = {"github.com", "www.github.com"}
+_IMAGE_CACHE: dict[str, tuple[int, str | None]] = {}
 _MAILTO_LINK_RE = re.compile(r"\[([^\]]+)\]\(mailto:[^)]+\)")
 _SENTENCE_SPLIT_RE = re.compile(r"(?<=[。；;])")
 _SECTION_HEADING_RE = re.compile(r"(?m)^\s*(?:\*\*)?【([^】]+)】(?:\*\*)?[ \t]*(.*)$")
@@ -42,6 +65,7 @@ _DATE_TIME_RE = re.compile(r"\d{1,2}-\d{1,2}\s+\d{1,2}:\d{2}")
 _QUOTED_RE = re.compile(r'"([^"]+)"')
 _PENDING_COUNT_RE = re.compile(r"待处理私人邮件\s*(\d+)\s*封")
 _TRAILING_URL_PUNCTUATION = ".,;:!?，。；：！？、）)]}>'\"*`"
+_MAX_EVIDENCE_URL = 500
 _FACT_TABLE_PREFIX_RE = re.compile(r"^\s*\|\s*S?\d+\s*\|\s*", re.IGNORECASE)
 _FACT_INLINE_NUMBER_RE = re.compile(r"^\s*S?\d+\s*[|｜]\s*", re.IGNORECASE)
 _FACT_SOURCE_LABEL_RE = re.compile(
@@ -54,8 +78,9 @@ _SOURCE_TIME_TITLE_RE = re.compile(
 )
 _READING_BOOK_ROW_RE = re.compile(
     r"^\|\s*(\d{1,2}[-/]\d{1,2})\s*\|\s*《([^》]+)》[^|]*"
-    r"\|\s*[*_`]*(\d+)\s*条"
+    r"(?:\|[^|\n]*)*?\|\s*[*_`]*(\d+)\s*条"
 )
+_READING_PROGRESS_CELL_RE = re.compile(r"\|\s*(\d{1,3}\s*%|未知)\s*\|")
 _READING_LAST_MARK_RE = re.compile(
     r"最近一次划线(?:是|停在)?\s*[*_`]*\s*(\d{4}-\d{2}-\d{2})"
     r"(?:\s+\d{1,2}:\d{2})?\s*[*_`]*[^《\n]{0,24}《([^》]+)》"
@@ -72,6 +97,11 @@ _READING_INLINE_BOOK_RE = re.compile(
 _READING_MARK_COUNT_RE = re.compile(
     r"(?:新增划线|划线(?:均|共|总计)?)[^0-9\n]{0,20}(\d+)\s*条"
 )
+_READING_DURATION_RE = re.compile(
+    r"阅读时长\s*(\d+(?:\.\d+)?)\s*小时(?:\s*(\d+)\s*分钟)?"
+)
+_READING_DAYS_RE = re.compile(r"阅读天数\s*(\d+)\s*天")
+_READING_LISTEN_RE = re.compile(r"听书\s*(\d+(?:\.\d+)?)\s*小时")
 _STRUCTURED_UI_TITLE_RE = re.compile(
     r'^\s*\{.*?"octop_ui"\s*:',
     re.DOTALL,
@@ -170,6 +200,15 @@ _SIGNAL_MARKERS = (
     "头部科技公司",
     "重量级 ai",
 )
+_SIGNAL_SOURCE_RE = re.compile(
+    r"(?im)^\s*(?:来源|source)\s*[：:]\s*(?:\[[^\]]*\]\()?(https?://[^)\s]+)"
+)
+_SIGNAL_NUMBERED_RE = re.compile(r"^\s*\d+[.)、]\s*(.+?)\s*$")
+_ANNIVERSARY_SILENT_RE = re.compile(
+    r"(?:无命中|没有命中|今天没有(?:纪念日|生日)|暂无(?:纪念日|生日)|"
+    r"无需提醒|保持静默|静默|已执行完成)",
+    re.IGNORECASE,
+)
 _INTERNAL_TITLE_SUFFIX_RE = re.compile(
     r"\s*[（(]\s*(?:统一入口|系统入口|自动入口)\s*[）)]\s*$"
 )
@@ -188,6 +227,19 @@ _NO_NEW_INFORMATION_START_RE = re.compile(
     r"^(?:"
     r"暂无新信息|没有新的信息|没有获取到新信息|没有获取新信息|暂无重要信息|"
     r"no new information|no important updates?"
+    r")",
+    re.IGNORECASE,
+)
+_REJECTED_RESULT_START_RE = re.compile(
+    r"^(?:"
+    r"(?:the |your |this )?request (?:was |is )?(?:rejected|blocked)|"
+    r"(?:rejected|blocked) (?:by|because)|considered high risk|"
+    r"i(?:'m| am) (?:sorry,? )?(?:but )?(?:i )?"
+    r"(?:can't|cannot|am unable to) (?:help|assist)|"
+    r"抱歉[，,]?\s*(?:我)?(?:无法|不能)(?:协助|帮助|处理)|"
+    r"(?:该|此)?请求(?:已)?被(?:拒绝|拦截)|"
+    r"内容(?:违反|不符合|触及)[^。\n]{0,20}(?:政策|规范|准则)|"
+    r"触发(?:了)?(?:安全|内容)(?:策略|审核|拦截)"
     r")",
     re.IGNORECASE,
 )
@@ -464,14 +516,17 @@ def _reading_result_summary(text: str) -> str:
     if "阅读" not in text and "划线" not in text:
         return ""
 
-    books: list[tuple[str, str, int | None]] = []
+    books: list[tuple[str, str, str | None, int | None]] = []
     seen_books: set[tuple[str, str]] = set()
     for raw in text.splitlines():
-        match = _READING_BOOK_ROW_RE.match(raw.strip())
+        line = raw.strip()
+        match = _READING_BOOK_ROW_RE.match(line)
         if match:
+            progress = _READING_PROGRESS_CELL_RE.search(line)
             item = (
                 match.group(1),
                 _clean_inline(match.group(2)).strip("《》 "),
+                progress.group(1).replace(" ", "") if progress else None,
                 int(match.group(3)),
             )
             books.append(item)
@@ -496,7 +551,7 @@ def _reading_result_summary(text: str) -> str:
                 marks = int(mark_match.group(1)) if mark_match else None
                 if marks is None and tail_marks and int(tail_marks.group(1)) == 0:
                     marks = 0
-                books.append((date, title, marks))
+                books.append((date, title, None, marks))
                 seen_books.add((date, title))
 
     shelf = _READING_SHELF_RE.search(text)
@@ -506,15 +561,26 @@ def _reading_result_summary(text: str) -> str:
         return ""
 
     read_count = len(books)
-    known_marks = [item[2] for item in books if item[2] is not None]
+    known_marks = [item[3] for item in books if item[3] is not None]
     total_mark = _READING_MARK_COUNT_RE.search(text)
     marks_count = (
         sum(known_marks)
         if len(known_marks) == len(books)
         else int(total_mark.group(1)) if total_mark else None
     )
+    duration = _READING_DURATION_RE.search(text)
+    days = _READING_DAYS_RE.search(text)
+    listen = _READING_LISTEN_RE.search(text)
+    duration_text = ""
+    if duration:
+        duration_text = f"{duration.group(1)} 小时"
+        if duration.group(2) and duration.group(2) != "0":
+            duration_text += f" {duration.group(2)} 分钟"
     overview_parts = [
         f"本周阅读 {read_count} 本" if read_count else "",
+        f"阅读时长 {duration_text}" if duration_text else "",
+        f"阅读天数 {days.group(1)} 天" if days else "",
+        f"听书 {listen.group(1)} 小时" if listen else "",
         f"新增划线 {marks_count} 条" if marks_count is not None else "",
         f"书架 {shelf.group(1)} 本" if shelf else "",
     ]
@@ -530,11 +596,19 @@ def _reading_result_summary(text: str) -> str:
 
     sections = [f"【阅读概览】\n" + "\n".join(line for line in overview_lines if line)]
     if books:
-        book_lines = [
-            f"{date}《{title}》· {marks} 条" if marks is not None
-            else f"{date}《{title}》· 划线数见总览"
-            for date, title, marks in books[:8]
-        ]
+        book_lines = []
+        for date, title, progress, marks in books[:8]:
+            details = [
+                part
+                for part in (
+                    progress,
+                    f"{marks} 条" if marks is not None else "划线数见总览",
+                )
+                if part
+            ]
+            book_lines.append(
+                f"{date}《{title}》" + (f"· {' · '.join(details)}" if details else "")
+            )
         sections.append("【本周在读】\n" + "\n".join(book_lines))
 
     core = _reading_section(text, "核心观点")
@@ -544,6 +618,15 @@ def _reading_result_summary(text: str) -> str:
         if '"' in item or "“" in item or "”" in item
     ]
     core_items = (quoted or _reading_items(core, limit=3))[:3]
+    if not core_items and core:
+        prose = " ".join(
+            line.strip().lstrip("> ").strip()
+            for line in core.splitlines()
+            if line.strip() and not line.lstrip().startswith("|")
+        )
+        prose = _compact(_clean_inline(prose), 300)
+        if prose:
+            core_items = [prose]
     if core_items:
         sections.append("【核心观点】\n" + "\n".join(f"- {item}" for item in core_items))
 
@@ -551,7 +634,7 @@ def _reading_result_summary(text: str) -> str:
     if actions:
         sections.append("【可行动】\n" + "\n".join(f"- {item}" for item in actions))
 
-    next_reading = _reading_section(text, "下一步读")
+    next_reading = _reading_section(text, "下一步")
     next_titles: list[str] = []
     for match in re.finditer(r"《[^》]+》", next_reading):
         title = match.group(0)
@@ -559,6 +642,18 @@ def _reading_result_summary(text: str) -> str:
             next_titles.append(title)
     if next_titles:
         sections.append("【下一步阅读】\n" + "\n".join(f"- {item}" for item in next_titles))
+
+    notes = _reading_section(text, "数据说明") or _reading_section(text, "口径说明")
+    if notes:
+        note_items = _reading_items(notes, limit=4)
+        if not note_items:
+            prose = _compact(
+                _clean_inline(" ".join(line.strip() for line in notes.splitlines() if line.strip())),
+                360,
+            )
+            note_items = [prose] if prose else []
+        if note_items:
+            sections.append("【数据说明】\n" + "\n".join(f"- {item}" for item in note_items))
 
     summary = "\n\n".join(sections)
     return summary if len(summary) <= 5200 else summary[:5199].rstrip() + "…"
@@ -593,7 +688,14 @@ def cron_result_has_new_information(text: str, *, task_kind: str) -> bool:
         return False
     if _NO_NEW_INFORMATION_START_RE.match(normalized):
         return False
+    if _is_rejected_result(normalized):
+        return False
     return True
+
+
+def _is_rejected_result(text: str) -> bool:
+    normalized = re.sub(r"^[\s*_`#>]+", "", str(text or "")).strip()
+    return bool(normalized) and _REJECTED_RESULT_START_RE.match(normalized) is not None
 
 
 def _signal_no_update(text: str) -> bool:
@@ -608,14 +710,33 @@ def _signal_no_update(text: str) -> bool:
     }
 
 
-def _clean_signal_block(value: str, limit: int = 900) -> str:
+def _is_anniversary_task(task_name: str, prompt: str) -> bool:
+    text = f"{task_name}\n{prompt}".lower()
+    return any(word in text for word in _ANNIVERSARY_PROMPT_MARKERS)
+
+
+def _anniversary_is_silent(text: str) -> bool:
+    normalized = re.sub(r"[*_`#>]", "", str(text or "")).strip()
+    return not normalized or _ANNIVERSARY_SILENT_RE.search(normalized) is not None
+
+
+def _clean_signal_block(
+    value: str,
+    limit: int = 900,
+    *,
+    keep_source_urls: bool = False,
+) -> str:
     lines: list[str] = []
     for raw in value.splitlines():
         line = raw.strip()
         if not line or line.startswith(("#", "|", "```", "---")):
             continue
-        line = _MARKDOWN_LINK_RE.sub(r"\1", line)
-        line = _URL_RE.sub("", line)
+        is_source = line.lower().startswith(("来源", "source"))
+        if is_source and keep_source_urls:
+            line = _MARKDOWN_LINK_RE.sub(lambda match: match.group(2), line)
+        else:
+            line = _MARKDOWN_LINK_RE.sub(r"\1", line)
+            line = _URL_RE.sub("", line)
         line = line.replace("**", "").replace("__", "").replace("`", "")
         line = re.sub(r"^[#>]+\s*", "", line)
         line = " ".join(line.split())
@@ -635,6 +756,7 @@ def _signal_result_summary(text: str) -> str:
     signals = _clean_signal_block(
         _first_summary_section(text, ("关键信号", "行业信号", "值得关注的变化")),
         4200,
+        keep_source_urls=True,
     )
     advice = _clean_signal_block(
         _first_summary_section(text, ("行动建议", "今天可以做什么", "建议")),
@@ -650,6 +772,46 @@ def _signal_result_summary(text: str) -> str:
         sections.append(f"【行动建议】\n{advice}")
     summary = "\n\n".join(sections)
     return summary if len(summary) <= 5200 else summary[:5199].rstrip() + "…"
+
+
+def _signal_source_evidence(
+    text: str,
+    *,
+    occurred_at: int,
+) -> list[TodayEvidenceInput]:
+    """Keep each signal's own source URL next to its title when the model provides one."""
+    body = _first_summary_section(text, ("关键信号", "行业信号", "值得关注的变化"))
+    if not body:
+        return []
+
+    evidence: list[TodayEvidenceInput] = []
+    seen_urls: set[str] = set()
+    current_title = ""
+    for raw in body.splitlines():
+        line = raw.strip()
+        numbered = _SIGNAL_NUMBERED_RE.match(line)
+        if numbered is not None:
+            current_title = _clean_signal_block(numbered.group(1), 160)
+            continue
+        for match in _SIGNAL_SOURCE_RE.finditer(line):
+            url = _clean_url(match.group(1))
+            if not url or len(url) > _MAX_EVIDENCE_URL or url in seen_urls:
+                continue
+            seen_urls.add(url)
+            title = current_title or _web_host(url) or url
+            evidence.append(
+                TodayEvidenceInput(
+                    source_type="web",
+                    reference=url,
+                    url=url,
+                    title=title,
+                    excerpt="",
+                    occurred_at=occurred_at,
+                )
+            )
+            if len(evidence) >= 3:
+                return evidence
+    return evidence
 
 
 def _weather_result_summary(text: str, *, task_name: str) -> str:
@@ -1030,6 +1192,7 @@ def _merge_web_evidence(
         seen_urls.add(url)
         title = str(item.title or "")
         excerpt = item.excerpt
+        image_url = item.image_url
         candidate = discovered_by_url.get(url)
         if candidate is not None:
             candidate_title = str(candidate.title or "")
@@ -1038,6 +1201,7 @@ def _merge_web_evidence(
                 excerpt = excerpt or candidate.excerpt
             elif _is_weak_web_title(title, url):
                 title = candidate_title
+            image_url = image_url or candidate.image_url
         title = _clean_fact_title(title)
         if _is_non_article_evidence(url, title) or _is_weak_web_title(title, url):
             continue
@@ -1048,6 +1212,7 @@ def _merge_web_evidence(
                 url=item.url,
                 title=title,
                 excerpt=excerpt,
+                image_url=image_url,
                 occurred_at=item.occurred_at,
             )
         )
@@ -1068,6 +1233,7 @@ def _merge_web_evidence(
                 url=item.url,
                 title=title,
                 excerpt=item.excerpt,
+                image_url=item.image_url,
                 occurred_at=item.occurred_at,
             )
         )
@@ -1087,7 +1253,145 @@ def _meaningful_web_title(value: str, url: str) -> bool:
     return bool(label)
 
 
-def _article_snapshot_item(content: str) -> tuple[str, str] | None:
+def _first_image_url(content: str) -> str | None:
+    for pattern in (_META_IMAGE_RE, _MARKDOWN_IMAGE_URL_RE):
+        match = pattern.search(content)
+        if match is not None:
+            return _clean_url(match.group(1))
+    return None
+
+
+def _is_safe_public_url(url: str) -> bool:
+    parts = urlsplit(url)
+    if parts.scheme not in {"http", "https"} or not parts.hostname:
+        return False
+    host = parts.hostname.lower()
+    if host in {"localhost", "localhost.localdomain"} or host.endswith(
+        (".local", ".internal")
+    ):
+        return False
+    try:
+        address = ipaddress.ip_address(host)
+    except ValueError:
+        return True
+    return not (
+        address.is_private
+        or address.is_loopback
+        or address.is_link_local
+        or address.is_reserved
+        or address.is_multicast
+    )
+
+
+def _article_image_url(html: str, base_url: str) -> str | None:
+    candidates: list[str] = []
+    meta = _HTML_META_IMAGE_RE.search(html)
+    if meta is not None:
+        candidates.append(meta.group(1))
+    candidates.extend(match.group(1) for match in _HTML_IMAGE_RE.finditer(html))
+    for raw in candidates:
+        value = raw.strip()
+        if not value or value.startswith(("data:", "javascript:")):
+            continue
+        resolved = urljoin(base_url, value)
+        if not resolved.startswith(("http://", "https://")):
+            continue
+        if _SKIP_IMAGE_RE.search(urlsplit(resolved).path):
+            continue
+        if not _is_safe_public_url(resolved):
+            continue
+        return _clean_url(resolved)
+    return None
+
+
+def _fetch_article_image(url: str) -> str | None:
+    now = int(time.time())
+    cached = _IMAGE_CACHE.get(url)
+    if cached is not None and cached[0] > now:
+        return cached[1]
+    image_url: str | None = None
+    host = (urlsplit(url).hostname or "").lower()
+    if _is_safe_public_url(url) and host not in _IMAGE_FETCH_SKIP_HOSTS:
+        try:
+            import httpx
+
+            with httpx.Client(
+                follow_redirects=True,
+                timeout=_IMAGE_FETCH_TIMEOUT,
+                headers={"User-Agent": "Mozilla/5.0 (octop-today/1.0)"},
+            ) as client:
+                response = client.get(url)
+                content_type = response.headers.get("content-type", "").lower()
+                if response.status_code == 200 and "html" in content_type:
+                    image_url = _article_image_url(response.text, str(response.url))
+        except Exception:
+            logger.debug("Today article image fetch failed for %s", url, exc_info=True)
+    _IMAGE_CACHE[url] = (now + _IMAGE_CACHE_TTL, image_url)
+    return image_url
+
+
+def _existing_web_images(
+    db: DatabasePool,
+    *,
+    agent_id: str,
+    urls: list[str],
+) -> dict[str, str]:
+    if not urls:
+        return {}
+    placeholders = ",".join("?" for _ in urls)
+    with db.connect() as conn:
+        rows = conn.execute(
+            "SELECT url, image_url FROM today_card_evidence "
+            f"WHERE agent_id = ? AND url IN ({placeholders}) "
+            "AND image_url IS NOT NULL AND image_url != ''",
+            (agent_id, *urls),
+        ).fetchall()
+    return {
+        str(row["url"]): str(row["image_url"])
+        for row in rows
+        if row["url"] and row["image_url"]
+    }
+
+
+def _fill_web_images(
+    db: DatabasePool,
+    *,
+    agent_id: str,
+    items: list[TodayEvidenceInput],
+    limit: int = _IMAGE_FETCH_LIMIT,
+) -> list[TodayEvidenceInput]:
+    """Add one article image at most, reusing evidence already stored for the agent."""
+    missing = [
+        item
+        for item in items
+        if not item.image_url
+        and item.source_type in {"web", "web_search"}
+        and _is_safe_public_url(str(item.url or item.reference))
+        and (urlsplit(str(item.url or item.reference)).hostname or "").lower()
+        not in _IMAGE_FETCH_SKIP_HOSTS
+    ]
+    if not missing:
+        return items
+    existing = _existing_web_images(
+        db,
+        agent_id=agent_id,
+        urls=list(dict.fromkeys(str(item.url or item.reference) for item in missing)),
+    )
+    fetched = 0
+    for item in missing:
+        if item.image_url:
+            continue
+        url = str(item.url or item.reference)
+        image_url = existing.get(url)
+        if not image_url and fetched < limit:
+            image_url = _fetch_article_image(url)
+            fetched += 1
+        if image_url:
+            item.image_url = image_url
+    return items
+
+
+def _article_snapshot_item(content: str) -> tuple[str, str, str | None] | None:
     """Read one article page's visible heading and canonical source URL."""
     source = _PAGE_SOURCE_URL_RE.search(content)
     if source is None:
@@ -1100,12 +1404,14 @@ def _article_snapshot_item(content: str) -> tuple[str, str] | None:
     )
     url = _clean_url(source.group(1))
     if (
+        len(url) > _MAX_EVIDENCE_URL
+        or
         not title
         or _is_weak_web_title(title, url)
         or _is_non_article_evidence(url, title)
     ):
         return None
-    return title, url
+    return title, url, _first_image_url(content)
 
 
 def _web_evidence(text: str, *, occurred_at: int, limit: int = 99) -> list[TodayEvidenceInput]:
@@ -1116,7 +1422,7 @@ def _web_evidence(text: str, *, occurred_at: int, limit: int = 99) -> list[Today
         for segment in _SENTENCE_SPLIT_RE.split(raw_line):
             for match in _URL_RE.finditer(segment):
                 url = _clean_url(match.group(0))
-                if not url or url in seen:
+                if not url or len(url) > _MAX_EVIDENCE_URL or url in seen:
                     continue
                 seen.add(url)
                 label = _web_title(raw_line, segment)
@@ -1142,9 +1448,9 @@ def _web_evidence(text: str, *, occurred_at: int, limit: int = 99) -> list[Today
     return items
 
 
-def _embedded_web_items(value: Any, *, limit: int = 12) -> list[tuple[str, str]]:
+def _embedded_web_items(value: Any, *, limit: int = 12) -> list[tuple[str, str, str | None]]:
     """Extract titled article links from connector JSON without treating image URLs as sources."""
-    items: list[tuple[str, str]] = []
+    items: list[tuple[str, str, str | None]] = []
     seen: set[str] = set()
 
     def visit(node: Any) -> bool:
@@ -1160,6 +1466,7 @@ def _embedded_web_items(value: Any, *, limit: int = 12) -> list[tuple[str, str]]
                 host = urlsplit(url).netloc.lower()
                 if (
                     url.startswith(("http://", "https://"))
+                    and len(url) <= _MAX_EVIDENCE_URL
                     and "gtimg.com" not in host
                     and not _is_non_article_evidence(url, title)
                     and url not in seen
@@ -1167,7 +1474,9 @@ def _embedded_web_items(value: Any, *, limit: int = 12) -> list[tuple[str, str]]
                     seen.add(url)
                     source = _compact(node.get("source") or "", 60)
                     label = f"{source}：{title}" if source else title
-                    items.append((_compact(label, 120), url))
+                    image_url = node.get("image") or node.get("imageUrl") or node.get("cover")
+                    image_url = _clean_url(str(image_url)) if image_url else None
+                    items.append((_compact(label, 120), url, image_url))
                     if len(items) >= limit:
                         return True
             return any(visit(child) for child in node.values())
@@ -1216,7 +1525,7 @@ def _thread_web_evidence(
         content = _message_content(str(row["message_json"]))
         if not content:
             continue
-        items: list[tuple[str, str]] = []
+        items: list[tuple[str, str, str | None]] = []
         try:
             items = _embedded_web_items(json.loads(content), limit=limit)
         except (TypeError, json.JSONDecodeError):
@@ -1227,16 +1536,21 @@ def _thread_web_evidence(
                 items.append(article)
         if not items:
             items.extend(
-                (str(item.title or item.url or item.reference), str(item.url or item.reference))
+                (
+                    str(item.title or item.url or item.reference),
+                    str(item.url or item.reference),
+                    item.image_url,
+                )
                 for item in _web_evidence(content, occurred_at=occurred_at, limit=limit)
                 if not _is_non_article_evidence(
                     str(item.url or item.reference),
                     str(item.title or ""),
                 )
             )
-        for title, url in items:
+        for title, url, image_url in items:
             if (
                 not url
+                or len(url) > _MAX_EVIDENCE_URL
                 or url in seen
                 or _is_non_article_evidence(url, title)
                 or _is_weak_web_title(title, url)
@@ -1250,10 +1564,82 @@ def _thread_web_evidence(
                     url=url,
                     title=title,
                     excerpt="",
+                    image_url=image_url,
                     occurred_at=occurred_at - len(evidence),
                 )
             )
             if len(evidence) >= limit:
+                return evidence
+    return evidence
+
+
+def _reading_book_titles(summary: str) -> set[str]:
+    match = re.search(
+        r"(?m)^【(?:本周在读|阅读书目)】[ \t]*\n(.*?)(?=\n【|\Z)",
+        summary,
+        re.DOTALL,
+    )
+    section = match.group(1) if match else ""
+    if not section:
+        section = _reading_section(summary, "本周在读") or _reading_section(summary, "阅读书目")
+    return {
+        _clean_inline(title).strip("《》 ")
+        for title in re.findall(r"《([^》]+)》", section)
+        if _clean_inline(title).strip()
+    }
+
+
+def _thread_reading_covers(
+    db: DatabasePool,
+    *,
+    thread_id: str,
+    titles: set[str],
+    occurred_at: int,
+) -> list[TodayEvidenceInput]:
+    """Recover book covers from the WeRead digest without turning them into article links."""
+    if not titles:
+        return []
+    with db.connect() as conn:
+        rows = conn.execute(
+            "SELECT message_json FROM thread_messages "
+            "WHERE thread_id = ? AND role = 'tool' "
+            "ORDER BY seq DESC LIMIT 30",
+            (thread_id,),
+        ).fetchall()
+    evidence: list[TodayEvidenceInput] = []
+    seen: set[str] = set()
+    for row in rows:
+        content = _message_content(str(row["message_json"]))
+        if "weread" not in content.lower() and "cover" not in content:
+            continue
+        try:
+            payload = json.loads(content)
+        except (TypeError, json.JSONDecodeError):
+            continue
+        books = payload.get("books") if isinstance(payload, dict) else None
+        if not isinstance(books, list):
+            continue
+        for book in books:
+            if not isinstance(book, dict):
+                continue
+            title = _clean_inline(book.get("title")).strip("《》 ")
+            cover = str(book.get("cover") or "").strip()
+            if title not in titles or not cover.startswith(("http://", "https://")):
+                continue
+            if title in seen:
+                continue
+            seen.add(title)
+            evidence.append(
+                TodayEvidenceInput(
+                    source_type="conversation",
+                    reference=thread_id,
+                    title=title,
+                    excerpt="阅读书目封面",
+                    image_url=cover,
+                    occurred_at=occurred_at - len(evidence),
+                )
+            )
+            if len(evidence) >= len(titles):
                 return evidence
     return evidence
 
@@ -1278,7 +1664,7 @@ def _resolved_evidence_rows(
             event_type = "web.search_result"
             privacy_class = "public_web"
         evidence_id = hashlib.sha256(
-            f"{source_type}|{item.reference}|{url or ''}".encode()
+            f"{source_type}|{item.reference}|{url or ''}|{item.image_url or ''}".encode()
         ).hexdigest()
         rows.append(
             (
@@ -1291,6 +1677,7 @@ def _resolved_evidence_rows(
                 url,
                 item.title,
                 item.excerpt,
+                item.image_url,
             )
         )
     return rows
@@ -1336,6 +1723,38 @@ def has_cron_card_kind(
     return row is not None
 
 
+def _dismiss_rejected_cron_card(
+    db: DatabasePool,
+    *,
+    agent_id: str,
+    user_id: int,
+    cron_id: str,
+) -> None:
+    """Hide a card whose stored summary leaked a moderation rejection."""
+    now = int(time.time())
+    with db.transaction() as conn:
+        rows = conn.execute(
+            "SELECT card_id, summary FROM today_cards "
+            "WHERE agent_id = ? AND user_id = ? AND lifecycle != 'dismissed' "
+            "AND dedupe_key IN (?, ?)",
+            (agent_id, user_id, f"cron:{cron_id}", f"agent:cron:{cron_id}"),
+        ).fetchall()
+        card_ids = [
+            str(row["card_id"])
+            for row in rows
+            if _is_rejected_result(str(row["summary"] or ""))
+        ]
+        if not card_ids:
+            return
+        placeholders = ",".join("?" for _ in card_ids)
+        conn.execute(
+            "UPDATE today_cards SET lifecycle = 'dismissed', snoozed_until = NULL, "
+            f"updated_at = ? WHERE agent_id = ? AND user_id = ? "
+            f"AND card_id IN ({placeholders})",
+            (now, agent_id, user_id, *card_ids),
+        )
+
+
 def publish_cron_task_card(
     db: DatabasePool,
     *,
@@ -1354,6 +1773,7 @@ def publish_cron_task_card(
     """Publish one stable card per task and link it to the canonical run thread."""
     task_kind = classify_cron_kind(task_name, prompt)
     kind = _TODAY_KIND_BY_TASK_KIND.get(task_kind, task_kind)
+    is_anniversary = _is_anniversary_task(task_name, prompt)
     if status != "ok":
         return {
             "card_id": None,
@@ -1371,6 +1791,26 @@ def publish_cron_task_card(
     if thread is None:
         raise ValueError("cron result thread does not belong to this agent and user")
 
+    if _is_rejected_result(text):
+        _dismiss_rejected_cron_card(
+            db,
+            agent_id=agent_id,
+            user_id=user_id,
+            cron_id=cron_id,
+        )
+        return {
+            "card_id": None,
+            "changed": False,
+            "notify": False,
+            "kind": kind,
+        }
+    if is_anniversary and _anniversary_is_silent(text):
+        return {
+            "card_id": None,
+            "changed": False,
+            "notify": False,
+            "kind": kind,
+        }
     if not cron_result_has_new_information(text, task_kind=task_kind):
         return {
             "card_id": None,
@@ -1391,7 +1831,12 @@ def publish_cron_task_card(
         kind=task_kind,
     )
     web_evidence = _web_evidence(text, occurred_at=last_run_at)
-    if task_kind in {"news", "signal"}:
+    if task_kind == "signal":
+        web_evidence = _merge_web_evidence(
+            _signal_source_evidence(text, occurred_at=last_run_at),
+            web_evidence,
+        )
+    elif task_kind == "news":
         web_evidence = _merge_web_evidence(
             web_evidence,
             _thread_web_evidence(
@@ -1401,7 +1846,8 @@ def publish_cron_task_card(
                 since=last_run_at,
             ),
         )
-    if task_kind == "signal" and status == "ok" and (not summary or not web_evidence):
+    web_evidence = _fill_web_images(db, agent_id=agent_id, items=web_evidence)
+    if task_kind == "signal" and status == "ok" and not summary:
         return {
             "card_id": None,
             "changed": False,
@@ -1426,13 +1872,28 @@ def publish_cron_task_card(
                 )
             ]
     else:
+        reading_evidence = (
+            _thread_reading_covers(
+                db,
+                thread_id=thread_id,
+                titles=_reading_book_titles(summary),
+                occurred_at=last_run_at,
+            )
+            if task_kind == "review"
+            else []
+        )
         evidence = [
             *web_evidence,
+            *reading_evidence,
             TodayEvidenceInput(
                 source_type="conversation",
                 reference=thread_id,
-                title="定时任务结果",
-                excerpt="完整执行记录、过程与来源保留在会话中。",
+                title="完整原文" if task_kind == "signal" else "定时任务结果",
+                excerpt=(
+                    "本次信号的全文、来源核对过程与原始链接保留在会话中。"
+                    if task_kind == "signal"
+                    else "完整执行记录、过程与来源保留在会话中。"
+                ),
                 occurred_at=last_run_at,
             ),
         ]
@@ -1514,20 +1975,43 @@ def publish_cron_task_card(
                 str(row["url"] or ""),
                 str(row["title"] or ""),
                 str(row["excerpt"] or ""),
+                str(row["image_url"] or ""),
             )
             for row in conn.execute(
                 "SELECT evidence_id, source_type, source_record_id, event_type, occurred_at, "
-                "privacy_class, url, title, excerpt FROM today_card_evidence "
+                "privacy_class, url, title, excerpt, image_url FROM today_card_evidence "
                 "WHERE agent_id = ? AND card_id = ? ORDER BY evidence_id",
                 (agent_id, card_id),
             ).fetchall()
         ]
         comparable_existing = sorted([
-            (item[0], item[1], item[2], item[3], item[4], item[5], item[6], item[7], item[8] or "")
+            (
+                item[0],
+                item[1],
+                item[2],
+                item[3],
+                item[4],
+                item[5],
+                item[6],
+                item[7] or "",
+                item[8] or "",
+                item[9] or "",
+            )
             for item in existing_evidence
         ])
         comparable_desired = sorted([
-            (item[0], item[1], item[2], item[3], item[4], item[5], item[6], item[7] or "", item[8] or "")
+            (
+                item[0],
+                item[1],
+                item[2],
+                item[3],
+                item[4],
+                item[5],
+                item[6],
+                item[7] or "",
+                item[8] or "",
+                item[9] or "",
+            )
             for item in desired_evidence
         ])
         if comparable_existing != comparable_desired:
@@ -1540,8 +2024,9 @@ def publish_cron_task_card(
                 conn.execute(
                     "INSERT INTO today_card_evidence("
                     "agent_id, card_id, evidence_id, source_type, source_record_id, "
-                    "event_type, occurred_at, privacy_class, url, title, excerpt, created_at"
-                    ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                        "event_type, occurred_at, privacy_class, url, title, excerpt, "
+                        "image_url, created_at"
+                        ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     (agent_id, card_id, *item, created_at),
                 )
 
@@ -1567,6 +2052,7 @@ def sync_completed_cron_today_cards(
     user_id: int,
 ) -> list[str]:
     """Backfill cards for completed task runs, including runs from before this patch."""
+    _dismiss_stale_cron_cards(db, agent_id=agent_id, user_id=user_id)
     with db.connect() as conn:
         rows = conn.execute(
             "SELECT j.cron_id, j.name, j.prompt, j.last_run_at, j.last_status, "
@@ -1574,7 +2060,7 @@ def sync_completed_cron_today_cards(
             "ON t.agent_id = j.agent_id AND t.user_id = j.user_id "
             "AND t.session_key = j.session_key "
             "WHERE j.agent_id = ? AND j.user_id = ? AND j.last_run_at IS NOT NULL "
-            "AND j.last_status = 'ok' ORDER BY j.last_run_at DESC",
+            "AND j.last_status = 'ok' AND j.enabled = 1 ORDER BY j.last_run_at DESC",
             (agent_id, user_id),
         ).fetchall()
 
@@ -1612,6 +2098,36 @@ def sync_completed_cron_today_cards(
                 exc_info=True,
             )
     return changed
+
+
+def _dismiss_stale_cron_cards(
+    db: DatabasePool,
+    *,
+    agent_id: str,
+    user_id: int,
+) -> None:
+    """Remove cards whose cron task was disabled, or whose anniversary run stayed silent."""
+    now = int(time.time())
+    with db.transaction() as conn:
+        conn.execute(
+            "UPDATE today_cards SET lifecycle = 'dismissed', snoozed_until = NULL, "
+            "updated_at = ? WHERE agent_id = ? AND user_id = ? "
+            "AND lifecycle != 'dismissed' AND ("
+            "dedupe_key IN (SELECT 'cron:' || cron_id FROM cron_jobs "
+            "WHERE agent_id = ? AND user_id = ? AND enabled = 0) "
+            "OR dedupe_key IN (SELECT 'agent:cron:' || cron_id FROM cron_jobs "
+            "WHERE agent_id = ? AND user_id = ? AND enabled = 0))",
+            (now, agent_id, user_id, agent_id, user_id, agent_id, user_id),
+        )
+        conn.execute(
+            "UPDATE today_cards SET lifecycle = 'dismissed', snoozed_until = NULL, "
+            "updated_at = ? WHERE agent_id = ? AND user_id = ? "
+            "AND kind = 'calendar' AND lifecycle != 'dismissed' "
+            "AND (title LIKE '%纪念日%' OR title LIKE '%生日%') "
+            "AND (summary = '' OR summary LIKE '%已执行完成%' "
+            "OR summary LIKE '%无命中%' OR summary LIKE '%静默%')",
+            (now, agent_id, user_id),
+        )
 
 
 __all__ = [

@@ -17,6 +17,7 @@ def main() -> None:
         "xiaomi_health_cloud.py",
         "xiaomi_health_sync.py",
         "configure_xiaomi_health.py",
+        "provision_multi_user.py",
     ):
         shutil.copyfile(Path(__file__).with_name(name), TARGET / name)
     (TARGET / "__init__.py").write_text("")
