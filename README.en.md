@@ -1,21 +1,78 @@
+<div align="center">
+
 # Octop Android
 
-A native Android workbench for self-hosted [Octop](https://github.com/TencentCloud/Octop). It is more than a WebView wrapper: one APK can connect to any instance and brings **conversations, calendar, Today, scheduled tasks, memory, and daily diaries** into one executable workflow.
+**A native Android workbench for self-hosted [Octop](https://github.com/TencentCloud/Octop).**
 
-Install the app, enter your Octop domain, and sign in. You can assign work from your phone, watch the agent reason and call tools, inspect real execution results, and let the server organize your calendar, produce daily reviews, and retain useful context over time.
+One APK, any instance — Router main conversation, calendar, Today, tasks, memory, and daily diaries in one executable workflow.
 
-English | [中文](README.md)
+[![version](https://img.shields.io/badge/version-2.0.0-2563eb)](https://github.com/larens/octop-android/releases)
+[![platform](https://img.shields.io/badge/platform-Android%208.0%2B-3ddc84)](#getting-started)
+[![license](https://img.shields.io/badge/license-MIT-111827)](LICENSE)
+
+[Getting started](#getting-started) · [Architecture](#architecture) · [Router mode](#router-mode-one-main-conversation-many-hidden-workers) · [中文](README.md)
+
+</div>
+
+![Octop Android overview](assets/readme/octop-overview.svg)
+
+It is more than a WebView wrapper. Install the app, enter your Octop domain, and sign in. You can assign work from your phone, watch the agent reason and call tools, inspect real execution results, and let the server organize your calendar, produce daily reviews, and retain useful context over time.
+
+Current mobile version: **v2.0.0**. Starting with this release, Conversations opens a stable main conversation per agent: the Router decides whether to answer directly, propose a read-only plan, or request task approval, while hidden Workers and optional experts execute the work and return results to the main conversation.
 
 ## Core capabilities
 
 | Capability | What you can do on the phone |
 |------------|------------------------------|
-| **Conversations** | Use the stable main conversation, stream replies, inspect tool execution, answer approvals, upload attachments, involve multiple agents, and resume interrupted turns |
-| **Calendar and Today** | Bring the next three days, waiting conversations, and followed updates into one focused feed |
-| **Tasks and artifacts** | Describe recurring work in natural language, then review approvals and generated artifacts in the task center; the server runs work even when the app is closed |
+| **Main conversation / Router** | Keep one continuous main conversation per agent; answer simple questions directly, propose a budgeted plan for complex goals, and dispatch approved work to hidden Workers |
+| **Tasks and approvals** | Inspect task-level approvals and background progress, receive results back in the main conversation, follow up with the same expert, or reassign before approval; writes bind an action hash and a one-time receipt |
+| **Calendar and Today** | Collapse calendar events, tasks, health, and followed updates into an attention inbox for what matters now |
 | **Memory and daily diaries** | Review the server-maintained profile, the last seven days of diaries, and lessons distilled from conversations |
 | **Connected apps** | Authorize calendar, usage, contacts, files, location, notifications, SMS, and alarms per source; iOS/Mac follow in phases |
 | **System integration** | Share target, App Shortcuts, deep links, long-running foreground notifications, and a WebView fallback |
+
+## Architecture
+
+![Octop Android system architecture](assets/readme/octop-architecture.svg)
+
+The phone mainly presents, caches, and collects system data. The conversation source of truth, routing decisions, task execution, and Today projections all live in your own Octop instance.
+
+| Layer | Responsibility | Not responsible for |
+|-------|----------------|---------------------|
+| **Android Client** | Compose UI, Room mirror, system calendar / notifications / files collection | Long-term conversation truth or third-party credentials |
+| **API & Transport** | REST, WebSocket, SSE, session validation | Business decisions in the transport layer |
+| **Router Control Plane** | Main-conversation routing, read-only plans, task approvals, butler dispatch | Creating tasks or spending tokens before approval |
+| **Execution** | Hidden Workers, expert agents, tools / MCP / Cron | Streaming raw Worker tool logs into the main timeline |
+| **Server State** | Today, memory and diaries, artifacts | Requiring the phone to stay online |
+
+Writes bind an action hash and an idempotent receipt on the server, so a dropped connection or a locked phone cannot quietly change what an approved task does. To start from code, open [`app/src/main/java/com/octopmobile/app`](app/src/main/java/com/octopmobile/app) and [`server-patches/octop-1.0.2`](server-patches/octop-1.0.2).
+
+## Router mode: one main conversation, many hidden Workers
+
+v2.0.0 moves the conversation model from “one Thread per chat” to “one continuous main conversation per agent.” Users see a single timeline; Threads remain the internal execution carrier for Workers and are no longer a product object users must understand.
+
+The Router chooses one of three paths based on the goal and risk:
+
+- **Direct answer**: Simple questions and low-risk lookups stay in the main conversation without creating a task.
+- **Read-only plan**: Complex or multi-step read-only goals become a plan with sub-Workers, dependencies, concurrency, per-Worker token caps, and attempt limits. The user approves with `plan_id + version + plan_hash`; no task, Run, model call, or token spend happens before approval. Plans can be rejected or cancelled. When the budget runs out, the user can continue once or abandon the plan; extending the budget does not reset usage.
+- **Side-effect task**: Writes are not executed directly. They produce a task-level approval card; approval binds the action hash, execution uses an idempotency receipt, and uncertain results stop for manual reconciliation instead of retrying automatically.
+
+The three paths relate as follows:
+
+![Router execution paths](assets/readme/octop-router-flow.svg)
+
+Workers run in the background, and task-level approvals do not pause the whole main conversation; multiple tasks can wait at once. The main timeline receives task cards, plan cards, and aggregated results, while raw Worker tool logs stay out. A finished task card can follow up with the same Worker, and a plan item can be reassigned before approval.
+
+Budget, concurrency, retries, and writes are controlled by server configuration. A default deployment does not enable Worker dispatch, budget enforcement, or real writes automatically.
+
+### Optional butler dispatch
+
+The server can configure the main agent as a butler. The butler only understands goals, selects experts, supplies context, and summarizes results; it does not hold file, shell, browser, MCP, plugin, Cron, or Skill tools. Expert agents execute with their own workspace, model, and tools, and results return to the main conversation marked “Assigned to X.”
+
+- `router.butler.mode=off|assist|auto`, default `off`; `auto` currently behaves like `assist`, and automatic approval is not enabled.
+- `router.butler.agent_id` selects the butler; without it, butler policy is inactive.
+- `router.butler.experts` maps roles to expert agents, for example `{"research":"agent-research-01"}`.
+- Plan items can be reassigned before approval. Finished read-only tasks can follow up with the same expert up to ten consecutive times. Write tasks cannot bypass approval through follow-up.
 
 ## Conversations: finish the work, not just generate a reply
 
@@ -23,14 +80,17 @@ The Conversations tab opens the stable main conversation for the current agent. 
 
 - **Streaming execution**: WebSocket events stream the response, reasoning process, and tool calls. Tool arguments, results, and failures can be expanded.
 - **Human confirmation**: HITL questions and tool approvals pause the turn until you respond. Confirmation resumes through SSE instead of pretending the task already completed.
+- **Tasks and plans**: Complex read-only goals produce an approval-gated plan card with sub-Workers, dependencies, budget, concurrency, and attempt limits. Progress and results return to the main conversation without exposing raw Worker traces.
+- **Background execution**: Tasks run in the background and return as task or plan cards. Failures and retries have explicit states and are never presented as completed.
+- **Task-level approvals**: Side-effect writes get their own approval cards. Multiple tasks can wait at once without reusing Thread HITL to pause the whole main conversation.
 - **Stop a turn**: An active turn can be cancelled when it is no longer useful.
 - **Attachments**: Send files and images, take a photo, record a voice note, or share text, images, and files into Octop from another app.
-- **Multiple agents**: Mention an expert as `@ExpertName` in the message; the app translates it into the target agent list for that turn.
+- **Multiple agents**: Mention an expert as `@ExpertName` to target that expert manually. With butler dispatch enabled, the Router can also select experts from the plan and mark results “Assigned to X.”
 - **Conversation management**: Rename, pin, delete, or bulk-delete conversations. The server remains authoritative while Room keeps a local mirror and streaming state.
 - **Long-running work**: A foreground service keeps a progress notification alive while a turn is running.
 - **System shortcuts**: Open conversations through `octopmobile://thread/...` and use long-press shortcuts for a new task, voice note, or photo.
 
-Conversations are not just chat logs. Tool calls, approvals, and results stay attached to the same traceable thread, and Today cards can return you to the source conversation when follow-up work is needed.
+Conversations are not just chat logs. Tool calls, approvals, and results stay attached to the same traceable conversation; Today cards can return you to the source conversation when follow-up work is needed.
 
 ## Calendar and Today: collapse the day into what matters now
 
@@ -38,25 +98,26 @@ The Android app reads the system calendar in read-only mode, covering seven days
 
 Today prioritizes information instead of presenting a flat list:
 
-- Running, waiting-for-confirmation, and recently active conversations appear first.
+- Running, waiting-for-confirmation, and recently active tasks, plans, and events appear first.
 - Upcoming events are ordered by time. Events that have already ended move into “Finished today” and no longer show advance actions.
 - Of the next three days, only tomorrow is emphasized; the following two days remain background context.
 - Morning briefing and inbox cards from the same day are merged into one briefing grouped by “must do / can draft / later.”
-- Schedule cards explain why they are relevant now and support feedback, snoozing until tomorrow, inspecting evidence, or opening the execution conversation.
-- Task results, followed topics, and health results are projected by the server. A foreground notification WebSocket updates Today while the app is open, and the app refreshes missed cards when it returns to the foreground.
+- Schedule cards explain why they are relevant now and support feedback, snoozing until tomorrow, inspecting evidence, or returning to the source conversation.
+- Today is the Router's attention inbox: task results, plan progress, followed topics, and health results are projected by the server without requiring users to understand a Worker Thread first.
+- A foreground notification WebSocket updates Today while the app is open, and the app refreshes missed cards when it returns to the foreground.
 - Source coverage is visible. Expired, pending, or broken sources are reported honestly instead of being presented as “nothing changed.”
 
 At the bottom, **Today's recap** summarizes what actually happened:
 
 - Completed calendar events
-- Conversations that advanced
+- Tasks and conversations that advanced
 - Information that was followed or handled
 
 The recap is not another generic daily report. It closes the loop on the day and makes the next starting point clear for tomorrow.
 
-## Scheduled tasks: describe recurring work in one sentence
+## Tasks and artifacts: run in the background, return to the main conversation
 
-The Tasks tab has three views: “Tasks,” “Artifacts,” and “Recommended.” You do not need to learn cron first. Describe the outcome and timing directly:
+The Tasks tab has three views: “Tasks,” “Artifacts,” and “Recommended.” It collects Router tasks that need approval, tasks running in the background, server-scheduled cron jobs, and generated files. You do not need to learn cron first; describe the outcome and timing directly:
 
 > Every day at 7:30 AM, organize today's meetings and calendar, highlight preparation, conflicts, and anything that needs confirmation.
 
@@ -65,6 +126,9 @@ The app asks the agent to turn that request into a task title, trigger rule, and
 - **Server-side execution**: Octop schedules the task. Turning off the phone or closing the app does not stop it.
 - **Multiple schedules**: Cron, fixed intervals, one-off times, and connector events are supported.
 - **Results return to Today**: Repeated runs update the same card instead of piling up duplicate results every day.
+- **Task control plane**: Task cards show queued, reading, gathering, retrying, and failed states. Results return to the main conversation and can follow up with the same Worker.
+- **Plans and reassignment**: Complex read-only goals show the full budget and sub-Worker dependencies first; experts can be reassigned before approval, then the plan runs as approved.
+- **One-time write approval**: Side-effect actions require per-action confirmation. Approval binds the action hash and budget cap; timeouts and uncertain results are not replayed automatically.
 - **Recommended tasks**: Suggestions are generated from installed connectors and can include news briefings, inbox summaries, reading reviews, today's meetings, and tomorrow's calendar preview.
 - **Artifact workbench**: Files produced by agents are collected across conversations and can be filtered by web page, document, spreadsheet, or presentation, then previewed, downloaded, shared, traced back to the source conversation, or continued.
 - **Execution history**: Success, failure, and waiting-for-confirmation states are preserved. A failed run is not presented as completed.
@@ -99,7 +163,7 @@ The Android manifest **does not request Health Connect permissions**, and the ph
 
 ## Getting started
 
-1. Download the latest `octop-native.apk` from [Releases](https://github.com/larens/octop-android/releases).
+1. Download the latest `octop-native.apk` from [Releases](https://github.com/larens/octop-android/releases) (currently v2.0.0).
 2. Install it. You may need to allow installation from unknown sources.
 3. Enter your instance address, for example `https://octop.example.com`, then connect and sign in.
    - `https://` is added automatically and a trailing `/` is removed.
@@ -153,7 +217,29 @@ location / {
 }
 ```
 
-Advanced Today projections and Xiaomi health sync require matching server patches. The scripts and tests are in [`server-patches/octop-1.0.2`](server-patches/octop-1.0.2). Xiaomi credentials must be entered through a controlled server-side flow and must never be written to scripts, application resources, documentation, or Git.
+Router main conversations, plans, task approvals, and butler dispatch require matching server patches. Install them in order:
+
+```bash
+cd server-patches/octop-1.0.2
+python3 install_router_phase0.py
+python3 install_router_phase3.py
+python3 install_router_phase35.py
+python3 install_router_phase4.py
+python3 install_butler_dispatch.py
+```
+
+The patch scripts are idempotent. Key Router settings:
+
+| Setting | Purpose | Default |
+|---------|---------|---------|
+| `router.worker_dispatch.enabled` | Actually dispatch hidden Workers | Off |
+| `router.budget.mode` | Worker budget mode: `shadow` / `enforce` | `shadow` |
+| `router.butler.mode` | Butler dispatch: `off` / `assist` / `auto` | `off` |
+| `router.butler.agent_id` | Butler Agent ID | Empty |
+| `router.butler.experts` | JSON map from role to expert Agent | `{}` |
+| `router.side_effect_writes.enabled` | Allow real write actions | Off |
+
+Defaults do not enable Worker dispatch, budget enforcement, or real writes. Validate budget, approvals, and receipts on a small set of agents before enabling them. Advanced Today projections and Xiaomi health sync also use the scripts in [`server-patches/octop-1.0.2`](server-patches/octop-1.0.2). Xiaomi credentials must be entered through a controlled server-side flow and must never be written to scripts, application resources, documentation, or Git.
 
 ## Security and privacy
 
@@ -223,7 +309,7 @@ app/src/main/java/com/octopmobile/app/
   service/              # Turn foreground service and notifications
   web/                  # WebView client and page interaction adapters
 server-patches/
-  octop-1.0.2/          # Today, Router tasks, memory diaries, health cloud, MCP, artifacts, sharing
+  octop-1.0.2/          # Router conversation/plans/approvals, butler dispatch, Today, memory diaries, health cloud, MCP, artifacts, sharing
   bluegreen/            # Blue-green release, migration checks, and smoke tests
   ops/                  # Storage maintenance, memory repair, and safe-switch tooling
 scripts/                # Signing, TWA assetlinks, and build tools
@@ -237,24 +323,34 @@ The repository uses CodeGraph's tree-sitter symbol graph as its code map. The 20
 
 | Code area | Responsibility |
 |-----------|----------------|
-| `app/.../ui/chat` | Main conversation, streaming messages, HITL, attachments, artifact preview and sharing |
-| `app/.../ui/workbench` | Today, task center, artifact workbench, memory, connected apps, and mobile data |
+| `app/.../ui/chat` | Router main conversation, plan cards, task approvals, streaming messages, HITL, attachments, artifact preview and sharing |
+| `app/.../ui/workbench` | Today, task center, plan/task state, artifact workbench, memory, connected apps, and mobile data |
 | `app/.../data/remote`, `data/ws` | REST, WebSocket, SSE, DTOs, and protocol events |
 | `app/.../data/repo`, `data/db` | Room mirror, history paging, message merging, and local state |
 | `app/.../data/mobile` | Calendar, health, notifications, SMS, files, and other source adapters plus WorkManager |
 | `app/.../service` | Turn foreground service, task progress, and health reminders |
-| `server-patches/octop-1.0.2` | Today projection, Router tasks, memory diaries, health cloud, MCP, artifacts, and sharing |
+| `server-patches/octop-1.0.2` | Router conversation, plans/approvals, butler dispatch, Today projection, memory diaries, health cloud, MCP, artifacts, and sharing |
 | `server-patches/bluegreen`, `ops` | Blue-green release, migration checks, storage maintenance, and safe memory operations |
 
 ## Current limitations
 
 - Android 8.0 (API 26) or newer is required.
 - Conversations, Today, and execution are server-authoritative. Local mirrors remain readable offline, but turns cannot be guaranteed to continue without a network.
+- The Router currently shows one active plan card at a time; multiple concurrent plans still need a dedicated plan-list view.
+- Butler follow-up only applies to read-only tasks; write tasks must go through approval again. Reassignment is only available before plan approval.
+- Worker dispatch, budget enforcement, and real writes are off by default and should be enabled per agent after validating budget, approvals, and receipts.
 - Live Today updates depend on a foreground WebSocket. Vendor push after process death, quiet hours, and a daily notification cap are not fully implemented.
 - Morning and evening health reminders use WorkManager, so battery optimization may delay them beyond 07:35 and 19:35.
 - The Xiaomi health cloud path is not a stable public API and may stop working. Health Connect and Keep are not currently supported as direct phone-side sources.
 - The WebView fallback covers missing native features only when the instance's web interface remains compatible.
 - There is no iOS client.
+
+## Contributing
+
+- Run `./gradlew :app:test` before submitting; for UI changes, also run `./gradlew :app:assembleDebug`.
+- Keep server patches idempotent, and ship both SQLite and PostgreSQL versions of any new migration.
+- Never commit keystores, cookies, tokens, instance addresses, or real health data.
+- When Router, Today, or approval semantics change, update the related docs and both READMEs.
 
 ## License
 

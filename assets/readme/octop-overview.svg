@@ -1,0 +1,125 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 620" width="1200" height="620" data-generator="fireworks-tech-graph" data-schema-version="1" data-text-metrics="heuristic-v1" data-style-id="4" data-visual-theme="Notion Clean" data-diagram-type="architecture" data-motion-scene="" data-semantic-profile="generic" data-semantic-valid="true" data-quality-profile="showcase" data-max-bends-per-edge="2" data-max-total-bends="8" data-max-route-stretch="1.35" data-max-bridged-crossings="0" data-min-node-gap="40.0" data-min-container-gutter="20.0" data-min-label-clearance="4.0" data-min-segment-length="16.0">
+  <defs>
+    <marker id="arrowA" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+      <polygon points="0 0, 8 3, 0 6" fill="#3b82f6"/>
+    </marker>
+    <marker id="arrowB" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+      <polygon points="0 0, 8 3, 0 6" fill="#3b82f6"/>
+    </marker>
+    <marker id="arrowC" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+      <polygon points="0 0, 8 3, 0 6" fill="#3b82f6"/>
+    </marker>
+    <marker id="arrowE" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+      <polygon points="0 0, 8 3, 0 6" fill="#3b82f6"/>
+    </marker>
+    <marker id="arrowF" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+      <polygon points="0 0, 8 3, 0 6" fill="#9ca3af"/>
+    </marker>
+    <marker id="arrowG" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+      <polygon points="0 0, 8 3, 0 6" fill="#9ca3af"/>
+    </marker>
+    <marker id="arrowH" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+      <polygon points="0 0, 8 3, 0 6" fill="#d1d5db"/>
+    </marker>
+    <style>
+    text { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Helvetica Neue', Arial, 'PingFang SC', 'Microsoft YaHei', 'Microsoft JhengHei', 'SimHei', sans-serif; }
+    .title { font-size: 18px; font-weight: 700; fill: #111827; }
+    .subtitle { font-size: 13px; font-weight: 500; fill: #9ca3af; }
+    .section { font-size: 13px; font-weight: 700; fill: #9ca3af; letter-spacing: 1.4px; }
+    .section-sub { font-size: 12px; font-weight: 500; fill: #d1d5db; }
+    .node-title { font-weight: 700; fill: #111827; }
+    .node-sub { font-size: 12px; font-weight: 500; fill: #374151; }
+    .node-type { font-size: 11px; font-weight: 700; fill: #9ca3af; letter-spacing: 0.08em; }
+    .arrow-label { font-size: 12px; font-weight: 600; fill: #6b7280; }
+    .legend { font-size: 12px; font-weight: 500; fill: #6b7280; }
+    .footnote { font-size: 12px; font-weight: 500; fill: #9ca3af; }
+    .metric-label { font-size: 8.5px; font-weight: 700; fill: #9ca3af; text-transform: uppercase; }
+    .metric-value { font-size: 9.5px; font-weight: 700; fill: #111827; }
+    </style>
+  </defs>
+  <rect data-graph-role="background" width="1200.0" height="620.0" fill="#ffffff"/>
+  <text x="48.0" y="48" text-anchor="start" class="title">One APK, one main conversation</text>
+  <text x="48.0" y="72" text-anchor="start" class="subtitle">Android client · self-hosted Router · results back in one timeline</text>
+  <line x1="48" y1="100" x2="1152.0" y2="100" stroke="#e5e7eb" stroke-width="1"/>
+  <g id="phone" data-graph-role="container" data-container-id="phone" data-semantic-role="boundary" data-graph-bounds="40,120,300,560">
+  <rect data-graph-role="container" x="40.0" y="120.0" width="260.0" height="440.0" rx="4.0" fill="none" stroke="#e5e7eb" stroke-width="1.4"/>
+  <text x="58.0" y="144.0" class="section">01 // ON YOUR PHONE</text>
+    <rect id="phone-header" data-graph-role="reserved" data-reserved-kind="container-header" x="48" y="126" width="161.82" height="30" fill="none" stroke="none"/>
+  </g>
+  <g id="server" data-graph-role="container" data-container-id="server" data-semantic-role="boundary" data-graph-bounds="350,120,850,560">
+  <rect data-graph-role="container" x="350.0" y="120.0" width="500.0" height="440.0" rx="4.0" fill="none" stroke="#e5e7eb" stroke-width="1.4"/>
+  <text x="368.0" y="144.0" class="section">02 // ON YOUR OCTOP INSTANCE</text>
+    <rect id="server-header" data-graph-role="reserved" data-reserved-kind="container-header" x="358" y="126" width="223.44" height="30" fill="none" stroke="none"/>
+  </g>
+  <path id="edge-000" data-graph-role="edge" data-edge-id="edge-000" data-source="chat" data-target="router" data-edge-kind="flow" data-topic-id="" data-flow="control" data-motion-role="" data-motion-stage="" data-motion-order="" data-protocol="" data-via="" data-critical-path-id="" data-critical-hop="" data-critical-hops="" data-critical="false" data-bends="0" data-route-stretch="1.0" data-bridges="" d="M 280,196 L 370,196" fill="none" stroke="#3b82f6" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#arrowA)"/>
+  <path id="edge-001" data-graph-role="edge" data-edge-id="edge-001" data-source="router" data-target="gates" data-edge-kind="flow" data-topic-id="" data-flow="control" data-motion-role="" data-motion-stage="" data-motion-order="" data-protocol="" data-via="" data-critical-path-id="" data-critical-hop="" data-critical-hops="" data-critical="false" data-bends="0" data-route-stretch="1.0" data-bridges="" d="M 600,228 L 600,268" fill="none" stroke="#3b82f6" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#arrowA)"/>
+  <path id="edge-002" data-graph-role="edge" data-edge-id="edge-002" data-source="gates" data-target="workers" data-edge-kind="flow" data-topic-id="" data-flow="control" data-motion-role="" data-motion-stage="" data-motion-order="" data-protocol="" data-via="" data-critical-path-id="" data-critical-hop="" data-critical-hops="" data-critical="false" data-bends="0" data-route-stretch="1.0" data-bridges="" d="M 600,332 L 600,372" fill="none" stroke="#3b82f6" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#arrowA)"/>
+  <path id="edge-003" data-graph-role="edge" data-edge-id="edge-003" data-source="workers" data-target="state" data-edge-kind="flow" data-topic-id="" data-flow="data" data-motion-role="" data-motion-stage="" data-motion-order="" data-protocol="" data-via="" data-critical-path-id="" data-critical-hop="" data-critical-hops="" data-critical="false" data-bends="0" data-route-stretch="1.0" data-bridges="" d="M 600,428 L 600,468" fill="none" stroke="#3b82f6" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#arrowA)"/>
+  <path id="edge-004" data-graph-role="edge" data-edge-id="edge-004" data-source="state" data-target="outcome" data-edge-kind="flow" data-topic-id="" data-flow="read" data-motion-role="" data-motion-stage="" data-motion-order="" data-protocol="" data-via="" data-critical-path-id="" data-critical-hop="" data-critical-hops="" data-critical="false" data-bends="0" data-route-stretch="1.0" data-bridges="" d="M 830,496 L 950,496" fill="none" stroke="#3b82f6" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#arrowA)"/>
+  <g id="node-chat" data-graph-role="node" data-node-id="chat" data-semantic-role="node" data-motion-role="" data-motion-stage="" data-motion-order="" data-parent="" data-deployment-id="" data-topic-id="" data-span-id="" data-station-order="" data-status="" data-start-ms="" data-duration-ms="" data-parent-span="" data-graph-bounds="60,168,280,224">
+  <rect x="60.0" y="168.0" width="220.0" height="56.0" rx="4.0" fill="#f9fafb" stroke="#e5e7eb" stroke-width="1.8"/>
+  <text x="170.0" y="196.0" text-anchor="middle" class="node-title" font-size="18.0">Chat</text>
+  <text x="170.0" y="218.0" text-anchor="middle" class="node-sub">one stable main conversation</text>
+  </g>
+  <g id="node-today" data-graph-role="node" data-node-id="today" data-semantic-role="node" data-motion-role="" data-motion-stage="" data-motion-order="" data-parent="" data-deployment-id="" data-topic-id="" data-span-id="" data-station-order="" data-status="" data-start-ms="" data-duration-ms="" data-parent-span="" data-graph-bounds="60,264,280,320">
+  <rect x="60.0" y="264.0" width="220.0" height="56.0" rx="4.0" fill="#f9fafb" stroke="#e5e7eb" stroke-width="1.8"/>
+  <text x="170.0" y="292.0" text-anchor="middle" class="node-title" font-size="18.0">Today</text>
+  <text x="170.0" y="314.0" text-anchor="middle" class="node-sub">attention inbox</text>
+  </g>
+  <g id="node-tasks" data-graph-role="node" data-node-id="tasks" data-semantic-role="node" data-motion-role="" data-motion-stage="" data-motion-order="" data-parent="" data-deployment-id="" data-topic-id="" data-span-id="" data-station-order="" data-status="" data-start-ms="" data-duration-ms="" data-parent-span="" data-graph-bounds="60,360,280,416">
+  <rect x="60.0" y="360.0" width="220.0" height="56.0" rx="4.0" fill="#f9fafb" stroke="#e5e7eb" stroke-width="1.8"/>
+  <text x="170.0" y="388.0" text-anchor="middle" class="node-title" font-size="18.0">Tasks</text>
+  <text x="170.0" y="410.0" text-anchor="middle" class="node-sub">plans · approvals · artifacts</text>
+  </g>
+  <g id="node-memory" data-graph-role="node" data-node-id="memory" data-semantic-role="node" data-motion-role="" data-motion-stage="" data-motion-order="" data-parent="" data-deployment-id="" data-topic-id="" data-span-id="" data-station-order="" data-status="" data-start-ms="" data-duration-ms="" data-parent-span="" data-graph-bounds="60,456,280,512">
+  <rect x="60.0" y="456.0" width="220.0" height="56.0" rx="4.0" fill="#f9fafb" stroke="#e5e7eb" stroke-width="1.8"/>
+  <text x="170.0" y="484.0" text-anchor="middle" class="node-title" font-size="18.0">Memory</text>
+  <text x="170.0" y="506.0" text-anchor="middle" class="node-sub">profile · diaries · entities</text>
+  </g>
+  <g id="node-router" data-graph-role="node" data-node-id="router" data-semantic-role="node" data-motion-role="" data-motion-stage="" data-motion-order="" data-parent="" data-deployment-id="" data-topic-id="" data-span-id="" data-station-order="" data-status="" data-start-ms="" data-duration-ms="" data-parent-span="" data-graph-bounds="370,164,830,228">
+  <rect x="370.0" y="164.0" width="460.0" height="64.0" rx="4.0" fill="#f9fafb" stroke="#e5e7eb" stroke-width="1.8"/>
+  <text x="600.0" y="196.0" text-anchor="middle" class="node-title" font-size="18.0">Main conversation · Router</text>
+  <text x="600.0" y="218.0" text-anchor="middle" class="node-sub">classify goal and risk, keep one timeline</text>
+  </g>
+  <g id="node-gates" data-graph-role="node" data-node-id="gates" data-semantic-role="node" data-motion-role="" data-motion-stage="" data-motion-order="" data-parent="" data-deployment-id="" data-topic-id="" data-span-id="" data-station-order="" data-status="" data-start-ms="" data-duration-ms="" data-parent-span="" data-graph-bounds="370,268,830,332">
+  <rect x="370.0" y="268.0" width="460.0" height="64.0" rx="4.0" fill="#f9fafb" stroke="#e5e7eb" stroke-width="1.8"/>
+  <text x="600.0" y="300.0" text-anchor="middle" class="node-title" font-size="18.0">Plans &amp; approvals</text>
+  <text x="600.0" y="322.0" text-anchor="middle" class="node-sub">read-only plan or task-level side effect</text>
+  </g>
+  <g id="node-workers" data-graph-role="node" data-node-id="workers" data-semantic-role="node" data-motion-role="" data-motion-stage="" data-motion-order="" data-parent="" data-deployment-id="" data-topic-id="" data-span-id="" data-station-order="" data-status="" data-start-ms="" data-duration-ms="" data-parent-span="" data-graph-bounds="370,372,830,428">
+  <rect x="370.0" y="372.0" width="460.0" height="56.0" rx="4.0" fill="#f9fafb" stroke="#e5e7eb" stroke-width="1.8"/>
+  <text x="600.0" y="400.0" text-anchor="middle" class="node-title" font-size="18.0">Hidden Workers &amp; Expert Agents</text>
+  <text x="600.0" y="422.0" text-anchor="middle" class="node-sub">background runs, not extra chats to manage</text>
+  </g>
+  <g id="node-state" data-graph-role="node" data-node-id="state" data-semantic-role="node" data-motion-role="" data-motion-stage="" data-motion-order="" data-parent="" data-deployment-id="" data-topic-id="" data-span-id="" data-station-order="" data-status="" data-start-ms="" data-duration-ms="" data-parent-span="" data-graph-bounds="370,468,830,524">
+  <rect x="370.0" y="468.0" width="460.0" height="56.0" rx="4.0" fill="#f9fafb" stroke="#e5e7eb" stroke-width="1.8"/>
+  <text x="600.0" y="496.0" text-anchor="middle" class="node-title" font-size="18.0">Server state</text>
+  <text x="600.0" y="518.0" text-anchor="middle" class="node-sub">Today · memory &amp; diaries · artifacts</text>
+  </g>
+  <g id="node-outcome" data-graph-role="node" data-node-id="outcome" data-semantic-role="node" data-motion-role="" data-motion-stage="" data-motion-order="" data-parent="" data-deployment-id="" data-topic-id="" data-span-id="" data-station-order="" data-status="" data-start-ms="" data-duration-ms="" data-parent-span="" data-graph-bounds="950,421,1160,571">
+  <rect x="950.0" y="421.0" width="210.0" height="150.0" rx="4.0" fill="#f9fafb" stroke="#e5e7eb" stroke-width="1.8"/>
+  <text x="1055.0" y="439.0" text-anchor="middle" class="node-type">BACK TO YOU</text>
+  <text x="1055.0" y="502.0" text-anchor="middle" class="node-title" font-size="18.0">One timeline</text>
+  <text x="1055.0" y="524.0" text-anchor="middle" class="node-sub">results, plans and approvals return to chat</text>
+  </g>
+  <g id="edge-000-label" data-graph-role="label" data-owner="edge-000" data-graph-bounds="305.64,165,344.36,185">
+  <rect x="305.64" y="165.0" width="38.72" height="20" rx="6" fill="#ffffff" opacity="0.96"/>
+  <text x="325.0" y="179.0" text-anchor="middle" class="arrow-label">goal</text>
+  </g>
+  <g id="edge-001-label" data-graph-role="label" data-owner="edge-001" data-graph-bounds="487,234,597,254">
+  <rect x="487.0" y="234.0" width="110.0" height="20" rx="6" fill="#ffffff" opacity="0.96"/>
+  <text x="542.0" y="248.0" text-anchor="middle" class="arrow-label">plan or approve</text>
+  </g>
+  <g id="edge-002-label" data-graph-role="label" data-owner="edge-002" data-graph-bounds="498.28,338,597,358">
+  <rect x="498.28" y="338.0" width="98.72" height="20" rx="6" fill="#ffffff" opacity="0.96"/>
+  <text x="547.64" y="352.0" text-anchor="middle" class="arrow-label">approved only</text>
+  </g>
+  <g id="edge-003-label" data-graph-role="label" data-owner="edge-003" data-graph-bounds="537.4,434,597,454">
+  <rect x="537.4" y="434.0" width="59.599999999999994" height="20" rx="6" fill="#ffffff" opacity="0.96"/>
+  <text x="567.2" y="448.0" text-anchor="middle" class="arrow-label">results</text>
+  </g>
+  <g id="edge-004-label" data-graph-role="label" data-owner="edge-004" data-graph-bounds="851.68,465,928.32,485">
+  <rect x="851.68" y="465.0" width="76.64" height="20" rx="6" fill="#ffffff" opacity="0.96"/>
+  <text x="890.0" y="479.0" text-anchor="middle" class="arrow-label">projected</text>
+  </g>
+</svg>
