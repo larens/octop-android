@@ -32,6 +32,7 @@ from octop.infra.conversation.service import (
     _json_value,
     _new_id,
     _now,
+    _resolve_worker_agent,
     _row_value,
 )
 
@@ -248,6 +249,7 @@ class WriteActionService:
         objective: str,
         action_name: str,
         action_payload: Mapping[str, Any],
+        worker_agent_id: str | None = None,
         subject_key: str | None = None,
         token_limit: int | None = None,
         idempotency_key: str | None = None,
@@ -286,6 +288,7 @@ class WriteActionService:
             "idempotency_key": normalized_idempotency_key,
             "token_limit": normalized_token_limit,
             "trace_id": trace_id,
+            "worker_agent_id": worker_agent_id,
         }
         with self._db.transaction() as conn:
             conversation = conn.execute(
@@ -295,11 +298,20 @@ class WriteActionService:
             ).fetchone()
             if conversation is None:
                 raise NotFoundError("main conversation not found")
+            assigned_agent_id, assigned_agent_name = _resolve_worker_agent(
+                conn,
+                agent_id=worker_agent_id,
+                fallback_agent_id=agent_id,
+                user_id=int(user_id),
+            )
+            capsule["worker_agent_id"] = assigned_agent_id
+            capsule["worker_agent_name"] = assigned_agent_name
             conn.execute(
                 "INSERT INTO conversation_tasks("
                 "task_id, conversation_id, task_type, title, subject_key, objective, status, "
-                "requires_user, capsule_json, priority, created_at, updated_at, expires_at"
-                ") VALUES (?, ?, 'side_effect', ?, ?, ?, 'needs_user', 1, ?, 0, ?, ?, ?)",
+                "requires_user, capsule_json, priority, created_at, updated_at, expires_at, "
+                "worker_agent_id, worker_agent_name"
+                ") VALUES (?, ?, 'side_effect', ?, ?, ?, 'needs_user', 1, ?, 0, ?, ?, ?, ?, ?)",
                 (
                     task_id,
                     conversation_id,
@@ -310,6 +322,8 @@ class WriteActionService:
                     now,
                     now,
                     now + self._approval_ttl,
+                    assigned_agent_id,
+                    assigned_agent_name,
                 ),
             )
             conn.execute(

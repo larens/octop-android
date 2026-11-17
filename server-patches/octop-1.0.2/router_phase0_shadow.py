@@ -182,6 +182,25 @@ def _setting_enabled(
     return str(raw).strip().lower() not in {"0", "false", "no", "off"}
 
 
+def _setting_value(
+    settings_repo: Any,
+    *,
+    key: str,
+    env_key: str,
+    default: str = "",
+) -> str:
+    raw = os.environ.get(env_key)
+    if raw is None:
+        try:
+            raw = settings_repo.get(key) if settings_repo is not None else None
+        except Exception:
+            logger.debug("shadow setting read failed key=%s", key, exc_info=True)
+            raw = None
+    if raw is None:
+        return default
+    return str(raw).strip()
+
+
 def _message_text(raw: str) -> str:
     try:
         payload = json.loads(raw)
@@ -835,6 +854,7 @@ async def observe_shadow_turn(
     return {
         "trace_id": trace_id,
         "conversation_id": conversation_id,
+        "agent_id": agent_id,
         "decision": decision,
         "context_pack": pack,
         "feed_events": feed_items,
@@ -855,11 +875,28 @@ async def _maybe_propose_auto_plan(
         return
     services = getattr(server, "services", None)
     settings_repo = getattr(services, "settings_repo", None)
-    if not _setting_enabled(
+    butler_mode = _setting_value(
+        settings_repo,
+        key="router.butler.mode",
+        env_key="OCTOP_ROUTER_BUTLER_MODE",
+        default="off",
+    ).lower()
+    butler_agent_id = _setting_value(
+        settings_repo,
+        key="router.butler.agent_id",
+        env_key="OCTOP_ROUTER_BUTLER_AGENT_ID",
+    )
+    observed_agent_id = str(observed.get("agent_id") or "")
+    is_butler = bool(butler_agent_id) and observed_agent_id == butler_agent_id and (
+        butler_mode in {"assist", "auto"}
+    )
+    planning_enabled = _setting_enabled(
         settings_repo,
         key="router.planning.auto_enabled",
         env_key="OCTOP_ROUTER_PLANNING_AUTO_ENABLED",
-    ):
+        default=False,
+    )
+    if not is_butler and not planning_enabled:
         return
     from octop.infra.conversation.orchestrator import (  # noqa: PLC0415
         should_propose_auto_plan,

@@ -53,6 +53,8 @@ data class ConversationTaskDto(
     @SerialName("expires_at") val expiresAt: Long? = null,
     @SerialName("plan_id") val planId: String? = null,
     @SerialName("plan_item_id") val planItemId: String? = null,
+    @SerialName("worker_agent_id") val workerAgentId: String? = null,
+    @SerialName("worker_agent_name") val workerAgentName: String? = null,
     val runs: List<TaskRunDto> = emptyList(),
 )
 
@@ -86,6 +88,8 @@ data class DispatchPlanItemDto(
     val title: String,
     val objective: String,
     @SerialName("worker_role") val workerRole: String = "research",
+    @SerialName("worker_agent_id") val workerAgentId: String? = null,
+    @SerialName("worker_agent_name") val workerAgentName: String? = null,
     @SerialName("depends_on") val dependsOn: List<String> = emptyList(),
     val status: String,
     @SerialName("estimated_tokens") val estimatedTokens: Long = 0,
@@ -172,6 +176,24 @@ data class DispatchPlanBudgetContinueBody(
     @SerialName("plan_version") val planVersion: Int,
     @SerialName("plan_hash") val planHash: String,
     @SerialName("budget_request_id") val budgetRequestId: String,
+)
+
+@Serializable
+data class PlanAssignmentBody(
+    @SerialName("item_key") val itemKey: String,
+    @SerialName("worker_agent_id") val workerAgentId: String,
+)
+
+@Serializable
+data class AssignDispatchPlanBody(
+    @SerialName("plan_version") val planVersion: Int,
+    @SerialName("plan_hash") val planHash: String,
+    val assignments: List<PlanAssignmentBody>,
+)
+
+@Serializable
+data class TaskContinueBody(
+    val message: String,
 )
 
 @Serializable

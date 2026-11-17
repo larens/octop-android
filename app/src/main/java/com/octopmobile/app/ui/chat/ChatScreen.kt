@@ -296,6 +296,10 @@ fun ChatScreen(
     val cachedAttachments by viewModel.cachedAttachments.collectAsStateWithLifecycle()
     val compactMarkers by viewModel.compactMarkers.collectAsStateWithLifecycle()
     val mentionable by viewModel.mentionable.collectAsStateWithLifecycle()
+    val routerTaskBusy by viewModel.routerTaskBusy.collectAsStateWithLifecycle()
+    val assignableAgents = remember(mentionable) {
+        mentionable.filter { it.kind != "team" }
+    }
     val threadListState = threadsViewModel.uiState
     val historyThreads by threadsViewModel.threads.collectAsStateWithLifecycle()
     val archivedThreads by threadsViewModel.archivedThreads.collectAsStateWithLifecycle()
@@ -631,8 +635,10 @@ fun ChatScreen(
                         pending = pending,
                         activeRouterTasks = activeRouterTasks,
                         routerTaskResult = routerTaskResult,
+                        routerTaskBusy = routerTaskBusy,
                         dispatchPlan = dispatchPlan,
                         dispatchPlanBusy = dispatchPlanBusy,
+                        assignableAgents = assignableAgents,
                         onApproveDispatchPlan = viewModel::approveDispatchPlan,
                         onRejectDispatchPlan = viewModel::rejectDispatchPlan,
                         onContinueDispatchPlanBudget = viewModel::continueDispatchPlanBudget,
@@ -643,6 +649,8 @@ fun ChatScreen(
                         onApproveTaskApproval = viewModel::approveTaskApproval,
                         onRejectTaskApproval = viewModel::rejectTaskApproval,
                         onDismissRouterTaskResult = viewModel::dismissRouterTaskResult,
+                        onContinueRouterTask = viewModel::continueRouterTask,
+                        onAssignPlanItem = viewModel::assignPlanItem,
                         attachments = attachments,
                         busy = busy,
                         mentionSuggestions = mentionCandidates,
@@ -1603,8 +1611,10 @@ private fun ChatBottomBar(
     pending: HitlPending?,
     activeRouterTasks: List<ActiveRouterTask>,
     routerTaskResult: RouterTaskResult?,
+    routerTaskBusy: Boolean,
     dispatchPlan: DispatchPlanDto?,
     dispatchPlanBusy: Boolean,
+    assignableAgents: List<AgentDto>,
     taskApprovals: List<TaskApprovalDto>,
     taskApprovalBusy: Set<String>,
     onApproveDispatchPlan: () -> Unit,
@@ -1615,6 +1625,8 @@ private fun ChatBottomBar(
     onApproveTaskApproval: (TaskApprovalDto) -> Unit,
     onRejectTaskApproval: (TaskApprovalDto) -> Unit,
     onDismissRouterTaskResult: () -> Unit,
+    onContinueRouterTask: (String) -> Unit,
+    onAssignPlanItem: (String, String) -> Unit,
     attachments: List<UploadedAttachment>,
     busy: Boolean,
     mentionSuggestions: List<AgentDto>,
@@ -1660,6 +1672,8 @@ private fun ChatBottomBar(
                 DispatchPlanCard(
                     plan = dispatchPlan,
                     busy = dispatchPlanBusy,
+                    assignableAgents = assignableAgents,
+                    onAssign = onAssignPlanItem,
                     onApprove = onApproveDispatchPlan,
                     onReject = onRejectDispatchPlan,
                     onContinueBudget = onContinueDispatchPlanBudget,
@@ -1675,7 +1689,9 @@ private fun ChatBottomBar(
             if (routerTaskResult != null) {
                 RouterTaskResultCard(
                     result = routerTaskResult,
+                    busy = routerTaskBusy,
                     onDismiss = onDismissRouterTaskResult,
+                    onContinue = onContinueRouterTask,
                 )
                 Spacer(Modifier.height(6.dp))
             }
@@ -1724,8 +1740,12 @@ private fun ChatBottomBar(
 @Composable
 private fun RouterTaskResultCard(
     result: RouterTaskResult,
+    busy: Boolean,
     onDismiss: () -> Unit,
+    onContinue: (String) -> Unit,
 ) {
+    var followUpOpen by remember(result.taskId) { mutableStateOf(false) }
+    var followUpText by remember(result.taskId) { mutableStateOf("") }
     Surface(
         shape = RoundedCornerShape(16.dp),
         color = if (result.failed) {
@@ -1754,6 +1774,12 @@ private fun RouterTaskResultCard(
                     fontWeight = FontWeight.SemiBold,
                     modifier = Modifier.weight(1f),
                 )
+                TextButton(
+                    onClick = { followUpOpen = true },
+                    enabled = !busy,
+                ) {
+                    Text(stringResource(R.string.chat_router_task_follow_up))
+                }
                 TextButton(onClick = onDismiss) {
                     Text(stringResource(R.string.chat_router_task_result_dismiss))
                 }
@@ -1765,6 +1791,15 @@ private fun RouterTaskResultCard(
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
             )
+            result.assignee?.takeIf { it.isNotBlank() }?.let { assignee ->
+                Text(
+                    text = stringResource(R.string.chat_router_task_assignee, assignee),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
             Text(
                 text = result.summary,
                 style = MaterialTheme.typography.bodySmall,
@@ -1773,6 +1808,49 @@ private fun RouterTaskResultCard(
                 modifier = Modifier.padding(end = 8.dp),
             )
         }
+    }
+    if (followUpOpen) {
+        AlertDialog(
+            onDismissRequest = { if (!busy) followUpOpen = false },
+            title = { Text(stringResource(R.string.chat_router_task_follow_up)) },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Text(
+                        text = stringResource(R.string.chat_router_task_follow_up_hint),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    OutlinedTextField(
+                        value = followUpText,
+                        onValueChange = { followUpText = it },
+                        minLines = 2,
+                        placeholder = {
+                            Text(stringResource(R.string.chat_router_task_follow_up_placeholder))
+                        },
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        onContinue(followUpText)
+                        followUpOpen = false
+                        followUpText = ""
+                    },
+                    enabled = !busy && followUpText.isNotBlank(),
+                ) {
+                    Text(stringResource(R.string.chat_router_task_follow_up_send))
+                }
+            },
+            dismissButton = {
+                TextButton(
+                    onClick = { followUpOpen = false },
+                    enabled = !busy,
+                ) {
+                    Text(stringResource(R.string.chat_dispatch_plan_reassign_cancel))
+                }
+            },
+        )
     }
 }
 
@@ -1886,6 +1964,8 @@ internal fun TaskApprovalCard(
 private fun DispatchPlanCard(
     plan: DispatchPlanDto,
     busy: Boolean,
+    assignableAgents: List<AgentDto>,
+    onAssign: (String, String) -> Unit,
     onApprove: () -> Unit,
     onReject: () -> Unit,
     onContinueBudget: () -> Unit,
@@ -1893,6 +1973,7 @@ private fun DispatchPlanCard(
     onDismiss: () -> Unit,
 ) {
     val budgetRequest = plan.budgetRequest
+    var assignTarget by remember(plan.planId) { mutableStateOf<DispatchPlanItemDto?>(null) }
     var expanded by remember(plan.planId, budgetRequest?.requestId) {
         mutableStateOf(false)
     }
@@ -2084,6 +2165,8 @@ private fun DispatchPlanCard(
                         DispatchPlanItemRow(
                             item = item,
                             waitingForBudget = budgetRequest?.planItemId == item.planItemId,
+                            canAssign = plan.status == "awaiting_approval" && !busy,
+                            onAssign = { assignTarget = item },
                         )
                     }
                 }
@@ -2160,12 +2243,55 @@ private fun DispatchPlanCard(
             }
         }
     }
+    assignTarget?.let { item ->
+        AlertDialog(
+            onDismissRequest = { assignTarget = null },
+            title = { Text(stringResource(R.string.chat_dispatch_plan_reassign_title)) },
+            text = {
+                Column(
+                    modifier = Modifier.verticalScroll(rememberScrollState()),
+                    verticalArrangement = Arrangement.spacedBy(2.dp),
+                ) {
+                    if (assignableAgents.isEmpty()) {
+                        Text(
+                            text = stringResource(R.string.chat_dispatch_plan_reassign_empty),
+                            style = MaterialTheme.typography.bodySmall,
+                        )
+                    } else {
+                        assignableAgents.forEach { agent ->
+                            TextButton(
+                                onClick = {
+                                    onAssign(item.key, agent.agentId)
+                                    assignTarget = null
+                                },
+                                modifier = Modifier.fillMaxWidth(),
+                            ) {
+                                Text(
+                                    text = agent.name?.takeIf { it.isNotBlank() }
+                                        ?: agent.agentId,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                )
+                            }
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { assignTarget = null }) {
+                    Text(stringResource(R.string.chat_dispatch_plan_reassign_cancel))
+                }
+            },
+        )
+    }
 }
 
 @Composable
 private fun DispatchPlanItemRow(
     item: DispatchPlanItemDto,
     waitingForBudget: Boolean,
+    canAssign: Boolean,
+    onAssign: () -> Unit,
 ) {
     Row(
         modifier = Modifier.fillMaxWidth(),
@@ -2212,6 +2338,8 @@ private fun DispatchPlanItemRow(
                 )
             }
             val dependencyText = item.dependsOn.takeIf { it.isNotEmpty() }?.joinToString(" + ")
+            val assignee = item.workerAgentName?.takeIf { it.isNotBlank() }
+                ?: item.workerAgentId?.takeIf { it.isNotBlank() }
             Text(
                 text = buildString {
                     append(
@@ -2239,12 +2367,33 @@ private fun DispatchPlanItemRow(
                             ),
                         )
                     }
+                    if (!assignee.isNullOrBlank()) {
+                        append(" · ")
+                        append(
+                            stringResource(
+                                R.string.chat_router_task_assignee,
+                                assignee,
+                            ),
+                        )
+                    }
                 },
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 maxLines = 2,
                 overflow = TextOverflow.Ellipsis,
             )
+            if (canAssign) {
+                TextButton(
+                    onClick = onAssign,
+                    contentPadding = PaddingValues(0.dp),
+                    modifier = Modifier.height(26.dp),
+                ) {
+                    Text(
+                        text = stringResource(R.string.chat_dispatch_plan_reassign),
+                        style = MaterialTheme.typography.labelSmall,
+                    )
+                }
+            }
             if (item.resultSummary.isNotBlank()) {
                 Text(
                     text = item.resultSummary,
@@ -2341,7 +2490,18 @@ private fun ActiveRouterTasksCard(tasks: List<ActiveRouterTask>) {
                             overflow = TextOverflow.Ellipsis,
                         )
                         Text(
-                            text = stringResource(task.progress.labelRes()),
+                            text = buildString {
+                                append(stringResource(task.progress.labelRes()))
+                                task.assignee?.takeIf { it.isNotBlank() }?.let {
+                                    append(" · ")
+                                    append(
+                                        stringResource(
+                                            R.string.chat_router_task_assignee,
+                                            it,
+                                        ),
+                                    )
+                                }
+                            },
                             style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                             maxLines = 1,

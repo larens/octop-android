@@ -51,25 +51,32 @@ def patch_thread_registry(source: str) -> str:
             )
         else:
             raise RuntimeError("thread registry virtual channel anchor not found")
-    source = _replace(
-        source,
-        marker="def worker_key(",
-        old="    def __init__(self, *, session_repo: SessionRepo, thread_repo: ThreadRepo) -> None:\n",
-        new="""\
+    worker_method = """\
     @staticmethod
-    def worker_key(*, agent_id: str, task_id: str, run_id: str) -> str:
-        \"\"\"Return the isolated, hidden Thread key for one attempted Worker Run.\"\"\"
+    def worker_key(*, agent_id: str, context_key: str) -> str:
+        \"\"\"Return the hidden Thread key shared by a Worker task and its follow-ups.\"\"\"
         return ThreadRegistry.make_key(
             agent_id=agent_id,
             channel_type=ThreadRegistry.CHANNEL_WORKER,
-            channel_subject_id=task_id,
-            channel_chat_type=run_id,
+            channel_subject_id=context_key,
         )
 
-    def __init__(self, *, session_repo: SessionRepo, thread_repo: ThreadRepo) -> None:
-""",
-        label="thread registry worker key",
+"""
+    init_anchor = (
+        "    def __init__(self, *, session_repo: SessionRepo, thread_repo: ThreadRepo)"
+        " -> None:\n"
     )
+    if "def worker_key(*, agent_id: str, context_key: str)" not in source:
+        start = source.find("    @staticmethod\n    def worker_key(")
+        if start != -1:
+            end = source.find(init_anchor, start)
+            if end == -1:
+                raise RuntimeError("thread registry worker key end anchor not found")
+            source = source[:start] + worker_method + source[end:]
+        else:
+            if init_anchor not in source:
+                raise RuntimeError("thread registry worker key anchor not found")
+            source = source.replace(init_anchor, worker_method + init_anchor, 1)
     source = _replace(
         source,
         marker="exclude_channel_types=(self.CHANNEL_WORKER,)",

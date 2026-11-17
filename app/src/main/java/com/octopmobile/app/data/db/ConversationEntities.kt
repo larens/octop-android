@@ -58,6 +58,8 @@ data class ConversationTaskEntity(
     val createdAt: Long,
     val updatedAt: Long,
     val expiresAt: Long?,
+    val workerAgentId: String?,
+    val workerAgentName: String?,
 )
 
 @Entity(

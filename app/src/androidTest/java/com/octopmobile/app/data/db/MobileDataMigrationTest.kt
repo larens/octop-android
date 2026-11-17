@@ -200,6 +200,36 @@ class MobileDataMigrationTest {
         }
     }
 
+    @Test
+    fun migrate11To12_addsWorkerAssigneeWithoutLosingTasks() {
+        helper.createDatabase(WORKER_ASSIGNEE_NAME, 11).apply {
+            execSQL(
+                "INSERT INTO conversation_tasks VALUES (" +
+                    "'task-1','conversation-1','read_only','Title','subject','Objective'," +
+                    "'open',0,'{}',0,1,1,NULL)"
+            )
+            close()
+        }
+
+        helper.runMigrationsAndValidate(
+            WORKER_ASSIGNEE_NAME,
+            12,
+            true,
+            OctopDatabase.MIGRATION_11_12,
+        ).apply {
+            query(
+                "SELECT title, workerAgentId, workerAgentName " +
+                    "FROM conversation_tasks WHERE taskId = 'task-1'"
+            ).use {
+                check(it.moveToFirst())
+                check(it.getString(0) == "Title")
+                check(it.isNull(1))
+                check(it.isNull(2))
+            }
+            close()
+        }
+    }
+
     private companion object {
         const val NAME = "mobile-data-migration-test"
         const val TODAY_NAME = "today-cards-migration-test"
@@ -209,5 +239,6 @@ class MobileDataMigrationTest {
         const val ROUTER_NAME = "router-phase0-migration-test"
         const val SERVER_MEMORY_NAME = "server-memory-cache-migration-test"
         const val TRACKING_NAME = "today-tracking-migration-test"
+        const val WORKER_ASSIGNEE_NAME = "worker-assignee-migration-test"
     }
 }

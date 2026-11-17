@@ -40,6 +40,7 @@ class DispatchPlanItemBody(BaseModel):
     title: str = Field(min_length=1, max_length=200)
     objective: str = Field(min_length=1, max_length=20_000)
     worker_role: str = Field(default="research", max_length=80)
+    worker_agent_id: str | None = Field(default=None, max_length=200)
     depends_on: list[str] = Field(default_factory=list, max_length=4)
     token_limit: int | None = Field(default=None, ge=1_000, le=4_000_000)
 
@@ -59,11 +60,21 @@ class ContinueDispatchPlanBudgetBody(ApproveDispatchPlanBody):
     budget_request_id: str = Field(min_length=1, max_length=200)
 
 
+class PlanAssignmentBody(BaseModel):
+    item_key: str = Field(min_length=1, max_length=80)
+    worker_agent_id: str = Field(min_length=1, max_length=200)
+
+
+class AssignDispatchPlanBody(ApproveDispatchPlanBody):
+    assignments: list[PlanAssignmentBody] = Field(min_length=1, max_length=4)
+
+
 class ProposeWriteTaskBody(BaseModel):
     title: str = Field(min_length=1, max_length=200)
     objective: str = Field(min_length=1, max_length=20_000)
     action_name: str = Field(min_length=1, max_length=160)
     action_payload: dict[str, Any] = Field(default_factory=dict)
+    worker_agent_id: str | None = Field(default=None, max_length=200)
     subject_key: str | None = Field(default=None, max_length=500)
     token_limit: int | None = Field(default=None, ge=1_000, le=4_000_000)
     idempotency_key: str | None = Field(default=None, min_length=8, max_length=200)
@@ -78,6 +89,10 @@ class TaskActionBody(BaseModel):
     action: Literal["complete", "ignore", "defer"]
     defer_hours: int = Field(default=4, ge=1, le=168)
     note: str | None = Field(default=None, max_length=500)
+
+
+class TaskContinueBody(BaseModel):
+    message: str = Field(min_length=1, max_length=4_000)
 
 
 class ClaimWriteBody(BaseModel):
@@ -124,13 +139,28 @@ def _worker_service(server: Any) -> RouterWorkerService:
 
 
 def _plan_error(exc: Exception) -> OctopError:
+    reason = str(exc) or exc.__class__.__name__
     if isinstance(exc, WriteFeatureDisabledError):
-        return OctopError(ErrorCode.INTERNAL_ERROR, str(exc), status=503)
+        return OctopError(
+            ErrorCode.INTERNAL_ERROR,
+            reason,
+            status=503,
+            details={"reason": reason},
+        )
     if isinstance(exc, NotFoundError):
-        return OctopError(ErrorCode.NOT_FOUND, str(exc))
+        return OctopError(ErrorCode.NOT_FOUND, reason)
     if isinstance(exc, (InvalidTransitionError, BudgetExceededError, RouterPhase0Error)):
-        return OctopError(ErrorCode.INTERNAL_ERROR, str(exc), status=409)
-    return OctopError(ErrorCode.INTERNAL_ERROR, str(exc))
+        return OctopError(
+            ErrorCode.INTERNAL_ERROR,
+            reason,
+            status=409,
+            details={"reason": reason},
+        )
+    return OctopError(
+        ErrorCode.INTERNAL_ERROR,
+        reason,
+        details={"reason": reason},
+    )
 
 
 def _conversation(
@@ -250,6 +280,7 @@ async def propose_write_task(
             objective=body.objective,
             action_name=body.action_name,
             action_payload=body.action_payload,
+            worker_agent_id=body.worker_agent_id,
             subject_key=body.subject_key,
             token_limit=body.token_limit,
             idempotency_key=body.idempotency_key,
@@ -394,6 +425,38 @@ async def reject_dispatch_plan(
 
 
 @router.post(
+    "/agents/{agent_id}/dispatch-plans/{plan_id}/assign",
+    summary="Reassign pending plan items before approval",
+)
+async def assign_dispatch_plan(
+    agent_id: str,
+    plan_id: str,
+    body: AssignDispatchPlanBody,
+    as_user: int | None = None,
+    user: Any = Depends(current_user),
+    server: Any = Depends(get_server),
+) -> dict[str, Any]:
+    require_agent_row(agent_id, user=user, as_user=as_user, server=server)
+    try:
+        return _worker_service(server).dispatch_plans.assign_items(
+            agent_id=agent_id,
+            user_id=_effective_user_id(user, as_user),
+            plan_id=plan_id,
+            plan_version=body.plan_version,
+            plan_hash=body.plan_hash,
+            assignments=[
+                {
+                    "item_key": item.item_key,
+                    "worker_agent_id": item.worker_agent_id,
+                }
+                for item in body.assignments
+            ],
+        )
+    except Exception as exc:
+        raise _plan_error(exc) from exc
+
+
+@router.post(
     "/agents/{agent_id}/dispatch-plans/{plan_id}/budget/continue",
     summary="Approve one bounded budget extension and enqueue one more Worker attempt",
 )
@@ -491,6 +554,32 @@ async def act_on_task(
             action=body.action,
             defer_hours=body.defer_hours,
             note=body.note,
+        )
+    except NotFoundError as exc:
+        raise _not_found(str(exc)) from exc
+    except (InvalidTransitionError, RouterPhase0Error) as exc:
+        raise OctopError(ErrorCode.INTERNAL_ERROR, str(exc), status=409) from exc
+
+
+@router.post(
+    "/agents/{agent_id}/tasks/{task_id}/continue",
+    summary="Queue a follow-up with the same Router Worker",
+)
+async def continue_task(
+    agent_id: str,
+    task_id: str,
+    body: TaskContinueBody,
+    as_user: int | None = None,
+    user: Any = Depends(current_user),
+    server: Any = Depends(get_server),
+) -> dict[str, Any]:
+    require_agent_row(agent_id, user=user, as_user=as_user, server=server)
+    try:
+        return _service(server).continue_read_only_task(
+            agent_id=agent_id,
+            user_id=_effective_user_id(user, as_user),
+            task_id=task_id,
+            message=body.message,
         )
     except NotFoundError as exc:
         raise _not_found(str(exc)) from exc

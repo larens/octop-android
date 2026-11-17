@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import json
 import logging
 import os
 import time
@@ -94,6 +95,13 @@ _MULTI_WORKER_MARKERS = (
     "multiple",
     "parallel",
 )
+
+
+def _capsule_with(existing: Any, updates: Mapping[str, Any]) -> dict[str, Any]:
+    """Merge terminal/result fields into a task capsule without losing lineage."""
+    merged = dict(existing) if isinstance(existing, Mapping) else {}
+    merged.update(updates)
+    return merged
 
 
 class WorkerDispatchUnavailable(RuntimeError):
@@ -311,6 +319,8 @@ def auto_plan_items(
     title: str | None,
     suggested_task: Mapping[str, Any] | None,
     default_token_limit: int,
+    expert_map: Mapping[str, str] | None = None,
+    explicit_worker_agent_id: str | None = None,
 ) -> list[dict[str, Any]]:
     """Build a deterministic, read-only plan without spending planning tokens."""
     suggested = suggested_task if isinstance(suggested_task, Mapping) else {}
@@ -324,6 +334,14 @@ def auto_plan_items(
     )
     base_limit = max(1_000, int(default_token_limit))
     lowered = normalized_objective.lower()
+    experts = expert_map if isinstance(expert_map, Mapping) else {}
+
+    def assignee(role: str) -> str | None:
+        if explicit_worker_agent_id:
+            return str(explicit_worker_agent_id)
+        value = experts.get(role)
+        return str(value) if value else None
+
     if not any(marker in lowered for marker in _MULTI_WORKER_MARKERS):
         return [
             {
@@ -331,6 +349,7 @@ def auto_plan_items(
                 "title": normalized_title,
                 "objective": normalized_objective,
                 "worker_role": "research",
+                "worker_agent_id": assignee("research"),
                 "depends_on": [],
                 "token_limit": base_limit,
             }
@@ -341,6 +360,7 @@ def auto_plan_items(
             "title": _clip(f"调研：{normalized_title}", 200),
             "objective": normalized_objective,
             "worker_role": "research",
+            "worker_agent_id": assignee("research"),
             "depends_on": [],
             "token_limit": min(base_limit, 96_000),
         },
@@ -353,6 +373,7 @@ def auto_plan_items(
                 20_000,
             ),
             "worker_role": "analysis",
+            "worker_agent_id": assignee("analysis"),
             "depends_on": ["research"],
             "token_limit": min(base_limit, 32_000),
         },
@@ -369,6 +390,8 @@ class WorkerContext:
     trace_id: str
     objective: str
     title: str
+    worker_agent_name: str
+    worker_context_key: str
     worker_thread_id: str
     attempt_no: int
     context_pack_id: str
@@ -376,6 +399,7 @@ class WorkerContext:
     plan_item_id: str | None = None
     token_limit: int = 0
     dependency_summaries: tuple[Mapping[str, str], ...] = ()
+    capsule: Mapping[str, Any] | None = None
 
 
 @dataclass(frozen=True)
@@ -551,13 +575,17 @@ class TaskOrchestrator:
         run_id = str(run["run_id"])
         task_id = str(task["task_id"])
         conversation_id = str(task["conversation_id"])
-        agent_id = str(conversation["agent_id"])
+        agent_id = str(task.get("worker_agent_id") or conversation["agent_id"])
+        worker_agent_name = str(
+            task.get("worker_agent_name") or agent_id
+        )
         user_id = int(conversation["user_id"])
         capsule = (
             task.get("capsule") if isinstance(task.get("capsule"), Mapping) else {}
         )
         trace_id = str(capsule.get("trace_id") or f"worker:{task_id}:{run_id}")
         context_pack_id = str(capsule.get("context_pack_id") or "")
+        worker_context_key = str(capsule.get("worker_context_id") or task_id)
         plan_context = await asyncio.to_thread(
             self._plan_service.worker_budget_context,
             task_id=task_id,
@@ -565,13 +593,17 @@ class TaskOrchestrator:
         worker_thread_id = await self._thread_registry.get_or_create_by_key(
             session_key=ThreadRegistry.worker_key(
                 agent_id=agent_id,
-                task_id=task_id,
-                run_id=run_id,
+                context_key=worker_context_key,
             ),
             agent_id=agent_id,
             user_id=user_id,
             channel_type=ThreadRegistry.CHANNEL_WORKER,
-            channel_metadata={"task_id": task_id, "run_id": run_id, "hidden": True},
+            channel_metadata={
+                "task_id": task_id,
+                "worker_context_id": worker_context_key,
+                "run_id": run_id,
+                "hidden": True,
+            },
         )
         await asyncio.to_thread(
             self._service.bind_run_worker_thread,
@@ -587,6 +619,8 @@ class TaskOrchestrator:
             trace_id=trace_id,
             objective=str(task["objective"]),
             title=str(task["title"]),
+            worker_agent_name=worker_agent_name,
+            worker_context_key=worker_context_key,
             worker_thread_id=worker_thread_id,
             attempt_no=int(run["attempt_no"]),
             context_pack_id=context_pack_id,
@@ -610,6 +644,7 @@ class TaskOrchestrator:
                 )
                 if isinstance(item, Mapping)
             ),
+            capsule=capsule,
         )
         await asyncio.to_thread(
             self._service.append_event,
@@ -856,7 +891,7 @@ class TaskOrchestrator:
         result: WorkerResult,
         budget_trace_id: str,
     ) -> None:
-        capsule = {
+        capsule = _capsule_with(ctx.capsule, {
             "trace_id": ctx.trace_id,
             "result": _clip(result.summary or result.output, 2_000),
             "output_excerpt": _clip(result.output or result.summary, 1_500),
@@ -864,7 +899,7 @@ class TaskOrchestrator:
             "budget_trace_id": budget_trace_id,
             "worker_thread_id": ctx.worker_thread_id,
             "attempt_no": ctx.attempt_no,
-        }
+        })
         await asyncio.to_thread(
             self._service.transition_run,
             run_id=ctx.run_id,
@@ -962,12 +997,12 @@ class TaskOrchestrator:
                     self._service.transition_task,
                     task_id=ctx.task_id,
                     status="failed",
-                    capsule={
+                    capsule=_capsule_with(ctx.capsule, {
                         "trace_id": ctx.trace_id,
                         "failure_class": failure_class,
                         "result": _clip(message, 2_000),
                         "usage": dict(usage) if usage else None,
-                    },
+                    }),
                 )
             await asyncio.to_thread(
                 self._plan_service.on_worker_terminal,
@@ -1049,11 +1084,11 @@ class TaskOrchestrator:
                     self._service.transition_task,
                     task_id=task_id,
                     status="failed",
-                    capsule={
+                    capsule=_capsule_with(task.get("capsule"), {
                         "trace_id": trace_id,
                         "failure_class": failure_class,
                         "result": f"Stopped after {attempt_no} attempts",
-                    },
+                    }),
                 )
             return False
         delay = min(
@@ -1073,11 +1108,11 @@ class TaskOrchestrator:
                     self._service.transition_task,
                     task_id=task_id,
                     status="failed",
-                    capsule={
+                    capsule=_capsule_with(task.get("capsule"), {
                         "trace_id": trace_id,
                         "failure_class": failure_class,
                         "result": "Retry limit reached",
-                    },
+                    }),
                 )
             return False
         await asyncio.to_thread(
@@ -1152,16 +1187,14 @@ class ProcessorReadOnlyRunner:
             channel_subject=ChannelSubject(subject_id=str(ctx.user_id)),
             channel_session_id=ThreadRegistry.worker_key(
                 agent_id=ctx.agent_id,
-                task_id=ctx.task_id,
-                run_id=ctx.run_id,
+                context_key=ctx.worker_context_key,
             ),
             content=[TextContent(text=prompt)],
             metadata={
                 "thread_id": ctx.worker_thread_id,
                 "session_key": ThreadRegistry.worker_key(
                     agent_id=ctx.agent_id,
-                    task_id=ctx.task_id,
-                    run_id=ctx.run_id,
+                    context_key=ctx.worker_context_key,
                 ),
                 "conversation_mode": "ask",
                 "mcp_servers": [],
@@ -1171,6 +1204,8 @@ class ProcessorReadOnlyRunner:
                 "task_id": ctx.task_id,
                 "run_id": ctx.run_id,
                 "worker": True,
+                "worker_agent_id": ctx.agent_id,
+                "worker_agent_name": ctx.worker_agent_name,
             },
         )
         usage_tracker = UsageTracker()
@@ -1309,6 +1344,7 @@ class RouterWorkerService:
         )
 
     def status(self) -> dict[str, Any]:
+        butler = self.butler_config()
         return {
             "enabled": self.config.enabled,
             "ready": self.config.ready,
@@ -1323,6 +1359,67 @@ class RouterWorkerService:
             "heartbeat_seconds": self.config.heartbeat_seconds,
             "max_attempts": self.config.max_attempts,
             "timeout_seconds": self.config.timeout_seconds,
+            "butler": butler,
+        }
+
+    def _known_agent_ids(self) -> set[str] | None:
+        services = getattr(self._server, "services", None)
+        db = getattr(services, "db", None)
+        if db is None:
+            return None
+        try:
+            with db.connect() as conn:
+                return {str(row[0]) for row in conn.execute("SELECT agent_id FROM agents")}
+        except Exception:
+            logger.warning("router butler agent lookup failed", exc_info=True)
+            return None
+
+    def butler_config(self) -> dict[str, Any]:
+        """Return the butler/assignee policy without exposing agent secrets."""
+        services = getattr(self._server, "services", None)
+        settings = getattr(services, "settings_repo", None)
+        agent_id = str(
+            _setting(settings, "router.butler.agent_id", "OCTOP_ROUTER_BUTLER_AGENT_ID")
+            or ""
+        ).strip()
+        mode = str(
+            _setting(
+                settings,
+                "router.butler.mode",
+                "OCTOP_ROUTER_BUTLER_MODE",
+                "off",
+            )
+            or "off"
+        ).strip().lower()
+        if mode not in {"off", "assist", "auto"}:
+            mode = "off"
+        experts: dict[str, str] = {}
+        raw = _setting(
+            settings,
+            "router.butler.experts",
+            "OCTOP_ROUTER_BUTLER_EXPERTS",
+        )
+        if raw:
+            try:
+                parsed = json.loads(raw)
+            except (TypeError, ValueError):
+                parsed = None
+            if isinstance(parsed, Mapping):
+                experts = {
+                    str(role): str(worker)
+                    for role, worker in parsed.items()
+                    if str(role).strip() and str(worker).strip()
+                }
+        known = self._known_agent_ids() if experts else set()
+        return {
+            "agent_id": agent_id or None,
+            "mode": mode,
+            "experts": experts,
+            "expert_errors": {
+                role: target
+                for role, target in experts.items()
+                if known is not None and target not in known
+            },
         }
 
     async def start(self) -> None:
@@ -1484,6 +1581,26 @@ class RouterWorkerService:
             )
         normalized_items = list(items or [])
         if not normalized_items:
+            experts = dict(self.butler_config().get("experts") or {})
+            if experts:
+                known = self._known_agent_ids()
+                if known is not None:
+                    missing = {
+                        role: target
+                        for role, target in experts.items()
+                        if target not in known
+                    }
+                    if missing:
+                        logger.warning(
+                            "router.butler.experts points at unknown agents %s; "
+                            "falling back to the conversation agent",
+                            missing,
+                        )
+                        experts = {
+                            role: target
+                            for role, target in experts.items()
+                            if target not in missing
+                        }
             suggested = decision.get("suggested_task")
             normalized_items = auto_plan_items(
                 objective=objective,
@@ -1492,6 +1609,7 @@ class RouterWorkerService:
                     suggested if isinstance(suggested, Mapping) else None
                 ),
                 default_token_limit=self.dispatch_plans.default_worker_token_limit,
+                expert_map=experts,
             )
         context_pack = observed.get("context_pack")
         context_pack_id = (
@@ -1569,6 +1687,7 @@ def _render_worker_prompt(ctx: WorkerContext, pack: Mapping[str, Any] | None) ->
         "",
         f"Task: {ctx.title}",
         f"Objective: {ctx.objective}",
+        f"Assignee: {ctx.worker_agent_name or ctx.agent_id}",
     ]
     if ctx.dependency_summaries:
         lines.extend(

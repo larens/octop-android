@@ -655,6 +655,29 @@ class RouterPhase0Test(unittest.TestCase):
                 **period,
             )
 
+    def test_budget_ledger_refreshes_limits_after_policy_correction(self) -> None:
+        period = {"period_start": 100, "period_end": 200}
+        self.service.reserve_budget(
+            scope_type="surface_daily",
+            scope_id="worker:agent-a:1",
+            tokens=5,
+            cost_micros=0,
+            limit_tokens=100,
+            limit_cost_micros=0,
+            **period,
+        )
+        ledger = self.service.reserve_budget(
+            scope_type="surface_daily",
+            scope_id="worker:agent-a:1",
+            tokens=5,
+            cost_micros=5_000,
+            limit_tokens=100,
+            limit_cost_micros=100_000,
+            **period,
+        )
+        self.assertEqual(ledger["reserved_tokens"], 10)
+        self.assertEqual(ledger["limit_cost_micros"], 100_000)
+
     def test_multi_scope_budget_reservation_rolls_back_atomically(self) -> None:
         period = {"period_start": 100, "period_end": 200}
         with self.assertRaises(BudgetExceededError):

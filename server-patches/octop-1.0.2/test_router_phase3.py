@@ -11,7 +11,10 @@ from types import SimpleNamespace
 
 from octop.infra.conversation.orchestrator import (
     RouterWorkerService,
+    TaskOrchestrator,
+    WorkerContext,
     WorkerDispatchRejected,
+    WorkerResult,
     worker_config,
 )
 from octop.infra.conversation.service import ConversationService
@@ -30,6 +33,25 @@ class MemorySettings:
 
     def get(self, key: str) -> str | None:
         return self.values.get(key)
+
+
+class _CompletionService:
+    def __init__(self) -> None:
+        self.task_updates: list[dict[str, object]] = []
+
+    def transition_run(self, **kwargs: object) -> None:
+        return None
+
+    def transition_task(self, **kwargs: object) -> None:
+        self.task_updates.append(kwargs)
+
+    def append_event(self, **kwargs: object) -> None:
+        return None
+
+
+class _CompletionPlanService:
+    def on_worker_terminal(self, **kwargs: object) -> None:
+        return None
 
 
 class RouterPhase3Test(unittest.IsolatedAsyncioTestCase):
@@ -108,8 +130,7 @@ class RouterPhase3Test(unittest.IsolatedAsyncioTestCase):
         await self.registry.get_or_create_by_key(
             session_key=ThreadRegistry.worker_key(
                 agent_id="agent-a",
-                task_id=str(queued["task"]["task_id"]),
-                run_id=str(queued["runs"][0]["run_id"]),
+                context_key=str(queued["task"]["task_id"]),
             ),
             agent_id="agent-a",
             user_id=1,
@@ -168,6 +189,51 @@ class RouterPhase3Test(unittest.IsolatedAsyncioTestCase):
         )
         self.assertLessEqual(config.max_attempts, 5)
         self.assertLessEqual(config.max_concurrency, 8)
+
+    async def test_worker_completion_preserves_follow_up_lineage(self) -> None:
+        service = _CompletionService()
+        orchestrator = TaskOrchestrator(
+            service=service,
+            thread_registry=None,
+            budget_gate=None,
+            plan_service=_CompletionPlanService(),
+            runner=None,
+            config=SimpleNamespace(),
+        )
+        context = WorkerContext(
+            task_id="follow-task",
+            run_id="run-1",
+            conversation_id="conversation-1",
+            agent_id="agent-b",
+            user_id=1,
+            trace_id="followup:follow-task",
+            objective="补充问题",
+            title="城市调研",
+            worker_agent_name="Agent B",
+            worker_context_key="source-task",
+            worker_thread_id="thread-worker",
+            attempt_no=1,
+            context_pack_id="",
+            capsule={
+                "kind": "follow_up",
+                "worker_context_id": "source-task",
+                "continued_from_task_id": "source-task",
+                "continuation_no": 2,
+            },
+        )
+
+        await orchestrator._succeed(
+            ctx=context,
+            result=WorkerResult(summary="结果", output="完整结果", usage={}),
+            budget_trace_id="budget-1",
+        )
+
+        capsule = service.task_updates[-1]["capsule"]
+        self.assertEqual(service.task_updates[-1]["status"], "done")
+        self.assertEqual(capsule["worker_context_id"], "source-task")
+        self.assertEqual(capsule["continuation_no"], 2)
+        self.assertEqual(capsule["continued_from_task_id"], "source-task")
+        self.assertEqual(capsule["result"], "结果")
 
 
 if __name__ == "__main__":

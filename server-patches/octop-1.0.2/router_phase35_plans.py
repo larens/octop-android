@@ -27,6 +27,7 @@ from octop.infra.conversation.service import (
     _json_value,
     _new_id,
     _now,
+    _resolve_worker_agent,
     _row_value,
 )
 from octop.infra.conversation.shadow import classify_shadow_route
@@ -172,7 +173,19 @@ class DispatchPlanService:
             raise _conversation_plan_error(
                 "Phase 3.5 only accepts read-only dispatch plans"
             )
-        normalized = self._normalize_items(items)
+        with self._db.connect() as conn:
+            conversation = conn.execute(
+                "SELECT conversation_id, agent_id, user_id FROM main_conversations "
+                "WHERE conversation_id = ?",
+                (conversation_id,),
+            ).fetchone()
+        if conversation is None:
+            raise NotFoundError("main conversation not found")
+        normalized = self._normalize_items(
+            items,
+            fallback_agent_id=str(_row_value(conversation, "agent_id")),
+            user_id=int(_row_value(conversation, "user_id")),
+        )
         config = self._budget_gate.config_for("worker")
         now = _now()
         plan_id = _new_id("plan")
@@ -190,12 +203,6 @@ class DispatchPlanService:
             version=1,
         )
         with self._db.transaction() as conn:
-            conversation = conn.execute(
-                "SELECT conversation_id FROM main_conversations WHERE conversation_id = ?",
-                (conversation_id,),
-            ).fetchone()
-            if conversation is None:
-                raise NotFoundError("main conversation not found")
             conn.execute(
                 "INSERT INTO dispatch_plans("
                 "plan_id, conversation_id, trace_id, context_pack_id, objective, status, "
@@ -225,9 +232,10 @@ class DispatchPlanService:
                 conn.execute(
                     "INSERT INTO dispatch_plan_items("
                     "plan_item_id, plan_id, item_key, title, objective, worker_role, "
-                    "depends_on_json, status, sort_order, estimated_tokens, token_limit, "
-                    "estimated_cost_micros, cost_limit_micros, created_at, updated_at"
-                    ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    "worker_agent_id, worker_agent_name, depends_on_json, status, sort_order, "
+                    "estimated_tokens, token_limit, estimated_cost_micros, cost_limit_micros, "
+                    "created_at, updated_at"
+                    ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     (
                         _new_id("planitem"),
                         plan_id,
@@ -235,6 +243,8 @@ class DispatchPlanService:
                         item["title"],
                         item["objective"],
                         item["worker_role"],
+                        item["worker_agent_id"],
+                        item["worker_agent_name"],
                         _json_text(item["depends_on"], default=[]),
                         "waiting_dependency" if item["depends_on"] else "ready",
                         index,
@@ -345,13 +355,15 @@ class DispatchPlanService:
                     "plan_id": plan_id,
                     "plan_item_id": str(_row_value(item, "plan_item_id")),
                     "worker_role": str(_row_value(item, "worker_role")),
+                    "worker_agent_id": _row_value(item, "worker_agent_id"),
+                    "worker_agent_name": _row_value(item, "worker_agent_name"),
                 }
                 conn.execute(
                     "INSERT INTO conversation_tasks("
                     "task_id, conversation_id, task_type, title, subject_key, objective, "
                     "status, requires_user, capsule_json, priority, created_at, updated_at, "
-                    "expires_at, plan_id, plan_item_id"
-                    ") VALUES (?, ?, 'read_only', ?, ?, ?, 'open', 0, ?, 0, ?, ?, NULL, ?, ?)",
+                    "expires_at, plan_id, plan_item_id, worker_agent_id, worker_agent_name"
+                    ") VALUES (?, ?, 'read_only', ?, ?, ?, 'open', 0, ?, 0, ?, ?, NULL, ?, ?, ?, ?)",
                     (
                         task_id,
                         conversation_id,
@@ -363,6 +375,8 @@ class DispatchPlanService:
                         now,
                         plan_id,
                         str(_row_value(item, "plan_item_id")),
+                        _row_value(item, "worker_agent_id"),
+                        _row_value(item, "worker_agent_name"),
                     ),
                 )
                 conn.execute(
@@ -424,6 +438,97 @@ class DispatchPlanService:
             )
             result = self._plan_payload(conn, updated)
         self._append_plan_event(result, "plan.rejected", "rejected")
+        return result
+
+    def assign_items(
+        self,
+        *,
+        agent_id: str,
+        user_id: int,
+        plan_id: str,
+        plan_version: int,
+        plan_hash: str,
+        assignments: Sequence[Mapping[str, Any]],
+    ) -> dict[str, Any]:
+        """Reassign pending plan items before the user approves the plan."""
+        if not assignments:
+            raise RouterPhase0Error("assign at least one plan item")
+        if len(assignments) > MAX_PLAN_ITEMS:
+            raise RouterPhase0Error("too many plan item assignments")
+        now = _now()
+        with self._db.transaction() as conn:
+            plan_row = self._load_plan_row(
+                conn,
+                plan_id=plan_id,
+                agent_id=agent_id,
+                user_id=int(user_id),
+            )
+            if str(_row_value(plan_row, "status")) != "awaiting_approval":
+                raise InvalidTransitionError("dispatch plan is not awaiting approval")
+            if int(_row_value(plan_row, "version")) != int(plan_version):
+                raise InvalidTransitionError("dispatch plan version no longer matches")
+            current_hash = self._hash_rows(conn, plan_row)
+            if current_hash != str(plan_hash) or current_hash != str(
+                _row_value(plan_row, "plan_hash")
+            ):
+                raise InvalidTransitionError(
+                    "dispatch plan changed; refresh before reassigning"
+                )
+            by_key = {
+                str(_row_value(row, "item_key")): row
+                for row in self._item_rows(conn, plan_id)
+            }
+            for raw in assignments:
+                item_key = str(raw.get("item_key") or "").strip()
+                item_row = by_key.get(item_key)
+                if item_row is None:
+                    raise RouterPhase0Error(f"unknown plan item: {item_key}")
+                if str(_row_value(item_row, "status")) not in {
+                    "waiting_dependency",
+                    "ready",
+                }:
+                    raise InvalidTransitionError(
+                        f"plan item {item_key} is no longer assignable"
+                    )
+                worker_agent_id, worker_agent_name = _resolve_worker_agent(
+                    conn,
+                    agent_id=str(raw.get("worker_agent_id") or ""),
+                    fallback_agent_id=agent_id,
+                    user_id=int(user_id),
+                )
+                conn.execute(
+                    "UPDATE dispatch_plan_items SET worker_agent_id = ?, "
+                    "worker_agent_name = ?, updated_at = ? WHERE plan_item_id = ?",
+                    (
+                        worker_agent_id,
+                        worker_agent_name,
+                        now,
+                        str(_row_value(item_row, "plan_item_id")),
+                    ),
+                )
+            conn.execute(
+                "UPDATE dispatch_plans SET version = ? WHERE plan_id = ?",
+                (int(plan_version) + 1, plan_id),
+            )
+            bumped = self._load_plan_row(
+                conn,
+                plan_id=plan_id,
+                agent_id=agent_id,
+                user_id=int(user_id),
+            )
+            new_hash = self._hash_rows(conn, bumped)
+            conn.execute(
+                "UPDATE dispatch_plans SET plan_hash = ? WHERE plan_id = ?",
+                (new_hash, plan_id),
+            )
+            updated = self._load_plan_row(
+                conn,
+                plan_id=plan_id,
+                agent_id=agent_id,
+                user_id=int(user_id),
+            )
+            result = self._plan_payload(conn, updated)
+        self._append_plan_event(result, "plan.reassigned", "awaiting_approval")
         return result
 
     def cancel_plan(
@@ -809,10 +914,12 @@ class DispatchPlanService:
                 raise InvalidTransitionError("Worker task is unavailable")
 
             config = self._budget_gate.config_for("worker")
-            if (
-                int(config.cost_per_1k_tokens_micros)
-                != int(request.get("cost_per_1k_tokens_micros") or -1)
-            ):
+            requested_rate = request.get("cost_per_1k_tokens_micros")
+            try:
+                request_rate = -1 if requested_rate is None else int(requested_rate)
+            except (TypeError, ValueError):
+                request_rate = -1
+            if int(config.cost_per_1k_tokens_micros) != request_rate:
                 raise InvalidTransitionError(
                     "Worker pricing changed; abandon and regenerate the plan"
                 )
@@ -973,6 +1080,9 @@ class DispatchPlanService:
     def _normalize_items(
         self,
         items: Sequence[Mapping[str, Any]],
+        *,
+        fallback_agent_id: str,
+        user_id: int,
     ) -> list[dict[str, Any]]:
         if not items:
             raise RouterPhase0Error("dispatch plan requires at least one Worker item")
@@ -1001,6 +1111,13 @@ class DispatchPlanService:
                 for dep in (raw.get("depends_on") or [])
                 if str(dep).strip()
             ]
+            with self._db.connect() as conn:
+                worker_agent_id, worker_agent_name = _resolve_worker_agent(
+                    conn,
+                    agent_id=str(raw.get("worker_agent_id") or ""),
+                    fallback_agent_id=fallback_agent_id,
+                    user_id=user_id,
+                )
             normalized.append(
                 {
                     "key": key,
@@ -1009,6 +1126,8 @@ class DispatchPlanService:
                     "worker_role": _clip(
                         str(raw.get("worker_role") or "research"), 80
                     ),
+                    "worker_agent_id": worker_agent_id,
+                    "worker_agent_name": worker_agent_name,
                     "depends_on": list(dict.fromkeys(depends_on)),
                     "estimated_tokens": token_limit,
                     "token_limit": token_limit,
@@ -1067,6 +1186,7 @@ class DispatchPlanService:
                         "title": item["title"],
                         "objective": item["objective"],
                         "worker_role": item["worker_role"],
+                        "worker_agent_id": item["worker_agent_id"],
                         "depends_on": list(item["depends_on"]),
                         "estimated_tokens": int(item["estimated_tokens"]),
                         "token_limit": int(item["token_limit"]),
@@ -1084,6 +1204,7 @@ class DispatchPlanService:
                 "title": str(_row_value(row, "title")),
                 "objective": str(_row_value(row, "objective")),
                 "worker_role": str(_row_value(row, "worker_role")),
+                "worker_agent_id": _row_value(row, "worker_agent_id"),
                 "depends_on": _json_value(
                     _row_value(row, "depends_on_json"), default=[]
                 ),
@@ -1632,6 +1753,8 @@ class DispatchPlanService:
                     "title": str(_row_value(row, "title")),
                     "objective": str(_row_value(row, "objective")),
                     "worker_role": str(_row_value(row, "worker_role")),
+                    "worker_agent_id": _row_value(row, "worker_agent_id"),
+                    "worker_agent_name": _row_value(row, "worker_agent_name"),
                     "depends_on": _json_value(
                         _row_value(row, "depends_on_json"), default=[]
                     ),

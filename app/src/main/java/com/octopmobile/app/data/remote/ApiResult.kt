@@ -25,6 +25,7 @@ sealed interface ApiError {
         val code: String?,
         val message: String?,
         val retryAfterSeconds: Long? = null,
+        val detailReason: String? = null,
     ) : ApiError
 
     /** 没走到服务端：DNS / 超时 / 连接被拒。 */

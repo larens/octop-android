@@ -41,6 +41,7 @@ class RouterPhase35Test(unittest.TestCase):
         self._ensure_phase35_attempt_column()
         UserRepo(self.db).create(username="alice", password_hash="h", role="user")
         AgentRepo(self.db).create(agent_id="agent-a", user_id=1, name="Agent A")
+        AgentRepo(self.db).create(agent_id="agent-b", user_id=1, name="Agent B")
         self.settings = MemorySettings(
             {
                 "router.budget.mode": "enforce",
@@ -141,6 +142,218 @@ class RouterPhase35Test(unittest.TestCase):
             ).fetchone()
         self.assertEqual(event["event_type"], "plan.proposed")
         self.assertEqual(event["plan_id"], plan["plan_id"])
+
+    def test_plan_binds_assignee_to_item_and_child_task(self) -> None:
+        plan = self.plans.create_plan(
+            conversation_id=str(self.main["conversation_id"]),
+            trace_id="trace-assignee",
+            context_pack_id=None,
+            objective="阅读城市 A 的天气预报",
+            items=[
+                {
+                    "key": "research",
+                    "title": "调研城市 A",
+                    "objective": "阅读城市 A 的天气预报",
+                    "worker_role": "research",
+                    "worker_agent_id": "agent-b",
+                    "depends_on": [],
+                    "token_limit": 32_000,
+                }
+            ],
+        )
+        item = plan["items"][0]
+        self.assertEqual(item["worker_agent_id"], "agent-b")
+        self.assertEqual(item["worker_agent_name"], "Agent B")
+
+        approved = self.plans.approve_plan(
+            agent_id="agent-a",
+            user_id=1,
+            plan_id=plan["plan_id"],
+            plan_version=plan["version"],
+            plan_hash=plan["plan_hash"],
+        )
+        task = self.conversation.get_task(
+            agent_id="agent-a",
+            user_id=1,
+            task_id=str(approved["items"][0]["child_task_id"]),
+        )
+        self.assertEqual(task["worker_agent_id"], "agent-b")
+        self.assertEqual(task["worker_agent_name"], "Agent B")
+
+    def test_plan_rejects_unknown_assignee(self) -> None:
+        with self.assertRaises(RouterPhase0Error):
+            self.plans.create_plan(
+                conversation_id=str(self.main["conversation_id"]),
+                trace_id="trace-missing-agent",
+                context_pack_id=None,
+                objective="阅读城市 A 的天气预报",
+                items=[
+                    {
+                        "key": "research",
+                        "title": "调研城市 A",
+                        "objective": "阅读城市 A 的天气预报",
+                        "worker_role": "research",
+                        "worker_agent_id": "agent-missing",
+                        "depends_on": [],
+                        "token_limit": 32_000,
+                    }
+                ],
+            )
+
+    def test_auto_plan_uses_configured_expert_roles(self) -> None:
+        items = auto_plan_items(
+            objective="分别调研城市 A 和城市 B，然后汇总",
+            title="城市调研",
+            suggested_task=None,
+            default_token_limit=32_000,
+            expert_map={"research": "agent-b", "analysis": "agent-a"},
+        )
+        self.assertEqual(items[0]["worker_role"], "research")
+        self.assertEqual(items[0]["worker_agent_id"], "agent-b")
+        self.assertEqual(items[1]["worker_role"], "analysis")
+        self.assertEqual(items[1]["worker_agent_id"], "agent-a")
+
+    def test_plan_can_be_reassigned_before_approval(self) -> None:
+        plan = self._plan()
+        self.assertEqual(plan["items"][0]["worker_agent_id"], "agent-a")
+
+        reassigned = self.plans.assign_items(
+            agent_id="agent-a",
+            user_id=1,
+            plan_id=plan["plan_id"],
+            plan_version=plan["version"],
+            plan_hash=plan["plan_hash"],
+            assignments=[{"item_key": "city_a", "worker_agent_id": "agent-b"}],
+        )
+
+        self.assertEqual(reassigned["version"], plan["version"] + 1)
+        self.assertNotEqual(reassigned["plan_hash"], plan["plan_hash"])
+        self.assertEqual(reassigned["items"][0]["worker_agent_id"], "agent-b")
+        self.assertEqual(reassigned["items"][0]["worker_agent_name"], "Agent B")
+        self.assertEqual(reassigned["items"][1]["worker_agent_id"], "agent-a")
+
+        with self.assertRaises(InvalidTransitionError):
+            self.plans.approve_plan(
+                agent_id="agent-a",
+                user_id=1,
+                plan_id=plan["plan_id"],
+                plan_version=plan["version"],
+                plan_hash=plan["plan_hash"],
+            )
+        approved = self.plans.approve_plan(
+            agent_id="agent-a",
+            user_id=1,
+            plan_id=reassigned["plan_id"],
+            plan_version=reassigned["version"],
+            plan_hash=reassigned["plan_hash"],
+        )
+        task = self.conversation.get_task(
+            agent_id="agent-a",
+            user_id=1,
+            task_id=str(approved["items"][0]["child_task_id"]),
+        )
+        self.assertEqual(task["worker_agent_id"], "agent-b")
+
+    def test_reassign_rejects_unknown_item_and_assignee(self) -> None:
+        plan = self._plan()
+
+        with self.assertRaises(RouterPhase0Error):
+            self.plans.assign_items(
+                agent_id="agent-a",
+                user_id=1,
+                plan_id=plan["plan_id"],
+                plan_version=plan["version"],
+                plan_hash=plan["plan_hash"],
+                assignments=[{"item_key": "missing", "worker_agent_id": "agent-b"}],
+            )
+        with self.assertRaises(RouterPhase0Error):
+            self.plans.assign_items(
+                agent_id="agent-a",
+                user_id=1,
+                plan_id=plan["plan_id"],
+                plan_version=plan["version"],
+                plan_hash=plan["plan_hash"],
+                assignments=[{"item_key": "city_a", "worker_agent_id": "agent-missing"}],
+            )
+
+    def test_follow_up_keeps_worker_context_and_assignee(self) -> None:
+        queued = self.conversation.create_read_only_task(
+            conversation_id=str(self.main["conversation_id"]),
+            title="城市调研",
+            subject_key="follow-source",
+            objective="阅读城市 A 的天气预报",
+            capsule={"trace_id": "trace-follow"},
+            worker_agent_id="agent-b",
+        )
+        source_id = str(queued["task"]["task_id"])
+        self.conversation.transition_task(task_id=source_id, status="done")
+
+        follow = self.conversation.continue_read_only_task(
+            agent_id="agent-a",
+            user_id=1,
+            task_id=source_id,
+            message="再补充降雨概率",
+        )
+        task = follow
+
+        self.assertNotEqual(task["task_id"], source_id)
+        self.assertEqual(task["status"], "in_progress")
+        self.assertEqual(task["objective"], "再补充降雨概率")
+        self.assertEqual(task["worker_agent_id"], "agent-b")
+        self.assertEqual(task["capsule"]["worker_context_id"], source_id)
+        self.assertEqual(task["capsule"]["continued_from_task_id"], source_id)
+        self.assertEqual(task["capsule"]["continuation_no"], 1)
+        self.assertEqual(task["runs"][0]["status"], "queued")
+
+        self.conversation.transition_task(task_id=str(task["task_id"]), status="done")
+        second = self.conversation.continue_read_only_task(
+            agent_id="agent-a",
+            user_id=1,
+            task_id=str(task["task_id"]),
+            message="再对比一下两个城市",
+        )
+        self.assertEqual(second["capsule"]["worker_context_id"], source_id)
+        self.assertEqual(second["capsule"]["continuation_no"], 2)
+
+    def test_follow_up_requires_a_finished_task_and_honours_limit(self) -> None:
+        queued = self.conversation.create_read_only_task(
+            conversation_id=str(self.main["conversation_id"]),
+            title="城市调研",
+            subject_key="follow-limit",
+            objective="阅读城市 A 的天气预报",
+            capsule={"trace_id": "trace-limit"},
+            worker_agent_id="agent-b",
+        )
+        source_id = str(queued["task"]["task_id"])
+
+        with self.assertRaises(InvalidTransitionError):
+            self.conversation.continue_read_only_task(
+                agent_id="agent-a",
+                user_id=1,
+                task_id=source_id,
+                message="还在跑的时候追问",
+            )
+
+        self.conversation.transition_task(task_id=source_id, status="done")
+        first = self.conversation.continue_read_only_task(
+            agent_id="agent-a",
+            user_id=1,
+            task_id=source_id,
+            message="第一次追问",
+            max_continuations=1,
+        )
+        self.conversation.transition_task(
+            task_id=str(first["task_id"]),
+            status="done",
+        )
+        with self.assertRaises(RouterPhase0Error):
+            self.conversation.continue_read_only_task(
+                agent_id="agent-a",
+                user_id=1,
+                task_id=str(first["task_id"]),
+                message="超过上限",
+                max_continuations=1,
+            )
 
     def test_approval_requires_exact_hash_and_reserves_budget_once(self) -> None:
         plan = self._plan()
@@ -706,6 +919,50 @@ class RouterPhase35Test(unittest.TestCase):
         self.assertTrue(all(row["reserved_tokens"] == 0 for row in final_ledgers))
         self.assertTrue(all(row["spent_tokens"] == 130_000 for row in final_ledgers))
 
+    def test_budget_continue_accepts_zero_pricing(self) -> None:
+        self.settings.values["router.budget.cost_per_1k_tokens_micros"] = "0"
+        plan = self._plan()
+        approved = self.plans.approve_plan(
+            agent_id="agent-a",
+            user_id=1,
+            plan_id=plan["plan_id"],
+            plan_version=plan["version"],
+            plan_hash=plan["plan_hash"],
+        )
+        task_id = str(approved["items"][0]["child_task_id"])
+        run_id = self._first_run(task_id)
+        self.conversation.transition_run(run_id=run_id, status="running")
+        self.conversation.record_usage(
+            agent_id="agent-a",
+            user_id=1,
+            model="deepseek-v4-flash",
+            input_tokens=80_000,
+            output_tokens=48_000,
+            total_tokens=128_000,
+            source="worker",
+            trace_id="trace-plan",
+            task_id=task_id,
+            run_id=run_id,
+        )
+        paused = self.plans.on_worker_budget_exhausted(
+            task_id=task_id,
+            run_id=run_id,
+            message="Worker reached its token budget",
+        )
+        assert paused is not None
+        request = paused["budget_request"]
+        self.assertEqual(request["cost_per_1k_tokens_micros"], 0)
+        extended = self.plans.extend_budget(
+            agent_id="agent-a",
+            user_id=1,
+            plan_id=plan["plan_id"],
+            plan_version=paused["version"],
+            plan_hash=paused["plan_hash"],
+            budget_request_id=str(request["request_id"]),
+        )
+        self.assertEqual(extended["budget_extension_count"], 1)
+        self.assertEqual(extended["items"][0]["status"], "queued")
+
     def test_budget_request_can_be_abandoned_and_cannot_extend_twice(self) -> None:
         plan = self._plan()
         approved = self.plans.approve_plan(
@@ -834,6 +1091,24 @@ class RouterPhase35Test(unittest.TestCase):
         self.assertEqual(
             sum(int(item["token_limit"]) for item in items),
             128_000,
+        )
+
+    def test_plan_conflicts_keep_an_actionable_reason(self) -> None:
+        from router_phase0_api import _plan_error
+
+        error = _plan_error(
+            InvalidTransitionError(
+                "Worker pricing changed; abandon and regenerate the plan"
+            )
+        )
+        self.assertEqual(error.status, 409)
+        self.assertEqual(
+            error.details["reason"],
+            "Worker pricing changed; abandon and regenerate the plan",
+        )
+        self.assertEqual(
+            error.to_envelope(locale="zh")["error"]["details"]["reason"],
+            "Worker pricing changed; abandon and regenerate the plan",
         )
 
     def _first_run(self, task_id: str) -> str:

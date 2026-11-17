@@ -48,6 +48,7 @@ MAX_TEXT_CHARS = 20_000
 MAX_JSON_CHARS = 256_000
 DEFAULT_MAX_ATTEMPTS = 3
 HARD_MAX_ATTEMPTS = 5
+MAX_TASK_CONTINUATIONS = 10
 
 
 class RouterPhase0Error(ValueError):
@@ -153,10 +154,44 @@ def _task_payload(row: Any, *, runs: Sequence[dict[str, Any]] | None = None) -> 
         "accepted_at": _row_value(row, "accepted_at"),
         "acceptance_source": _row_value(row, "acceptance_source"),
         "outcome_ref": _row_value(row, "outcome_ref"),
+        "worker_agent_id": _row_value(row, "worker_agent_id"),
+        "worker_agent_name": _row_value(row, "worker_agent_name"),
     }
     if runs is not None:
         payload["runs"] = list(runs)
     return payload
+
+
+def _resolve_worker_agent(
+    conn: Any,
+    *,
+    agent_id: str | None,
+    fallback_agent_id: str,
+    user_id: int,
+) -> tuple[str, str | None]:
+    """Resolve the expert that will execute a task.
+
+    The fallback keeps existing single-agent conversations working: when no
+    expert is assigned, the task runs under the conversation agent exactly as
+    before. A caller cannot route work to another user's private expert.
+    """
+    requested = str(agent_id or "").strip() or str(fallback_agent_id)
+    row = conn.execute(
+        "SELECT agent_id, name, user_id, is_shared, kind FROM agents WHERE agent_id = ?",
+        (requested,),
+    ).fetchone()
+    if row is None:
+        raise RouterPhase0Error(f"worker agent not found: {requested}")
+    owner_id = _row_value(row, "user_id")
+    if (
+        owner_id is not None
+        and int(owner_id) != int(user_id)
+        and not bool(_int_value(row, "is_shared"))
+    ):
+        raise RouterPhase0Error("worker agent is not available to this user")
+    if str(_row_value(row, "kind") or "expert") == "team":
+        raise RouterPhase0Error("a team host cannot be used as a worker")
+    return str(_row_value(row, "agent_id")), str(_row_value(row, "name") or "")
 
 
 def _run_payload(row: Any) -> dict[str, Any]:
@@ -360,6 +395,7 @@ class ConversationService:
         subject_key: str,
         objective: str,
         capsule: Any,
+        worker_agent_id: str | None = None,
         max_attempts: int = DEFAULT_MAX_ATTEMPTS,
         priority: int = 0,
         available_at: int = 0,
@@ -374,11 +410,18 @@ class ConversationService:
         clipped_subject = _clip(subject_key, 500)
         with self._db.transaction() as conn:
             conversation = conn.execute(
-                "SELECT conversation_id FROM main_conversations WHERE conversation_id = ?",
+                "SELECT conversation_id, agent_id, user_id FROM main_conversations "
+                "WHERE conversation_id = ?",
                 (conversation_id,),
             ).fetchone()
             if conversation is None:
                 raise NotFoundError("main conversation not found")
+            assigned_agent_id, assigned_agent_name = _resolve_worker_agent(
+                conn,
+                agent_id=worker_agent_id,
+                fallback_agent_id=str(_row_value(conversation, "agent_id")),
+                user_id=int(_row_value(conversation, "user_id")),
+            )
             existing = conn.execute(
                 "SELECT * FROM conversation_tasks "
                 "WHERE conversation_id = ? AND task_type = 'read_only' AND subject_key = ? "
@@ -399,8 +442,9 @@ class ConversationService:
             conn.execute(
                 "INSERT INTO conversation_tasks("
                 "task_id, conversation_id, task_type, title, subject_key, objective, status, "
-                "requires_user, capsule_json, priority, created_at, updated_at, expires_at"
-                ") VALUES (?, ?, 'read_only', ?, ?, ?, 'open', 0, ?, ?, ?, ?, NULL)",
+                "requires_user, capsule_json, priority, created_at, updated_at, expires_at, "
+                "worker_agent_id, worker_agent_name"
+                ") VALUES (?, ?, 'read_only', ?, ?, ?, 'open', 0, ?, ?, ?, ?, NULL, ?, ?)",
                 (
                     task_id,
                     conversation_id,
@@ -411,6 +455,8 @@ class ConversationService:
                     int(priority),
                     now,
                     now,
+                    assigned_agent_id,
+                    assigned_agent_name,
                 ),
             )
             conn.execute(
@@ -559,6 +605,119 @@ class ConversationService:
             },
         )
         return _task_payload(updated)
+
+    def continue_read_only_task(
+        self,
+        *,
+        agent_id: str,
+        user_id: int,
+        task_id: str,
+        message: str,
+        max_continuations: int = MAX_TASK_CONTINUATIONS,
+    ) -> dict[str, Any]:
+        """Queue a follow-up with the same Worker and its existing context.
+
+        A follow-up becomes a new read-only task so it gets a fresh attempt
+        budget, while ``worker_context_id`` points both tasks at one hidden
+        Worker Thread. The Worker therefore sees the earlier result and the
+        new question in the same context.
+        """
+        text = _clip(str(message or "").strip(), 4_000)
+        if not text:
+            raise RouterPhase0Error("follow-up message is required")
+        if max_continuations < 1:
+            raise RouterPhase0Error("max_continuations must be positive")
+        now = _now()
+        with self._db.transaction() as conn:
+            row = conn.execute(
+                "SELECT t.*, c.agent_id AS conversation_agent_id, "
+                "c.user_id AS conversation_user_id "
+                "FROM conversation_tasks t "
+                "JOIN main_conversations c ON c.conversation_id = t.conversation_id "
+                "WHERE t.task_id = ? AND c.agent_id = ? AND c.user_id = ?",
+                (task_id, agent_id, int(user_id)),
+            ).fetchone()
+            if row is None:
+                raise NotFoundError("task not found")
+            if str(_row_value(row, "task_type")) != "read_only":
+                raise RouterPhase0Error("only read-only tasks can be followed up")
+            status = str(_row_value(row, "status"))
+            if status not in {"done", "failed"}:
+                raise InvalidTransitionError(f"task cannot be continued from {status}")
+            capsule = _json_value(_row_value(row, "capsule_json", "{}"), default={})
+            if not isinstance(capsule, dict):
+                capsule = {}
+            context_key = str(capsule.get("worker_context_id") or task_id)
+            continuation_no = int(capsule.get("continuation_no") or 0) + 1
+            if continuation_no > int(max_continuations):
+                raise RouterPhase0Error("task reached the follow-up limit")
+            try:
+                assigned_agent_id, assigned_agent_name = _resolve_worker_agent(
+                    conn,
+                    agent_id=_row_value(row, "worker_agent_id"),
+                    fallback_agent_id=str(_row_value(row, "conversation_agent_id")),
+                    user_id=int(user_id),
+                )
+            except RouterPhase0Error:
+                assigned_agent_id, assigned_agent_name = _resolve_worker_agent(
+                    conn,
+                    agent_id=None,
+                    fallback_agent_id=str(_row_value(row, "conversation_agent_id")),
+                    user_id=int(user_id),
+                )
+            conversation_id = str(_row_value(row, "conversation_id"))
+            follow_task_id = _new_id("task")
+            trace_id = f"followup:{follow_task_id}"
+            follow_capsule = {
+                "kind": "follow_up",
+                "read_only": True,
+                "worker_context_id": context_key,
+                "continued_from_task_id": task_id,
+                "continuation_no": continuation_no,
+                "trace_id": trace_id,
+            }
+            origin_plan_id = _row_value(row, "plan_id")
+            origin_plan_item_id = _row_value(row, "plan_item_id")
+            if origin_plan_id:
+                follow_capsule["origin_plan_id"] = origin_plan_id
+            if origin_plan_item_id:
+                follow_capsule["origin_plan_item_id"] = origin_plan_item_id
+            conn.execute(
+                "INSERT INTO conversation_tasks("
+                "task_id, conversation_id, task_type, title, subject_key, objective, "
+                "status, requires_user, capsule_json, priority, created_at, updated_at, "
+                "expires_at, worker_agent_id, worker_agent_name"
+                ") VALUES (?, ?, 'read_only', ?, ?, ?, 'open', 0, ?, 0, ?, ?, NULL, ?, ?)",
+                (
+                    follow_task_id,
+                    conversation_id,
+                    _clip(str(_row_value(row, "title")), 200),
+                    f"followup:{context_key}:{continuation_no}",
+                    text,
+                    _json_text(follow_capsule, default={}),
+                    now,
+                    now,
+                    assigned_agent_id,
+                    assigned_agent_name,
+                ),
+            )
+        self.create_run(task_id=follow_task_id)
+        self.append_event(
+            conversation_id=conversation_id,
+            trace_id=trace_id,
+            task_id=follow_task_id,
+            event_type="task.continued",
+            status="open",
+            summary=_clip(text, 500),
+            payload={
+                "from_task_id": task_id,
+                "message": text,
+                "continuation_no": continuation_no,
+                "worker_agent_id": assigned_agent_id,
+                "worker_agent_name": assigned_agent_name,
+            },
+        )
+        return self.get_task(agent_id=agent_id, user_id=user_id, task_id=follow_task_id)
 
     def create_run(
         self,
@@ -1247,7 +1406,10 @@ class ConversationService:
             "scope_type, scope_id, period_start, period_end, reserved_tokens, spent_tokens, "
             "reserved_cost_micros, spent_cost_micros, limit_tokens, limit_cost_micros, updated_at"
             ") VALUES (?, ?, ?, ?, 0, 0, 0, 0, ?, ?, ?) "
-            "ON CONFLICT(scope_type, scope_id, period_start, period_end) DO NOTHING",
+            "ON CONFLICT(scope_type, scope_id, period_start, period_end) DO UPDATE SET "
+            "limit_tokens = excluded.limit_tokens, "
+            "limit_cost_micros = excluded.limit_cost_micros, "
+            "updated_at = excluded.updated_at",
             (
                 scope_type,
                 scope_id,

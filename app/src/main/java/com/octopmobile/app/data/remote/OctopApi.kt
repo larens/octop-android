@@ -4,6 +4,7 @@ import com.octopmobile.app.data.remote.dto.AgentDto
 import com.octopmobile.app.data.remote.dto.ApiErrorEnvelope
 import com.octopmobile.app.data.remote.dto.ArtifactShareBody
 import com.octopmobile.app.data.remote.dto.ArtifactShareDto
+import com.octopmobile.app.data.remote.dto.AssignDispatchPlanBody
 import com.octopmobile.app.data.remote.dto.ConversationMode
 import com.octopmobile.app.data.remote.dto.CreateThreadResponse
 import com.octopmobile.app.data.remote.dto.CronJobCreateBody
@@ -27,10 +28,12 @@ import com.octopmobile.app.data.remote.dto.InterestMonitorPatchBody
 import com.octopmobile.app.data.remote.dto.InterestMonitorRunResponse
 import com.octopmobile.app.data.remote.dto.MobileIngestBatchBody
 import com.octopmobile.app.data.remote.dto.MobileIngestBatchResponse
+import com.octopmobile.app.data.remote.dto.PlanAssignmentBody
 import com.octopmobile.app.data.remote.dto.MainConversationDto
 import com.octopmobile.app.data.remote.dto.ResolvedModelDto
 import com.octopmobile.app.data.remote.dto.RenameThreadBody
 import com.octopmobile.app.data.remote.dto.ThreadDto
+import com.octopmobile.app.data.remote.dto.TaskContinueBody
 import com.octopmobile.app.data.remote.dto.TodayCardDto
 import com.octopmobile.app.data.remote.dto.TodayCardActionBody
 import com.octopmobile.app.data.remote.dto.TodayCardPatchBody
@@ -228,6 +231,23 @@ class OctopApi(
             deserializer = ConversationTaskDto.serializer(),
         )
 
+    /** 追问：交给同一个 Worker，并复用它的隐藏线程上下文。 */
+    suspend fun continueConversationTask(
+        agentId: String,
+        taskId: String,
+        message: String,
+    ): ApiResult<ConversationTaskDto> =
+        execute(
+            request = Request.Builder()
+                .url(url(API, AGENTS, agentId, TASKS, taskId, CONTINUE))
+                .post(
+                    json.encodeToString(TaskContinueBody.serializer(), TaskContinueBody(message))
+                        .toRequestBody(JSON_MEDIA_TYPE),
+                )
+                .build(),
+            deserializer = ConversationTaskDto.serializer(),
+        )
+
     suspend fun dispatchPlan(
         agentId: String,
         planId: String,
@@ -285,6 +305,27 @@ class OctopApi(
             request = Request.Builder()
                 .url(url(API, AGENTS, agentId, DISPATCH_PLANS, planId, CANCEL))
                 .post(EMPTY_BODY)
+                .build(),
+            deserializer = DispatchPlanDto.serializer(),
+        )
+
+    /** 批准前改派：版本 + 哈希必须匹配，服务端会刷新版本和哈希。 */
+    suspend fun assignDispatchPlan(
+        agentId: String,
+        planId: String,
+        planVersion: Int,
+        planHash: String,
+        assignments: List<PlanAssignmentBody>,
+    ): ApiResult<DispatchPlanDto> =
+        execute(
+            request = Request.Builder()
+                .url(url(API, AGENTS, agentId, DISPATCH_PLANS, planId, ASSIGN))
+                .post(
+                    json.encodeToString(
+                        AssignDispatchPlanBody.serializer(),
+                        AssignDispatchPlanBody(planVersion, planHash, assignments),
+                    ).toRequestBody(JSON_MEDIA_TYPE),
+                )
                 .build(),
             deserializer = DispatchPlanDto.serializer(),
         )
@@ -983,6 +1024,7 @@ class OctopApi(
             code = envelope?.error?.code,
             message = envelope?.error?.message,
             retryAfterSeconds = details?.get("retry_after_seconds").asStringOrNull()?.toLongOrNull(),
+            detailReason = details?.get("reason").asStringOrNull(),
         )
     }
 
@@ -1016,6 +1058,7 @@ class OctopApi(
         private const val APPROVALS = "approvals"
         private const val DISPATCH_PLANS = "dispatch-plans"
         private const val APPROVE = "approve"
+        private const val ASSIGN = "assign"
         private const val REJECT = "reject"
         private const val CANCEL = "cancel"
         private const val BUDGET = "budget"

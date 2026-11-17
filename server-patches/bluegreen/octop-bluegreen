@@ -218,6 +218,7 @@ apply_patch_pack() {
     "$release/venv/bin/python" install_router_phase3.py
     "$release/venv/bin/python" install_router_phase35.py
     "$release/venv/bin/python" install_router_phase4.py
+    "$release/venv/bin/python" install_butler_dispatch.py
     "$release/venv/bin/python" install_conversation_efficiency.py
     "$release/venv/bin/python" install_feishu_group_monitor.py
     "$release/venv/bin/python" install_usage_today_cards.py
@@ -242,6 +243,8 @@ apply_patch_pack() {
     "$site/octop/infra/conversation/retention.py" \
     "$site/octop/infra/conversation/orchestrator.py" \
     "$site/octop/infra/conversation/dispatch_plans.py" \
+    "$site/octop/infra/agents/butler.py" \
+    "$site/octop/infra/agents/middleware/butler_tools.py" \
     "$site/octop/infra/conversation/write_actions.py" \
     "$site/octop/api/routers/interest_monitors.py" \
     "$site/octop/api/routers/artifact_shares.py" \
@@ -292,6 +295,7 @@ run_patch_tests() {
     "$release/venv/bin/python" test_router_phase3.py
     "$release/venv/bin/python" test_router_phase35.py
     "$release/venv/bin/python" test_router_phase4.py
+    "$release/venv/bin/python" test_butler_policy.py
     "$release/venv/bin/python" test_conversation_efficiency.py
     "$release/venv/bin/python" test_feed_and_router_governance.py
     "$release/venv/bin/python" test_artifact_shares.py

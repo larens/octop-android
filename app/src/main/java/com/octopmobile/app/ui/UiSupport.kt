@@ -30,6 +30,16 @@ fun ApiError.asText(): String = when (this) {
         ApiErrorCode.LOGIN_LOCKED -> stringResource(R.string.err_login_locked, retryAfterSeconds ?: 0L)
         ApiErrorCode.SETUP_REQUIRED -> stringResource(R.string.err_setup_required)
         ApiErrorCode.FORBIDDEN -> stringResource(R.string.err_session_expired)
+        ApiErrorCode.INTERNAL_ERROR -> {
+            val reason = detailReason?.takeIf { it.isNotBlank() }
+            when {
+                reason == null -> message?.takeIf { it.isNotBlank() }
+                    ?: stringResource(R.string.err_http_status, status)
+                reason.startsWith("Worker pricing changed") ->
+                    stringResource(R.string.err_worker_pricing_changed)
+                else -> reason
+            }
+        }
         else -> message?.takeIf { it.isNotBlank() }
             ?: stringResource(R.string.err_http_status, status)
     }

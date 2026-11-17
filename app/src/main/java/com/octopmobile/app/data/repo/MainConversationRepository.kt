@@ -13,6 +13,7 @@ import com.octopmobile.app.data.remote.dto.ConversationTaskActionBody
 import com.octopmobile.app.data.remote.dto.ConversationTraceDto
 import com.octopmobile.app.data.remote.dto.DispatchPlanDto
 import com.octopmobile.app.data.remote.dto.MainConversationDto
+import com.octopmobile.app.data.remote.dto.PlanAssignmentBody
 import com.octopmobile.app.data.remote.dto.TaskApprovalDto
 import com.octopmobile.app.data.remote.dto.TaskApprovalDecisionDto
 import kotlinx.coroutines.flow.Flow
@@ -135,6 +136,20 @@ class MainConversationRepository(
             }
         }
 
+    /** 追问同一个 Worker：服务端会新建任务并复用隐藏线程上下文。 */
+    suspend fun continueTask(
+        taskId: String,
+        message: String,
+    ): ApiResult<ConversationTaskEntity> =
+        when (val result = api.continueConversationTask(agentId, taskId, message)) {
+            is ApiResult.Failure -> result
+            is ApiResult.Ok -> {
+                val entity = result.value.toEntity()
+                taskDao.upsertAll(listOf(entity))
+                ApiResult.Ok(entity)
+            }
+        }
+
     suspend fun refreshAll(): ApiResult<Unit> {
         when (val conversation = refreshConversation()) {
             is ApiResult.Failure -> return conversation
@@ -169,6 +184,21 @@ class MainConversationRepository(
         planHash: String,
     ): ApiResult<DispatchPlanDto> =
         api.rejectDispatchPlan(agentId, planId, planVersion, planHash)
+
+    suspend fun assignDispatchPlanItem(
+        planId: String,
+        planVersion: Int,
+        planHash: String,
+        itemKey: String,
+        workerAgentId: String,
+    ): ApiResult<DispatchPlanDto> =
+        api.assignDispatchPlan(
+            agentId = agentId,
+            planId = planId,
+            planVersion = planVersion,
+            planHash = planHash,
+            assignments = listOf(PlanAssignmentBody(itemKey, workerAgentId)),
+        )
 
     suspend fun cancelDispatchPlan(planId: String): ApiResult<DispatchPlanDto> =
         api.cancelDispatchPlan(agentId, planId)
@@ -227,6 +257,8 @@ class MainConversationRepository(
         createdAt = createdAt.toMillis(),
         updatedAt = updatedAt.toMillis(),
         expiresAt = expiresAt?.toMillis(),
+        workerAgentId = workerAgentId,
+        workerAgentName = workerAgentName,
     )
 
     private fun ConversationEventDto.toEntity() = ConversationEventEntity(

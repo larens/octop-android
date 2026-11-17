@@ -35,7 +35,7 @@ import androidx.room.withTransaction
         ConversationTaskEntity::class,
         ConversationEventEntity::class,
     ],
-    version = 11,
+    version = 12,
     exportSchema = true,
 )
 abstract class OctopDatabase : RoomDatabase() {
@@ -386,6 +386,13 @@ abstract class OctopDatabase : RoomDatabase() {
             }
         }
 
+        val MIGRATION_11_12 = object : Migration(11, 12) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE `conversation_tasks` ADD COLUMN `workerAgentId` TEXT")
+                db.execSQL("ALTER TABLE `conversation_tasks` ADD COLUMN `workerAgentName` TEXT")
+            }
+        }
+
         fun get(context: Context): OctopDatabase =
             instance ?: synchronized(this) {
                 instance ?: Room.databaseBuilder(
@@ -403,6 +410,7 @@ abstract class OctopDatabase : RoomDatabase() {
                     MIGRATION_8_9,
                     MIGRATION_9_10,
                     MIGRATION_10_11,
+                    MIGRATION_11_12,
                 )
                     .build()
                     .also { instance = it }

@@ -180,6 +180,46 @@ class ChatScreenUiRulesTest {
     }
 
     @Test
+    fun `worker assignee is projected onto active and completed cards`() {
+        val now = 2_000_000L
+        val active = task(
+            id = "assigned-1",
+            type = "read_only",
+            status = "in_progress",
+            workerAgentName = "Research Expert",
+        )
+        val done = task(
+            id = "assigned-2",
+            type = "read_only",
+            status = "done",
+            updatedAt = now - 1_000,
+            workerAgentName = "Data Expert",
+        )
+        val events = listOf(
+            event(taskId = "assigned-1", seq = 1, type = "worker.started"),
+            event(
+                taskId = "assigned-2",
+                seq = 2,
+                type = "worker.completed",
+                summary = "Done",
+            ),
+        )
+
+        assertEquals(
+            "Research Expert",
+            projectActiveRouterTasks(listOf(active), events).single().assignee,
+        )
+        assertEquals(
+            "Data Expert",
+            projectLatestRouterTaskResult(
+                tasks = listOf(done),
+                events = events,
+                nowMillis = now,
+            )?.assignee,
+        )
+    }
+
+    @Test
     fun `dispatch plan children are only rendered by the plan card`() {
         val now = 2_000_000L
         val planPayload = """
@@ -315,6 +355,53 @@ class ChatScreenUiRulesTest {
     }
 
     @Test
+    fun `pending dispatch plan wins over progress from an older plan`() {
+        val awaiting = """
+            {
+              "plan_id":"plan-awaiting",
+              "conversation_id":"conversation-1",
+              "trace_id":"trace-awaiting",
+              "objective":"Summarize the router",
+              "status":"awaiting_approval",
+              "version":1,
+              "plan_hash":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+              "estimated_tokens":8000,
+              "hard_token_limit":8000,
+              "max_concurrency":2,
+              "budget_extension_count":0,
+              "budget_extended_tokens":0,
+              "created_at":100,
+              "proposed_at":100,
+              "items":[]
+            }
+        """.trimIndent()
+        val executing = awaiting
+            .replace("plan-awaiting", "plan-running")
+            .replace("\"status\":\"awaiting_approval\"", "\"status\":\"executing\"")
+
+        val plan = projectDispatchPlan(
+            events = listOf(
+                event(
+                    taskId = null,
+                    seq = 10,
+                    type = "plan.proposed",
+                    payloadJson = awaiting,
+                ),
+                event(
+                    taskId = null,
+                    seq = 12,
+                    type = "plan.progress",
+                    payloadJson = executing,
+                ),
+            ),
+            nowSeconds = 101,
+        )
+
+        assertEquals("plan-awaiting", plan?.planId)
+        assertEquals("awaiting_approval", plan?.status)
+    }
+
+    @Test
     fun `parallel task approvals stay visible until each task is decided`() {
         val first = approvalPayload(
             approvalId = "approval-1",
@@ -409,6 +496,7 @@ class ChatScreenUiRulesTest {
         type: String,
         status: String,
         updatedAt: Long = 2,
+        workerAgentName: String? = null,
     ) = ConversationTaskEntity(
         taskId = id,
         conversationId = "conversation-1",
@@ -423,6 +511,8 @@ class ChatScreenUiRulesTest {
         createdAt = 1,
         updatedAt = updatedAt,
         expiresAt = null,
+        workerAgentId = null,
+        workerAgentName = workerAgentName,
     )
 
     private fun event(
