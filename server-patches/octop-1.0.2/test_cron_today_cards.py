@@ -857,6 +857,65 @@ class IndustrySignalSummaryTest(unittest.TestCase):
             [item.url for item in items],
         )
 
+    def test_news_evidence_uses_article_heading_and_merges_same_story(self) -> None:
+        text = """
+## 头条
+
+### 腾讯混元 Hy4 flash 发布：224B 总参 / 12B 激活
+
+正文内容。
+
+信息源：
+1. IT之家 https://www.ithome.com/1/027/630.htm
+2. 凤凰网科技 https://original.ifeng.com/c/8y6BKoihPaL
+3. 快科技（搜狐转载）https://m.sohu.com/a/1102212153_258768
+
+### 谷歌为 AdMob 推出 Ask AdMob 对话助手与智能体工具
+
+正文内容。
+
+🔗 IT之家 https://www.ithome.com/1/028/029.htm ＋ Google 官方博客 https://blog.google/products/publisher-connections/new-google-admob-tools
+"""
+
+        items = cron_today_cards._web_evidence(text, occurred_at=1)
+
+        self.assertEqual(
+            [
+                "腾讯混元 Hy4 flash 发布：224B 总参 / 12B 激活",
+                "谷歌为 AdMob 推出 Ask AdMob 对话助手与智能体工具",
+            ],
+            [item.title for item in items],
+        )
+        self.assertEqual(
+            [
+                "https://www.ithome.com/1/027/630.htm",
+                "https://www.ithome.com/1/028/029.htm",
+            ],
+            [item.url for item in items],
+        )
+
+    def test_clean_url_stops_at_escaped_newline_and_cjk_prose(self) -> None:
+        self.assertEqual(
+            "https://www.ithome.com/1/027/608.htm",
+            cron_today_cards._clean_url(
+                "https://www.ithome.com/1/027/608.htm（单源：已检索多路信源"
+            ),
+        )
+        self.assertEqual(
+            "https://www.ithome.com/1/027/630.htm",
+            cron_today_cards._clean_url(
+                "https://www.ithome.com/1/027/630.htm\\n2"
+            ),
+        )
+        items = cron_today_cards._web_evidence(
+            "### 示例文章标题超过六个字\n"
+            "信息源：\n"
+            "1. IT之家 https://www.ithome.com/1/027/630.htm\\n2",
+            occurred_at=1,
+        )
+        self.assertEqual(1, len(items))
+        self.assertEqual("https://www.ithome.com/1/027/630.htm", items[0].url)
+
     def test_connector_json_keeps_titled_article_links_and_cover_images(self) -> None:
         payload = {
             "news_list": [
@@ -876,7 +935,7 @@ class IndustrySignalSummaryTest(unittest.TestCase):
         items = cron_today_cards._embedded_web_items(payload)
 
         self.assertEqual(1, len(items))
-        self.assertIn("每日经济新闻", items[0][0])
+        self.assertEqual("Google DeepMind 发布新一代世界模型 Genie 4", items[0][0])
         self.assertEqual("https://view.inews.qq.com/a/example", items[0][1])
         self.assertEqual("https://inews.gtimg.com/example.jpg", items[0][2])
 
@@ -1041,6 +1100,51 @@ class IndustrySignalSummaryTest(unittest.TestCase):
         self.assertEqual(["真实文章标题"], [item.title for item in evidence])
         self.assertEqual(
             ["https://www.ithome.com/1/020/471.htm"],
+            [item.url for item in evidence],
+        )
+
+    def test_thread_evidence_reads_nested_response_markdown(self) -> None:
+        conn = sqlite3.connect(":memory:")
+        conn.row_factory = sqlite3.Row
+        conn.execute(
+            "CREATE TABLE thread_messages ("
+            "seq INTEGER PRIMARY KEY, thread_id TEXT, role TEXT, "
+            "message_json TEXT, created_at INTEGER)"
+        )
+        response = (
+            "### 腾讯混元 Hy4 flash 发布：224B 总参 / 12B 激活\n\n"
+            "正文内容。\n\n"
+            "信息源：\n"
+            "1. IT之家 https://www.ithome.com/1/027/630.htm\n"
+            "2. 凤凰网科技 https://original.ifeng.com/c/8y6BKoihPaL\n"
+        )
+        conn.executemany(
+            "INSERT INTO thread_messages VALUES (?, ?, ?, ?, ?)",
+            [
+                (1, "thread", "human", _message_text("本期提示"), 10),
+                (
+                    2,
+                    "thread",
+                    "tool",
+                    _message_text(json.dumps({"response": response}, ensure_ascii=False)),
+                    11,
+                ),
+            ],
+        )
+
+        evidence = cron_today_cards._thread_web_evidence(
+            _ConnectionDb(conn),
+            thread_id="thread",
+            occurred_at=12,
+            since=12,
+        )
+
+        self.assertEqual(
+            ["腾讯混元 Hy4 flash 发布：224B 总参 / 12B 激活"],
+            [item.title for item in evidence],
+        )
+        self.assertEqual(
+            ["https://www.ithome.com/1/027/630.htm"],
             [item.url for item in evidence],
         )
 

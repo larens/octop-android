@@ -87,6 +87,7 @@ import java.net.URI
 import java.time.Instant
 import java.time.LocalDate
 import java.time.ZoneId
+import java.time.format.DateTimeFormatter
 
 @Composable
 internal fun TodayRecommendationCard(
@@ -135,6 +136,9 @@ internal fun TodayRecommendationCard(
     }
     val dailyWeatherWeight = remember(card.updatedAt, nowMillis) {
         dailyWeatherVisualWeight(card.updatedAt, nowMillis)
+    }
+    val cardTime = remember(card.kind, card.title, card.occurredAt, card.updatedAt, nowMillis) {
+        todayCardTime(card, nowMillis)
     }
     val summaryPreview = remember(card.summary) { todayCardSummaryPreview(card.summary) }
     val structuredAdvice = summarySections.firstOrNull {
@@ -224,7 +228,16 @@ internal fun TodayRecommendationCard(
                                 .background(accent),
                         )
                     }
-                    Spacer(Modifier.weight(1f))
+                    Spacer(Modifier.width(8.dp))
+                    if (cardTime != null) {
+                        TodayCardTimeLabel(
+                            time = cardTime,
+                            nowMillis = nowMillis,
+                            modifier = Modifier.weight(1f),
+                        )
+                    } else {
+                        Spacer(Modifier.weight(1f))
+                    }
                     if (card.riskLevel == "A3" || card.riskLevel == "A4") {
                         Text(
                             text = stringResource(R.string.today_card_needs_confirmation),
@@ -387,7 +400,16 @@ internal fun TodayRecommendationCard(
                             .background(accent),
                     )
                 }
-                Spacer(Modifier.weight(1f))
+                Spacer(Modifier.width(8.dp))
+                if (cardTime != null) {
+                    TodayCardTimeLabel(
+                        time = cardTime,
+                        nowMillis = nowMillis,
+                        modifier = Modifier.weight(1f),
+                    )
+                } else {
+                    Spacer(Modifier.weight(1f))
+                }
                 if (card.riskLevel == "A3" || card.riskLevel == "A4") {
                     Text(
                         text = stringResource(R.string.today_card_needs_confirmation),
@@ -1564,6 +1586,68 @@ private fun CompactCalendarAction(
         )
     }
 }
+
+@Composable
+private fun TodayCardTimeLabel(
+    time: TodayCardTime,
+    nowMillis: Long,
+    modifier: Modifier = Modifier,
+) {
+    val text = when (time) {
+        is TodayCardTime.CalendarEvent -> calendarEventTimeText(
+            atMillis = time.atMillis,
+            nowMillis = nowMillis,
+        )
+        TodayCardTime.RecentWeek -> stringResource(R.string.today_time_recent_week)
+        TodayCardTime.LastNight -> stringResource(R.string.today_time_last_night)
+        TodayCardTime.Today -> stringResource(R.string.today_time_today)
+        is TodayCardTime.Updated -> stringResource(
+            R.string.today_updated_prefix,
+            updatedAgoText(time.ago),
+        )
+    }
+    Text(
+        text = text,
+        modifier = modifier,
+        style = MaterialTheme.typography.labelSmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+        maxLines = 1,
+    )
+}
+
+@Composable
+private fun updatedAgoText(ago: TodayUpdatedAgo): String = when (ago) {
+    TodayUpdatedAgo.JustNow -> stringResource(R.string.today_updated_just_now)
+    is TodayUpdatedAgo.Minutes ->
+        stringResource(R.string.today_updated_minutes_ago, ago.value)
+    is TodayUpdatedAgo.Hours ->
+        stringResource(R.string.today_updated_hours_ago, ago.value)
+    TodayUpdatedAgo.Yesterday -> stringResource(R.string.today_updated_yesterday)
+    TodayUpdatedAgo.DayBeforeYesterday ->
+        stringResource(R.string.today_updated_day_before_yesterday)
+    is TodayUpdatedAgo.Days ->
+        stringResource(R.string.today_updated_days_ago, ago.value)
+}
+
+@Composable
+private fun calendarEventTimeText(
+    atMillis: Long,
+    nowMillis: Long,
+): String {
+    val zoneId = ZoneId.systemDefault()
+    val event = Instant.ofEpochMilli(atMillis).atZone(zoneId)
+    val today = Instant.ofEpochMilli(nowMillis).atZone(zoneId).toLocalDate()
+    val clock = event.format(CardEventTimeFormatter)
+    return when (event.toLocalDate().toEpochDay() - today.toEpochDay()) {
+        0L -> stringResource(R.string.today_time_today_at, clock)
+        1L -> stringResource(R.string.today_time_tomorrow_at, clock)
+        -1L -> stringResource(R.string.today_time_yesterday_at, clock)
+        else -> event.format(CardEventDateTimeFormatter)
+    }
+}
+
+private val CardEventTimeFormatter = DateTimeFormatter.ofPattern("HH:mm")
+private val CardEventDateTimeFormatter = DateTimeFormatter.ofPattern("M/d HH:mm")
 
 @Composable
 private fun CategoryPill(

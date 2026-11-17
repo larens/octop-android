@@ -112,6 +112,77 @@ internal fun groupTodayCards(
 
 private val TimeSensitiveHealthWindows = setOf("morning", "evening")
 
+/** Relative "更新时间" shown next to the card category, e.g. 15 分钟前 / 昨天. */
+internal sealed interface TodayUpdatedAgo {
+    data object JustNow : TodayUpdatedAgo
+
+    data class Minutes(val value: Long) : TodayUpdatedAgo
+
+    data class Hours(val value: Long) : TodayUpdatedAgo
+
+    data object Yesterday : TodayUpdatedAgo
+
+    data object DayBeforeYesterday : TodayUpdatedAgo
+
+    data class Days(val value: Long) : TodayUpdatedAgo
+}
+
+internal fun todayUpdatedAgo(
+    updatedAtMillis: Long,
+    nowMillis: Long,
+    zoneId: ZoneId = ZoneId.systemDefault(),
+): TodayUpdatedAgo? {
+    if (updatedAtMillis <= 0L) return null
+    val elapsed = (nowMillis - updatedAtMillis).coerceAtLeast(0L)
+    val minutes = elapsed / 60_000
+    if (minutes < 1) return TodayUpdatedAgo.JustNow
+    if (minutes < 60) return TodayUpdatedAgo.Minutes(minutes)
+    val updatedDate = Instant.ofEpochMilli(updatedAtMillis).atZone(zoneId).toLocalDate()
+    val today = Instant.ofEpochMilli(nowMillis).atZone(zoneId).toLocalDate()
+    return when (val days = today.toEpochDay() - updatedDate.toEpochDay()) {
+        0L -> TodayUpdatedAgo.Hours((elapsed / 3_600_000).coerceAtLeast(1))
+        1L -> TodayUpdatedAgo.Yesterday
+        2L -> TodayUpdatedAgo.DayBeforeYesterday
+        else -> TodayUpdatedAgo.Days(days)
+    }
+}
+
+/**
+ * Time shown next to the card category. Calendar and health cards use their data
+ * period; other cards explicitly show when their content was updated.
+ */
+internal sealed interface TodayCardTime {
+    data class CalendarEvent(val atMillis: Long) : TodayCardTime
+
+    data object RecentWeek : TodayCardTime
+
+    data object LastNight : TodayCardTime
+
+    data object Today : TodayCardTime
+
+    data class Updated(val ago: TodayUpdatedAgo) : TodayCardTime
+}
+
+internal fun todayCardTime(
+    card: TodayCardEntity,
+    nowMillis: Long,
+    zoneId: ZoneId = ZoneId.systemDefault(),
+): TodayCardTime? {
+    if (card.kind == "calendar" && card.occurredAt > 0L) {
+        return TodayCardTime.CalendarEvent(card.occurredAt)
+    }
+    if (card.kind == "health") {
+        val title = card.title.trimStart()
+        when {
+            title.startsWith("健康周报") -> return TodayCardTime.RecentWeek
+            title.startsWith("昨晚") -> return TodayCardTime.LastNight
+            title.startsWith("晚间健康") -> return TodayCardTime.Today
+        }
+    }
+    return todayUpdatedAgo(card.updatedAt, nowMillis, zoneId)
+        ?.let(TodayCardTime::Updated)
+}
+
 private fun List<TodayCardEntity>.latestHealthCard(): TodayCardEntity =
     maxWithOrNull(
         compareBy<TodayCardEntity>(TodayCardEntity::occurredAt)
@@ -1395,6 +1466,7 @@ internal fun decodeTodayCardEvidence(evidenceJson: String): List<TodayEvidenceDt
 
 internal fun todayCardFacts(evidence: List<TodayEvidenceDto>, limit: Int = 3): List<TodayCardFact> {
     val seen = mutableSetOf<String>()
+    val seenTitles = mutableSetOf<String>()
     return evidence.asSequence()
         .filterNot(TodayEvidenceDto::isSessionOnlyExecutionEvidence)
         .mapNotNull { item ->
@@ -1408,6 +1480,8 @@ internal fun todayCardFacts(evidence: List<TodayEvidenceDto>, limit: Int = 3): L
                 ?: return@mapNotNull null
             val key = url ?: title.lowercase()
             if (!seen.add(key)) return@mapNotNull null
+            val titleKey = title.todayFactDedupeKey(url)
+            if (titleKey != null && !seenTitles.add(titleKey)) return@mapNotNull null
             TodayCardFact(
                 title = title,
                 excerpt = item.excerpt?.trim()?.takeIf {
@@ -1433,6 +1507,8 @@ private fun TodayEvidenceDto.isSessionOnlyExecutionEvidence(): Boolean =
 internal fun normalizeTodayFactTitle(value: String?, url: String?): String {
     var title = value.orEmpty().trim()
     if (TodayStructuredUiTitlePattern.containsMatchIn(title)) return ""
+    title = title.replace(Regex("""\\n\d*"""), " ").replace(Regex("\\s+"), " ")
+    title = title.replace(Regex("^[🔗\\s]+"), "")
     title = TodayFactTablePrefixPattern.replace(title, "")
     title = TodayFactInlineNumberPattern.replace(title, "")
     title = TodayFactSourceLabelPattern.replace(title, "")
@@ -1441,6 +1517,15 @@ internal fun normalizeTodayFactTitle(value: String?, url: String?): String {
     if (TodaySourceTimeTitlePattern.matches(title)) return ""
     if (title.lowercase() in TodayWeakFactTitles) return ""
     return title
+}
+
+private fun String.todayFactDedupeKey(url: String?): String? {
+    if (length < 6 || lowercase() in TodayWeakFactTitles) return null
+    val host = url?.todayFactHost()
+    if (host != null && equals(host, ignoreCase = true)) return null
+    return filter(Char::isLetterOrDigit)
+        .lowercase()
+        .takeIf { it.length >= 6 }
 }
 
 private fun String.isMeaningfulTodayFactText(url: String?): Boolean {

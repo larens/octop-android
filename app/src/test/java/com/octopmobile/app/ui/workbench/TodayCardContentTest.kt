@@ -6,6 +6,7 @@ import java.time.LocalDateTime
 import java.time.ZoneId
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -15,6 +16,110 @@ class TodayCardContentTest {
         .atZone(zone)
         .toInstant()
         .toEpochMilli()
+
+    @Test
+    fun formatsRecentUpdatesInMinutes() {
+        val updatedAt = at(2026, 10, 27, 17, 45)
+
+        assertEquals(
+            TodayUpdatedAgo.Minutes(15),
+            todayUpdatedAgo(updatedAt, now, zone),
+        )
+    }
+
+    @Test
+    fun formatsSameDayUpdatesInHours() {
+        val updatedAt = at(2026, 10, 27, 16, 55)
+
+        assertEquals(
+            TodayUpdatedAgo.Hours(1),
+            todayUpdatedAgo(updatedAt, now, zone),
+        )
+    }
+
+    @Test
+    fun keepsMinutesForUpdatesJustBeforeMidnight() {
+        val midnight = at(2026, 10, 28, 0, 10)
+        val updatedAt = at(2026, 10, 27, 23, 30)
+
+        assertEquals(
+            TodayUpdatedAgo.Minutes(40),
+            todayUpdatedAgo(updatedAt, midnight, zone),
+        )
+    }
+
+    @Test
+    fun formatsYesterdayAndDayBeforeYesterday() {
+        assertEquals(
+            TodayUpdatedAgo.Yesterday,
+            todayUpdatedAgo(at(2026, 10, 26, 9, 0), now, zone),
+        )
+        assertEquals(
+            TodayUpdatedAgo.DayBeforeYesterday,
+            todayUpdatedAgo(at(2026, 10, 25, 9, 0), now, zone),
+        )
+        assertEquals(
+            TodayUpdatedAgo.Days(3),
+            todayUpdatedAgo(at(2026, 10, 24, 9, 0), now, zone),
+        )
+    }
+
+    @Test
+    fun formatsFreshAndMissingUpdates() {
+        assertEquals(
+            TodayUpdatedAgo.JustNow,
+            todayUpdatedAgo(now - 20_000, now, zone),
+        )
+        assertNull(todayUpdatedAgo(0L, now, zone))
+    }
+
+    @Test
+    fun calendarHeaderUsesEventTimeInsteadOfUpdateTime() {
+        val calendar = card(
+            "meeting",
+            kind = "calendar",
+            occurredAt = at(2026, 10, 27, 14, 0),
+        ).copy(updatedAt = at(2026, 10, 26, 9, 0))
+
+        assertEquals(
+            TodayCardTime.CalendarEvent(at(2026, 10, 27, 14, 0)),
+            todayCardTime(calendar, now, zone),
+        )
+    }
+
+    @Test
+    fun healthHeaderDescribesTheDataPeriod() {
+        val weekly = card(
+            "weekly",
+            kind = "health",
+            occurredAt = now,
+        ).copy(
+            title = "健康周报：日均 8,000 步",
+            updatedAt = now - 3_600_000,
+        )
+        val sleep = card(
+            "sleep",
+            kind = "health",
+            occurredAt = at(2026, 10, 27, 7, 30),
+        ).copy(title = "昨晚睡眠：7 小时 20 分")
+
+        assertEquals(TodayCardTime.RecentWeek, todayCardTime(weekly, now, zone))
+        assertEquals(TodayCardTime.LastNight, todayCardTime(sleep, now, zone))
+    }
+
+    @Test
+    fun otherCardsLabelTheirUpdateTimeExplicitly() {
+        val task = card(
+            "task",
+            kind = "task",
+            occurredAt = at(2026, 10, 20, 9, 0),
+        ).copy(updatedAt = at(2026, 10, 26, 9, 0))
+
+        assertEquals(
+            TodayCardTime.Updated(TodayUpdatedAgo.Yesterday),
+            todayCardTime(task, now, zone),
+        )
+    }
 
     @Test
     fun groupsTodayUpcomingAndPastWithoutUnreadBias() {
@@ -270,6 +375,34 @@ class TodayCardContentTest {
         assertEquals("GPT-6 Astra Pro", facts[0].title)
         assertEquals("https://example.com/a.jpg", facts[0].imageUrl)
         assertTrue(facts[1].title.contains("只有摘要"))
+    }
+
+    @Test
+    fun deduplicatesTheSameNewsTitleAcrossDifferentSources() {
+        val facts = todayNewsFacts(
+            decodeTodayCardEvidence(
+                """
+                [
+                  {"source_type":"web_search","event_type":"web.search_result","occurred_at":1,"privacy_class":"public_web","title":"腾讯混元 Hy4 flash 发布：224B 总参","url":"https://www.ithome.com/1/027/630.htm"},
+                  {"source_type":"web_search","event_type":"web.search_result","occurred_at":2,"privacy_class":"public_web","title":"腾讯混元 Hy4 flash 发布：224B 总参","url":"https://original.ifeng.com/c/8y6BKoihPaL"}
+                ]
+                """.trimIndent(),
+            ),
+        )
+
+        assertEquals(1, facts.size)
+        assertEquals("https://www.ithome.com/1/027/630.htm", facts.single().url)
+    }
+
+    @Test
+    fun normalizesEscapedNewlinesAndLinkMarkersFromNewsTitles() {
+        assertEquals(
+            "腾讯混元 Hy4 flash 发布：224B 总参",
+            normalizeTodayFactTitle(
+                "🔗 腾讯混元 Hy4 flash 发布：224B 总参\\n2",
+                "https://www.ithome.com/1/027/630.htm",
+            ),
+        )
     }
 
     @Test

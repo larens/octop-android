@@ -21,8 +21,13 @@ from octop.infra.today.cards import (
 
 logger = logging.getLogger(__name__)
 
-_URL_RE = re.compile(r"https?://[^\s<>\]\)\}]+")
+_URL_RE = re.compile(r"https?://[^\s<>\]\)\}，。；！？、（）【】《》\"'“”‘’\\]+")
 _ITEM_RE = re.compile(r"^(?:[-*+]\s+|\d+[.)、]\s*|\*\*\d+[.、]\s*)")
+_MARKDOWN_HEADING_RE = re.compile(r"^\s{0,3}(#{1,6})\s+(.+?)\s*#*\s*$")
+_ARTICLE_BOLD_RE = re.compile(r"^\s*(?:[-*+]\s+|\d+[.)、]\s*)?\*\*(.+?)\*\*")
+_ARTICLE_LIST_RE = re.compile(
+    r"^\s*(?:[-*+]\s+|\d+[.)、]\s+)(.+?)(?:——|—|：|（|\()"
+)
 _PAGE_HEADING_RE = re.compile(r"(?m)^#\s+(.+?)\s*$")
 _PAGE_SOURCE_URL_RE = re.compile(
     r"(?m)^\s*(?:来源|source)\s*[：:]\s*(?:\[[^\]]*\]\()?(https?://[^)\s]+)",
@@ -1088,6 +1093,29 @@ def _message_content(message_json: str) -> str:
     return ""
 
 
+def _payload_texts(value: Any, *, limit: int = 4) -> list[str]:
+    """Collect nested tool-result strings that can contain article markdown."""
+    texts: list[str] = []
+
+    def visit(node: Any) -> None:
+        if len(texts) >= limit:
+            return
+        if isinstance(node, str):
+            if len(node) >= 80 and ("http://" in node or "https://" in node):
+                texts.append(node)
+            return
+        if isinstance(node, dict):
+            for child in node.values():
+                visit(child)
+            return
+        if isinstance(node, list):
+            for child in node:
+                visit(child)
+
+    visit(value)
+    return texts
+
+
 def last_ai_text(db: DatabasePool, thread_id: str) -> str:
     with db.connect() as conn:
         rows = conn.execute(
@@ -1104,7 +1132,12 @@ def last_ai_text(db: DatabasePool, thread_id: str) -> str:
 
 
 def _clean_url(value: str) -> str:
-    return value.rstrip(_TRAILING_URL_PUNCTUATION)
+    text = str(value or "").strip()
+    match = _URL_RE.match(text)
+    if match is not None:
+        text = match.group(0)
+    text = text.split("\\n", 1)[0]
+    return text.rstrip(_TRAILING_URL_PUNCTUATION)
 
 
 def _web_title(raw_line: str, segment: str) -> str:
@@ -1114,6 +1147,84 @@ def _web_title(raw_line: str, segment: str) -> str:
     if len(label) < 8:
         label = common
     return _compact(label, 120)
+
+
+def _article_heading_title(raw_line: str) -> str | None:
+    """Return the article title from a markdown heading.
+
+    News bodies use ``##`` for sections and ``###`` for the article headline.
+    A section heading clears the current title; a missing heading returns None.
+    """
+    match = _MARKDOWN_HEADING_RE.match(raw_line)
+    if match is None:
+        return None
+    if len(match.group(1)) <= 2:
+        return ""
+    return _clean_fact_title(match.group(2))
+
+
+def _meaningful_article_title(value: str) -> bool:
+    title = _clean_fact_title(value)
+    if len(title) < 6 or title.lower() in _WEAK_WEB_TITLES:
+        return False
+    return bool(re.search(r"[A-Za-z\u4e00-\u9fff]", title))
+
+
+def _article_line_title(raw_line: str) -> str:
+    """Read a bold or list-item headline that introduces one article."""
+    line = raw_line.strip()
+    bold = _ARTICLE_BOLD_RE.match(line)
+    if bold is not None:
+        title = _clean_fact_title(bold.group(1))
+        tail = line[bold.end() :].lstrip()
+        is_list_item = bool(re.match(r"^(?:[-*+]\s+|\d+[.)、]\s+)", line))
+        if (
+            _meaningful_article_title(title)
+            and (is_list_item or tail.startswith(("——", "—", "：", ":", "（", "(")))
+        ):
+            return title
+    item = _ARTICLE_LIST_RE.match(line)
+    if item is not None:
+        title = _clean_fact_title(item.group(1))
+        if _meaningful_article_title(title):
+            return title
+    return ""
+
+
+def _dedupe_title_key(title: str, url: str) -> str:
+    label = _clean_fact_title(title)
+    if not _meaningful_article_title(label):
+        return ""
+    host = _web_host(url)
+    if host and label.lower() == host.lower():
+        return ""
+    return re.sub(r"[\W_]+", "", label, flags=re.UNICODE).casefold()
+
+
+def _dedupe_web_evidence(items: list[TodayEvidenceInput]) -> list[TodayEvidenceInput]:
+    """Keep one source per article, even when several outlets carry the same story."""
+    kept: list[TodayEvidenceInput] = []
+    by_url: dict[str, TodayEvidenceInput] = {}
+    by_title: dict[str, TodayEvidenceInput] = {}
+    for item in items:
+        url = _clean_url(str(item.url or item.reference))
+        title = _clean_fact_title(item.title)
+        url_key = url.rstrip("/")
+        title_key = _dedupe_title_key(title, url)
+        existing = by_url.get(url_key) or (by_title.get(title_key) if title_key else None)
+        if existing is not None:
+            existing.image_url = getattr(existing, "image_url", None) or getattr(
+                item, "image_url", None
+            )
+            existing.excerpt = getattr(existing, "excerpt", None) or getattr(
+                item, "excerpt", None
+            )
+            continue
+        kept.append(item)
+        by_url[url_key] = item
+        if title_key:
+            by_title[title_key] = item
+    return kept
 
 
 def _clean_fact_title(value: Any) -> str:
@@ -1181,7 +1292,7 @@ def _merge_web_evidence(
 ) -> list[TodayEvidenceInput]:
     """Prefer connector-returned article titles while keeping the model's URL order."""
     discovered_by_url = {
-        str(item.url or item.reference): item
+        _clean_url(str(item.url or item.reference)).rstrip("/"): item
         for item in discovered
         if item.url or item.reference
     }
@@ -1189,11 +1300,12 @@ def _merge_web_evidence(
     seen_urls: set[str] = set()
     for item in primary:
         url = str(item.url or item.reference)
-        seen_urls.add(url)
+        url_key = _clean_url(url).rstrip("/")
+        seen_urls.add(url_key)
         title = str(item.title or "")
         excerpt = item.excerpt
         image_url = item.image_url
-        candidate = discovered_by_url.get(url)
+        candidate = discovered_by_url.get(url_key)
         if candidate is not None:
             candidate_title = str(candidate.title or "")
             if _web_title_score(candidate_title, url) > _web_title_score(title, url):
@@ -1218,9 +1330,10 @@ def _merge_web_evidence(
         )
     for item in discovered:
         url = str(item.url or item.reference)
-        if not url or url in seen_urls:
+        url_key = _clean_url(url).rstrip("/")
+        if not url or url_key in seen_urls:
             continue
-        seen_urls.add(url)
+        seen_urls.add(url_key)
         title = _clean_fact_title(item.title)
         if _is_weak_web_title(title, url):
             title = _web_host(url) or url
@@ -1237,7 +1350,7 @@ def _merge_web_evidence(
                 occurred_at=item.occurred_at,
             )
         )
-    return merged
+    return _dedupe_web_evidence(merged)
 
 
 def _web_host(url: str) -> str:
@@ -1417,23 +1530,34 @@ def _article_snapshot_item(content: str) -> tuple[str, str, str | None] | None:
 def _web_evidence(text: str, *, occurred_at: int, limit: int = 99) -> list[TodayEvidenceInput]:
     items: list[TodayEvidenceInput] = []
     seen: set[str] = set()
-    title_counts: dict[str, int] = {}
+    active_title = ""
+    in_sources = False
     for raw_line in text.splitlines():
+        stripped = raw_line.strip()
+        heading_title = _article_heading_title(raw_line)
+        if heading_title is not None:
+            active_title = heading_title
+            in_sources = False
+        line_title = _article_line_title(raw_line)
+        if line_title and not in_sources:
+            active_title = line_title
+            in_sources = False
+        if re.match(r"^(?:信息源|来源|source)\s*[：:]", stripped, re.IGNORECASE):
+            in_sources = True
+        elif not stripped:
+            in_sources = False
         for segment in _SENTENCE_SPLIT_RE.split(raw_line):
             for match in _URL_RE.finditer(segment):
                 url = _clean_url(match.group(0))
                 if not url or len(url) > _MAX_EVIDENCE_URL or url in seen:
                     continue
                 seen.add(url)
-                label = _web_title(raw_line, segment)
+                label = ("" if in_sources else line_title) or active_title or _web_title(
+                    raw_line, segment
+                )
+                label = _clean_fact_title(label)
                 if not _meaningful_web_title(label, url):
                     label = _web_host(url) or url
-                title_key = label.lower()
-                if title_counts.get(title_key, 0):
-                    host = _web_host(url) or "来源"
-                    if label.lower() != host.lower():
-                        label = _compact(f"{label} · {host}", 120)
-                title_counts[title_key] = title_counts.get(title_key, 0) + 1
                 items.append(
                     TodayEvidenceInput(
                         source_type="web",
@@ -1444,8 +1568,8 @@ def _web_evidence(text: str, *, occurred_at: int, limit: int = 99) -> list[Today
                     )
                 )
                 if len(items) >= limit:
-                    return items
-    return items
+                    return _dedupe_web_evidence(items)
+    return _dedupe_web_evidence(items)
 
 
 def _embedded_web_items(value: Any, *, limit: int = 12) -> list[tuple[str, str, str | None]]:
@@ -1472,11 +1596,9 @@ def _embedded_web_items(value: Any, *, limit: int = 12) -> list[tuple[str, str, 
                     and url not in seen
                 ):
                     seen.add(url)
-                    source = _compact(node.get("source") or "", 60)
-                    label = f"{source}：{title}" if source else title
                     image_url = node.get("image") or node.get("imageUrl") or node.get("cover")
                     image_url = _clean_url(str(image_url)) if image_url else None
-                    items.append((_compact(label, 120), url, image_url))
+                    items.append((_compact(title, 120), url, image_url))
                     if len(items) >= limit:
                         return True
             return any(visit(child) for child in node.values())
@@ -1526,27 +1648,32 @@ def _thread_web_evidence(
         if not content:
             continue
         items: list[tuple[str, str, str | None]] = []
+        texts: list[str] = [content]
         try:
-            items = _embedded_web_items(json.loads(content), limit=limit)
+            payload = json.loads(content)
+            items = _embedded_web_items(payload, limit=limit)
+            texts = _payload_texts(payload) or [content]
         except (TypeError, json.JSONDecodeError):
             pass
         if not items:
-            article = _article_snapshot_item(content)
-            if article is not None:
-                items.append(article)
+            for text in texts:
+                article = _article_snapshot_item(text)
+                if article is not None:
+                    items.append(article)
         if not items:
-            items.extend(
-                (
-                    str(item.title or item.url or item.reference),
-                    str(item.url or item.reference),
-                    item.image_url,
+            for text in texts:
+                items.extend(
+                    (
+                        str(item.title or item.url or item.reference),
+                        str(item.url or item.reference),
+                        item.image_url,
+                    )
+                    for item in _web_evidence(text, occurred_at=occurred_at, limit=limit)
+                    if not _is_non_article_evidence(
+                        str(item.url or item.reference),
+                        str(item.title or ""),
+                    )
                 )
-                for item in _web_evidence(content, occurred_at=occurred_at, limit=limit)
-                if not _is_non_article_evidence(
-                    str(item.url or item.reference),
-                    str(item.title or ""),
-                )
-            )
         for title, url, image_url in items:
             if (
                 not url

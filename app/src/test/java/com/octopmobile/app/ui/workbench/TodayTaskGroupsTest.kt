@@ -57,5 +57,7 @@ class TodayTaskGroupsTest {
         createdAt = 1,
         updatedAt = 1,
         expiresAt = null,
+        workerAgentId = null,
+        workerAgentName = null,
     )
 }
