@@ -16,6 +16,7 @@ def main() -> None:
         "health_trend_memory.py",
         "xiaomi_health_cloud.py",
         "xiaomi_health_sync.py",
+        "xiaomi_health_alert.py",
         "configure_xiaomi_health.py",
         "provision_multi_user.py",
     ):

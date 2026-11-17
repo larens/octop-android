@@ -27,6 +27,7 @@ from octop.infra.db.repos.secrets import SecretRepo
 from octop.infra.today.health_cards import publish_health_today_cards
 
 from health_trend_memory import sync_health_trend_memory
+from xiaomi_health_alert import notify_sync_outcome
 from xiaomi_health_cloud import (
     MiHealthAuthError,
     MiHealthCloudClient,
@@ -933,6 +934,14 @@ def sync(*, force_full: bool = False, publish_cards: bool = True) -> dict[str, d
             except Exception:
                 LOG.exception("Xiaomi Health sync failed for agent=%s", agent_id)
                 failures.append(agent_id)
+        try:
+            notify_sync_outcome(
+                pool,
+                auth_failures=auth_failures,
+                succeeded=results.keys(),
+            )
+        except Exception:
+            LOG.warning("Xiaomi Health alert delivery failed", exc_info=True)
         if failures:
             raise RuntimeError(
                 "Xiaomi Health sync failed for agents: " + ", ".join(failures)
@@ -988,6 +997,7 @@ def main() -> int:
     )
     LOG.setLevel(logging.INFO)
     logging.getLogger("health_trend_memory").setLevel(logging.INFO)
+    logging.getLogger("xiaomi_health_alert").setLevel(logging.INFO)
     # httpx logs full request URLs at INFO, including signed Xiaomi auth URLs.
     logging.getLogger("httpx").setLevel(logging.WARNING)
     logging.getLogger("httpcore").setLevel(logging.WARNING)
